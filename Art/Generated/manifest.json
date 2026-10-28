@@ -1,0 +1,754 @@
+{
+  "generator": "Art/create_assets.py",
+  "generator_version": 2,
+  "blender_version": "5.2.0 LTS",
+  "units": "metres (Blender and this manifest); UE centimetres = metres x 100",
+  "coordinates": {
+    "blender": "+X forward, +Y left, +Z up (right-handed)",
+    "ue": "+X forward, +Y right, +Z up (left-handed)"
+  },
+  "blend": "MRFPS_Assets.blend",
+  "fbx_export_options": {
+    "check_existing": false,
+    "use_selection": true,
+    "use_mesh_modifiers": true,
+    "mesh_smooth_type": "FACE",
+    "use_tspace": false,
+    "use_custom_props": false,
+    "add_leaf_bones": false,
+    "bake_anim": false,
+    "apply_unit_scale": true,
+    "apply_scale_options": "FBX_SCALE_UNITS",
+    "global_scale": 1.0,
+    "axis_forward": "-Z",
+    "axis_up": "Y",
+    "use_space_transform": true,
+    "bake_space_transform": false,
+    "path_mode": "AUTO",
+    "embed_textures": false,
+    "colors_type": "NONE"
+  },
+  "ue_import": {
+    "source_format": "FBX (Exports/<Name>.fbx); GLB is for inspection only",
+    "axis": "Blender (x, y, z) m -> UE (100x, -100y, 100z) cm. +X forward and +Z up are preserved; UE's Y flip converts right-handed to left-handed without mirroring the shape.",
+    "settings": {
+      "Import As": "Static Mesh (no skeletal, no animation)",
+      "Import Uniform Scale": 1.0,
+      "Convert Scene": true,
+      "Force Front X Axis": false,
+      "Convert Scene Unit": true,
+      "Import Translation/Rotation": "zero",
+      "Combine Meshes": true,
+      "Normal Import Method": "Import Normals",
+      "Generate Lightmap UVs": false,
+      "Auto Generate Collision": false,
+      "Build Nanite": false,
+      "Import Sockets": "on (SM_MRPistol carries SOCKET_Muzzle)",
+      "Materials": "Do not create materials; resolve slot names to /Game/Materials/M_<Name>"
+    },
+    "verify_after_import": "Static Mesh Editor bounds should equal manifest bounds_m x 100 (e.g. wall 16 x 160 x 200 cm)."
+  },
+  "materials": {
+    "M_Graphite": {
+      "preview_base_color": [
+        0.06,
+        0.066,
+        0.078
+      ],
+      "preview_emission_color": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "preview_emission_strength": 0.0,
+      "ue_unlit_emissive_color": [
+        0.035,
+        0.04,
+        0.05
+      ],
+      "already_created_by_MRFPSSetupCommandlet": false
+    },
+    "M_Trim": {
+      "preview_base_color": [
+        0.6,
+        0.64,
+        0.69
+      ],
+      "preview_emission_color": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "preview_emission_strength": 0.0,
+      "ue_unlit_emissive_color": [
+        0.55,
+        0.6,
+        0.66
+      ],
+      "already_created_by_MRFPSSetupCommandlet": false
+    },
+    "M_White": {
+      "preview_base_color": [
+        0.78,
+        0.81,
+        0.84
+      ],
+      "preview_emission_color": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "preview_emission_strength": 0.0,
+      "ue_unlit_emissive_color": [
+        0.85,
+        0.88,
+        0.92
+      ],
+      "already_created_by_MRFPSSetupCommandlet": false
+    },
+    "M_Blue": {
+      "preview_base_color": [
+        0.02,
+        0.26,
+        0.52
+      ],
+      "preview_emission_color": [
+        0.04,
+        0.55,
+        1.0
+      ],
+      "preview_emission_strength": 1.15,
+      "ue_unlit_emissive_color": [
+        0.04,
+        0.55,
+        1.0
+      ],
+      "already_created_by_MRFPSSetupCommandlet": true
+    },
+    "M_Orange": {
+      "preview_base_color": [
+        0.52,
+        0.11,
+        0.015
+      ],
+      "preview_emission_color": [
+        1.0,
+        0.24,
+        0.035
+      ],
+      "preview_emission_strength": 1.15,
+      "ue_unlit_emissive_color": [
+        1.0,
+        0.24,
+        0.035
+      ],
+      "already_created_by_MRFPSSetupCommandlet": true
+    },
+    "M_Wall": {
+      "preview_base_color": [
+        0.03,
+        0.15,
+        0.25
+      ],
+      "preview_emission_color": [
+        0.08,
+        0.4,
+        0.65
+      ],
+      "preview_emission_strength": 0.95,
+      "ue_unlit_emissive_color": [
+        0.08,
+        0.4,
+        0.65
+      ],
+      "already_created_by_MRFPSSetupCommandlet": true
+    },
+    "M_Shield": {
+      "preview_base_color": [
+        0.04,
+        0.38,
+        0.24
+      ],
+      "preview_emission_color": [
+        0.1,
+        0.95,
+        0.6
+      ],
+      "preview_emission_strength": 0.85,
+      "ue_unlit_emissive_color": [
+        0.1,
+        0.95,
+        0.6
+      ],
+      "already_created_by_MRFPSSetupCommandlet": true
+    },
+    "M_Tracer": {
+      "preview_base_color": [
+        0.5,
+        0.4,
+        0.05
+      ],
+      "preview_emission_color": [
+        1.0,
+        0.8,
+        0.1
+      ],
+      "preview_emission_strength": 1.4,
+      "ue_unlit_emissive_color": [
+        1.0,
+        0.8,
+        0.1
+      ],
+      "already_created_by_MRFPSSetupCommandlet": true
+    }
+  },
+  "assets": [
+    {
+      "name": "SM_MRPistol",
+      "files": {
+        "fbx": "Exports/SM_MRPistol.fbx",
+        "glb": "Exports/SM_MRPistol.glb"
+      },
+      "triangles": 544,
+      "vertices": 310,
+      "triangles_per_slot": {
+        "M_Blue": 116,
+        "M_Graphite": 172,
+        "M_Trim": 204,
+        "M_White": 24,
+        "M_Tracer": 28
+      },
+      "material_slots": [
+        "M_Blue",
+        "M_Graphite",
+        "M_Trim",
+        "M_White",
+        "M_Tracer"
+      ],
+      "slot0": "Slot 0 is the team colour. AMRFPSPawn calls MRFPS::Material(<visual>, Blue|Orange), which replaces material slot 0 only, so the rest of the gear keeps its palette.",
+      "bounds_m": {
+        "min": [
+          -0.1,
+          -0.0325,
+          -0.1245
+        ],
+        "max": [
+          0.22,
+          0.0325,
+          0.0355
+        ],
+        "size": [
+          0.32,
+          0.065,
+          0.16
+        ]
+      },
+      "intended_size_m": [
+        0.32,
+        0.065,
+        0.16
+      ],
+      "attach_origin": "Grip/hand attach point (0,0,0) on the bore axis; the grip hangs below it.",
+      "forward": "+X = fire direction; bore runs along +X through the origin at Y=0, Z=0.",
+      "up": "+Z = sight deck",
+      "points_of_interest_m": {
+        "muzzle": [
+          0.22,
+          0.0,
+          0.0
+        ]
+      },
+      "sockets": {
+        "SOCKET_Muzzle": {
+          "blender_m": [
+            0.22,
+            0.0,
+            0.0
+          ],
+          "ue_cm": [
+            22.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "hit_volume_fit": null,
+      "validation": {
+        "loose_vertices": 0,
+        "loose_edges": 0,
+        "non_manifold_edges": 0,
+        "zero_area_triangles": 0,
+        "closed_parts": 19,
+        "inverted_parts": 0
+      },
+      "geometry_sha256": "689e4508e07ce70225c99d7f5bc830eae57289bd6bbe308a3aaff00c200dd292",
+      "fbx_roundtrip": {
+        "ok": true,
+        "mesh_objects": 1,
+        "triangles": 544,
+        "max_bounds_error_m": 0.0,
+        "material_slots": [
+          "M_Blue",
+          "M_Graphite",
+          "M_Trim",
+          "M_White",
+          "M_Tracer"
+        ],
+        "slot_order_preserved": true,
+        "empties": {
+          "SOCKET_Muzzle": [
+            0.22,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "export_options_unsupported_by_this_blender": {
+        "fbx": [],
+        "glb": []
+      }
+    },
+    {
+      "name": "SM_MRWall",
+      "files": {
+        "fbx": "Exports/SM_MRWall.fbx",
+        "glb": "Exports/SM_MRWall.glb"
+      },
+      "triangles": 652,
+      "vertices": 352,
+      "triangles_per_slot": {
+        "M_Wall": 96,
+        "M_Graphite": 108,
+        "M_Trim": 312,
+        "M_White": 136
+      },
+      "material_slots": [
+        "M_Wall",
+        "M_Graphite",
+        "M_Trim",
+        "M_White"
+      ],
+      "slot0": "Slot 0 is M_Wall (MRFPS::Material(Visual, Wall) targets slot 0).",
+      "bounds_m": {
+        "min": [
+          -0.08,
+          -0.8,
+          -1.0
+        ],
+        "max": [
+          0.08,
+          0.8,
+          1.0
+        ],
+        "size": [
+          0.16,
+          1.6,
+          2.0
+        ]
+      },
+      "intended_size_m": [
+        0.16,
+        1.6,
+        2.0
+      ],
+      "attach_origin": "Box centre; matches AMRFPSBarrier box extent (8, 80, 100) cm. Spawned at Z=100 cm so the base meets the floor.",
+      "forward": "+X = front/normal (faces away from the owner, toward the opponent). Light bars and base strip are front-only.",
+      "up": "+Z",
+      "points_of_interest_m": {},
+      "sockets": {},
+      "hit_volume_fit": {
+        "kind": "box",
+        "dims_m": [
+          0.08,
+          0.8,
+          1.0
+        ],
+        "max_excess_m": 0.0,
+        "inside": true
+      },
+      "validation": {
+        "loose_vertices": 0,
+        "loose_edges": 0,
+        "non_manifold_edges": 0,
+        "zero_area_triangles": 0,
+        "closed_parts": 14,
+        "inverted_parts": 0
+      },
+      "geometry_sha256": "8221a418800f6b781174d0be2653cd1e0903346e0fca8a650a72d63ee8ecdb9f",
+      "fbx_roundtrip": {
+        "ok": true,
+        "mesh_objects": 1,
+        "triangles": 652,
+        "max_bounds_error_m": 1e-07,
+        "material_slots": [
+          "M_Wall",
+          "M_Graphite",
+          "M_Trim",
+          "M_White"
+        ],
+        "slot_order_preserved": true,
+        "empties": {}
+      },
+      "export_options_unsupported_by_this_blender": {
+        "fbx": [],
+        "glb": []
+      }
+    },
+    {
+      "name": "SM_MRMiniShield",
+      "files": {
+        "fbx": "Exports/SM_MRMiniShield.fbx",
+        "glb": "Exports/SM_MRMiniShield.glb"
+      },
+      "triangles": 652,
+      "vertices": 336,
+      "triangles_per_slot": {
+        "M_Shield": 156,
+        "M_Graphite": 84,
+        "M_Trim": 224,
+        "M_White": 188
+      },
+      "material_slots": [
+        "M_Shield",
+        "M_Graphite",
+        "M_Trim",
+        "M_White"
+      ],
+      "slot0": "Slot 0 is M_Shield (MRFPS::Material(ShieldVisual, Shield) targets slot 0).",
+      "bounds_m": {
+        "min": [
+          -0.02,
+          -0.22,
+          -0.22
+        ],
+        "max": [
+          0.02,
+          0.22,
+          0.22
+        ],
+        "size": [
+          0.04,
+          0.44,
+          0.44
+        ]
+      },
+      "intended_size_m": [
+        0.04,
+        0.44,
+        0.44
+      ],
+      "attach_origin": "Box centre; matches the MiniShield box extent (2, 22, 22) cm.",
+      "forward": "+X = shield normal (pose forward from the palm).",
+      "up": "+Z",
+      "points_of_interest_m": {},
+      "sockets": {},
+      "hit_volume_fit": {
+        "kind": "box",
+        "dims_m": [
+          0.02,
+          0.22,
+          0.22
+        ],
+        "max_excess_m": 0.0,
+        "inside": true
+      },
+      "validation": {
+        "loose_vertices": 0,
+        "loose_edges": 0,
+        "non_manifold_edges": 0,
+        "zero_area_triangles": 0,
+        "closed_parts": 6,
+        "inverted_parts": 0
+      },
+      "geometry_sha256": "9e9ee58de8835abab3e36b09f48b9f20bc7e0a32846dcffbf61ecb19f94fb3ec",
+      "fbx_roundtrip": {
+        "ok": true,
+        "mesh_objects": 1,
+        "triangles": 652,
+        "max_bounds_error_m": 0.0,
+        "material_slots": [
+          "M_Shield",
+          "M_Graphite",
+          "M_Trim",
+          "M_White"
+        ],
+        "slot_order_preserved": true,
+        "empties": {}
+      },
+      "export_options_unsupported_by_this_blender": {
+        "fbx": [],
+        "glb": []
+      }
+    },
+    {
+      "name": "SM_MRHead",
+      "files": {
+        "fbx": "Exports/SM_MRHead.fbx",
+        "glb": "Exports/SM_MRHead.glb"
+      },
+      "triangles": 1260,
+      "vertices": 650,
+      "triangles_per_slot": {
+        "M_Blue": 200,
+        "M_Graphite": 544,
+        "M_Trim": 336,
+        "M_White": 180
+      },
+      "material_slots": [
+        "M_Blue",
+        "M_Graphite",
+        "M_Trim",
+        "M_White"
+      ],
+      "slot0": "Slot 0 is the team colour. AMRFPSPawn calls MRFPS::Material(<visual>, Blue|Orange), which replaces material slot 0 only, so the rest of the gear keeps its palette.",
+      "bounds_m": {
+        "min": [
+          -0.128,
+          -0.1255,
+          -0.122
+        ],
+        "max": [
+          0.12392,
+          0.1255,
+          0.127
+        ],
+        "size": [
+          0.25192,
+          0.251,
+          0.249
+        ]
+      },
+      "intended_size_m": [
+        0.26,
+        0.26,
+        0.26
+      ],
+      "attach_origin": "Head centre (HMD pose); HeadHitbox sphere r=13 cm is centred here and contains every vertex.",
+      "forward": "+X = visor/facing direction.",
+      "up": "+Z = crown",
+      "points_of_interest_m": {},
+      "sockets": {},
+      "hit_volume_fit": {
+        "kind": "sphere",
+        "dims_m": 0.13,
+        "max_excess_m": -0.00167,
+        "inside": true
+      },
+      "validation": {
+        "loose_vertices": 0,
+        "loose_edges": 0,
+        "non_manifold_edges": 0,
+        "zero_area_triangles": 0,
+        "closed_parts": 10,
+        "inverted_parts": 0
+      },
+      "geometry_sha256": "6c5218eabf4a03b3755060425f5ba615d1678db9682c3783cfd62354c4a622e8",
+      "fbx_roundtrip": {
+        "ok": true,
+        "mesh_objects": 1,
+        "triangles": 1260,
+        "max_bounds_error_m": 0.0,
+        "material_slots": [
+          "M_Blue",
+          "M_Graphite",
+          "M_Trim",
+          "M_White"
+        ],
+        "slot_order_preserved": true,
+        "empties": {}
+      },
+      "export_options_unsupported_by_this_blender": {
+        "fbx": [],
+        "glb": []
+      }
+    },
+    {
+      "name": "SM_MRBody",
+      "files": {
+        "fbx": "Exports/SM_MRBody.fbx",
+        "glb": "Exports/SM_MRBody.glb"
+      },
+      "triangles": 1268,
+      "vertices": 662,
+      "triangles_per_slot": {
+        "M_Blue": 228,
+        "M_Graphite": 508,
+        "M_Trim": 384,
+        "M_White": 148
+      },
+      "material_slots": [
+        "M_Blue",
+        "M_Graphite",
+        "M_Trim",
+        "M_White"
+      ],
+      "slot0": "Slot 0 is the team colour. AMRFPSPawn calls MRFPS::Material(<visual>, Blue|Orange), which replaces material slot 0 only, so the rest of the gear keeps its palette.",
+      "bounds_m": {
+        "min": [
+          -0.2,
+          -0.19682,
+          -0.4
+        ],
+        "max": [
+          0.194,
+          0.19682,
+          0.4
+        ],
+        "size": [
+          0.394,
+          0.39364,
+          0.8
+        ]
+      },
+      "intended_size_m": [
+        0.4,
+        0.4,
+        0.8
+      ],
+      "attach_origin": "Torso centre; BodyHitbox capsule (r 22 cm, half-height 50 cm) is centred here (head - 58 cm).",
+      "forward": "+X = chest/front.",
+      "up": "+Z = neck",
+      "points_of_interest_m": {},
+      "sockets": {},
+      "hit_volume_fit": {
+        "kind": "capsule",
+        "dims_m": [
+          0.22,
+          0.5
+        ],
+        "max_excess_m": -0.01384,
+        "inside": true
+      },
+      "validation": {
+        "loose_vertices": 0,
+        "loose_edges": 0,
+        "non_manifold_edges": 0,
+        "zero_area_triangles": 0,
+        "closed_parts": 16,
+        "inverted_parts": 0
+      },
+      "geometry_sha256": "a0429791bf4af1cbdb648eb3f601253e63323a04f96b7cdf94f61686c0ce67f4",
+      "fbx_roundtrip": {
+        "ok": true,
+        "mesh_objects": 1,
+        "triangles": 1268,
+        "max_bounds_error_m": 0.0,
+        "material_slots": [
+          "M_Blue",
+          "M_Graphite",
+          "M_Trim",
+          "M_White"
+        ],
+        "slot_order_preserved": true,
+        "empties": {}
+      },
+      "export_options_unsupported_by_this_blender": {
+        "fbx": [],
+        "glb": []
+      }
+    },
+    {
+      "name": "SM_MRHand",
+      "files": {
+        "fbx": "Exports/SM_MRHand.fbx",
+        "glb": "Exports/SM_MRHand.glb"
+      },
+      "triangles": 880,
+      "vertices": 478,
+      "triangles_per_slot": {
+        "M_Blue": 108,
+        "M_Graphite": 172,
+        "M_Trim": 520,
+        "M_White": 80
+      },
+      "material_slots": [
+        "M_Blue",
+        "M_Graphite",
+        "M_Trim",
+        "M_White"
+      ],
+      "slot0": "Slot 0 is the team colour. AMRFPSPawn calls MRFPS::Material(<visual>, Blue|Orange), which replaces material slot 0 only, so the rest of the gear keeps its palette.",
+      "bounds_m": {
+        "min": [
+          -0.012,
+          -0.05835,
+          -0.0275
+        ],
+        "max": [
+          0.16696,
+          0.04231,
+          0.0275
+        ],
+        "size": [
+          0.17896,
+          0.10066,
+          0.055
+        ]
+      },
+      "intended_size_m": [
+        0.18,
+        0.1,
+        0.055
+      ],
+      "attach_origin": "Wrist centre (0,0,0).",
+      "forward": "+X = fingers, +Z = dorsal (back of hand), palm faces -Z. LEFT hand: thumb on Blender -Y, which is UE +Y.",
+      "up": "+Z = dorsal",
+      "points_of_interest_m": {
+        "palm_emitter": [
+          0.054,
+          0.002,
+          -0.0195
+        ]
+      },
+      "sockets": {},
+      "hit_volume_fit": null,
+      "validation": {
+        "loose_vertices": 0,
+        "loose_edges": 0,
+        "non_manifold_edges": 0,
+        "zero_area_triangles": 0,
+        "closed_parts": 19,
+        "inverted_parts": 0
+      },
+      "geometry_sha256": "81a024297ce4be6038c025c43f378e314bc109c155c1de512a2794187fcc9a85",
+      "fbx_roundtrip": {
+        "ok": true,
+        "mesh_objects": 1,
+        "triangles": 880,
+        "max_bounds_error_m": 0.0,
+        "material_slots": [
+          "M_Blue",
+          "M_Graphite",
+          "M_Trim",
+          "M_White"
+        ],
+        "slot_order_preserved": true,
+        "empties": {}
+      },
+      "export_options_unsupported_by_this_blender": {
+        "fbx": [],
+        "glb": []
+      }
+    }
+  ],
+  "totals": {
+    "triangles": 5256,
+    "budget_per_asset": 6000,
+    "budget_total": 25000
+  },
+  "preview": {
+    "path": "../Preview/AssetBoard.png",
+    "resolution": [
+      1280,
+      720
+    ],
+    "engine": "BLENDER_EEVEE",
+    "samples": 64,
+    "threads": 2,
+    "render_set": "MRFPS_PreviewBoard only (source assets hide_render after export)",
+    "render_leaks": [],
+    "status": "rendered"
+  },
+  "errors": [],
+  "warnings": []
+}

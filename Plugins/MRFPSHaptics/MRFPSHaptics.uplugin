@@ -1,0 +1,11 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "MRFPS MoBits Haptics",
+  "Description": "Owner-local shot, hit and respawn feedback through the official MoBits SDK.",
+  "Category": "Input Devices",
+  "CanContainContent": false,
+  "Plugins": [{ "Name": "MoBitsSDK", "Enabled": true }],
+  "Modules": [{ "Name": "MRFPSHaptics", "Type": "Runtime", "LoadingPhase": "Default" }]
+}

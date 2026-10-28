@@ -1,0 +1,14 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "MRFPS OpenXR Passthrough",
+  "Description": "Native XR_FB_passthrough underlay for Quest OpenXR runtimes.",
+  "Category": "Mixed Reality",
+  "CanContainContent": false,
+  "Modules": [{ "Name": "MRFPSXR", "Type": "Runtime", "LoadingPhase": "PostConfigInit", "PlatformAllowList": ["Win64", "Mac", "Android"], "TargetDenyList": ["Server"] }],
+  "Plugins": [
+    { "Name": "OpenXR", "Enabled": true, "PlatformAllowList": ["Win64", "Android"] },
+    { "Name": "AndroidPermission", "Enabled": true, "PlatformAllowList": ["Android"], "TargetDenyList": ["Server"] }
+  ]
+}

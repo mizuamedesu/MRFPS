@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+  <androidManifestUpdates>
+    <addPermission android:name="android.permission.FOREGROUND_SERVICE" />
+    <addPermission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <addElements tag="application">
+      <service android:name="com.mrfps.capture.MRFPSViewCaptureService"
+               android:exported="false" android:foregroundServiceType="mediaProjection"
+               android:stopWithTask="true" />
+    </addElements>
+  </androidManifestUpdates>
+  <resourceCopies>
+    <copyFile src="$S(PluginDir)/Android/Java/com/mrfps/capture/MRFPSViewCapture.java"
+              dst="$S(BuildDir)/src/com/mrfps/capture/MRFPSViewCapture.java" />
+    <copyFile src="$S(PluginDir)/Android/Java/com/mrfps/capture/MRFPSViewCaptureService.java"
+              dst="$S(BuildDir)/src/com/mrfps/capture/MRFPSViewCaptureService.java" />
+  </resourceCopies>
+  <gameActivityOnActivityResultAdditions>
+    <insert>
+      com.mrfps.capture.MRFPSViewCapture.onActivityResult(this, requestCode, resultCode, data);
+    </insert>
+  </gameActivityOnActivityResultAdditions>
+  <gameActivityOnDestroyAdditions>
+    <insert>
+      com.mrfps.capture.MRFPSViewCapture.stop(this);
+    </insert>
+  </gameActivityOnDestroyAdditions>
+  <proguardAdditions>
+    <insert>
+      -keep class com.mrfps.capture.MRFPSViewCapture { *; }
+      -keep class com.mrfps.capture.MRFPSViewCaptureService { *; }
+    </insert>
+  </proguardAdditions>
+</root>

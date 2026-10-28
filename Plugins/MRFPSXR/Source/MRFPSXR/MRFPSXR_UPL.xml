@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+  <gradleProperties>
+    <insert>
+org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8
+org.gradle.workers.max=2
+org.gradle.parallel=false
+    </insert>
+  </gradleProperties>
+  <androidManifestUpdates>
+    <addFeature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+    <addFeature android:name="oculus.software.handtracking" android:required="false" />
+    <addFeature android:name="com.oculus.feature.PASSTHROUGH" android:required="true" />
+    <addPermission android:name="com.oculus.permission.HAND_TRACKING" />
+    <!-- AndroidRuntimeSettings regenerates its own device list on editor startup.
+         Replace that node here so the final manifest has exactly one list. -->
+    <loopElements tag="meta-data">
+      <setStringFromAttribute result="MetaName" tag="$" name="android:name" />
+      <setBoolIsEqual result="IsSupportedDevices" arg1="$S(MetaName)" arg2="com.oculus.supportedDevices" />
+      <if condition="IsSupportedDevices">
+        <true><removeElement tag="$" /></true>
+      </if>
+    </loopElements>
+    <addElements tag="application">
+      <meta-data android:name="com.oculus.supportedDevices" android:value="quest3|quest3s" />
+      <meta-data android:name="com.oculus.handtracking.frequency" android:value="HIGH" />
+      <meta-data android:name="com.oculus.handtracking.version" android:value="V2.0" />
+      <meta-data android:name="com.oculus.ossplash.background" android:value="passthrough-contextual" />
+    </addElements>
+    <!-- bPackageForMetaQuest makes the engine's OpenXR_APL add the VR intent. -->
+  </androidManifestUpdates>
+</root>

@@ -1,0 +1,10 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "MRFPS ContactGlove input",
+  "Description": "Independent DivingStation OSC receiver and timestamped ContactGlove 2 input.",
+  "Category": "Input",
+  "CanContainContent": false,
+  "Modules": [{ "Name": "MRFPSGloves", "Type": "Runtime", "LoadingPhase": "Default" }]
+}

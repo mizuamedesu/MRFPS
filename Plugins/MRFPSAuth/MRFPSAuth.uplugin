@@ -1,0 +1,11 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "MRFPS Authentication",
+  "Description": "Pinned Ed25519 JWT login verification and transient client credentials.",
+  "Category": "Networking",
+  "CanContainContent": false,
+  "EnabledByDefault": false,
+  "Modules": [{ "Name": "MRFPSAuth", "Type": "Runtime", "LoadingPhase": "PreDefault" }]
+}

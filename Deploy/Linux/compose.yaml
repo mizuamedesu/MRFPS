@@ -1,0 +1,35 @@
+services:
+  mrfps:
+    build:
+      context: ../..
+      dockerfile: Deploy/Linux/Dockerfile
+    image: mrfps-server:local
+    init: true
+    restart: unless-stopped
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: 2.0
+    ports:
+      - "${MRFPS_HOST_PORT:-7777}:7777/udp"
+    environment:
+      MRFPS_PORT: "7777"
+      MRFPS_AUTH_PUBLIC_KEY_B64: "${MRFPS_AUTH_PUBLIC_KEY_B64:-}"
+      MRFPS_AUTH_PUBLIC_KEY_PEM: "${MRFPS_AUTH_PUBLIC_KEY_PEM:-}"
+      MRFPS_AUTH_AUDIENCE: "${MRFPS_AUTH_AUDIENCE:-mrfps}"
+    command: ["/Game/Maps/MRFPSArena"]
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+      - /home/mrfps:rw,nosuid,size=64m,uid=10001,gid=10001
+    volumes:
+      - server-saved:/opt/mrfps/MRFPS/Saved
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  server-saved:

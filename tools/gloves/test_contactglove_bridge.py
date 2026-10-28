@@ -1,0 +1,152 @@
+import importlib.util
+import math
+import socket
+import struct
+import subprocess
+import sys
+import time
+import unittest
+from pathlib import Path
+
+MODULE_PATH = Path(__file__).with_name("contactglove_bridge.py")
+spec = importlib.util.spec_from_file_location("bridge", MODULE_PATH)
+bridge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge)
+align_spec = importlib.util.spec_from_file_location("alignment", MODULE_PATH.with_name("calibrate_alignment.py"))
+alignment = importlib.util.module_from_spec(align_spec)
+align_spec.loader.exec_module(alignment)
+
+
+class OSCProtocolTests(unittest.TestCase):
+    def test_vendor_contactglove2_hand_schema(self):
+        values = [1, "cg2-id", 1] + [0.1, 0.2, 0.3, -0.1] * 5
+        packet = bridge.encode_message("/DS/HC/Hand", *values)
+        address, tags, decoded = bridge.decode_packet(packet)[0]
+        self.assertTrue(bridge.is_glove_message(address, tags, decoded))
+        self.assertEqual(decoded[:3], values[:3])
+        self.assertAlmostEqual(decoded[7], values[7])
+
+    def test_connect_advertises_receive_port(self):
+        self.assertEqual(bridge.decode_packet(bridge.encode_message("/DS/HC/Connect", 25789)), [("/DS/HC/Connect", "i", [25789])])
+
+    def test_wrong_version_or_side_rejected(self):
+        for version, side in ((2, 1), (1, 2)):
+            self.assertFalse(bridge.is_glove_message("/DS/HC/Hand", "isi" + "f" * 20, [version, "id", side] + [0.0] * 20))
+
+    def test_controller_pressed_distinct_from_touched(self):
+        values = [1, "cg2-id", 0, 2, 1, 0, 2, 0, 0, 0.8, 0.4, 0.0]
+        address, tags, decoded = bridge.decode_packet(bridge.encode_message("/DS/HC/Controller", *values))[0]
+        self.assertTrue(bridge.is_glove_message(address, tags, decoded))
+        self.assertEqual(decoded[3:9], values[3:9])
+
+    def test_bundle_with_multiple_hands(self):
+        messages = [bridge.encode_message("/DS/HC/Wrist", 1, "id", side, 1.0, 0.0, 0.0, 0.0) for side in (1, 0)]
+        bundle = b"#bundle\0" + struct.pack(">Q", 1) + b"".join(struct.pack(">I", len(packet)) + packet for packet in messages)
+        self.assertEqual([m[2][2] for m in bridge.decode_packet(bundle)], [1, 0])
+
+    def test_bad_packets_do_not_decode(self):
+        packet = bridge.encode_message("/DS/HC/Wrist", 1, "id", 1, 1.0, 0.0, 0.0, 0.0)
+        bad = [packet[:-1], packet + b"\0" * 4, b"#bundle\0" + b"\0" * 8 + struct.pack(">I", 9000), packet[:-4] + struct.pack(">f", math.nan)]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                bridge.decode_packet(value)
+
+    def test_unknown_route_not_forwarded(self):
+        self.assertFalse(bridge.is_glove_message("/evil", "isi", [1, "id", 1]))
+
+    def test_device_snapshot_contains_independent_connection_flags(self):
+        args = [1, "fixture", 1, 2, "ContactGlove2", 6, 0.0, 0, 0, 0.0, 1, 85, 2.0]
+        address, tags, decoded = bridge.decode_packet(bridge.encode_message("/DS/HC/Device", *args))[0]
+        status = bridge.parse_device_status(tags, decoded)[0]
+        self.assertFalse(status["left_connected"])
+        self.assertTrue(status["right_connected"])
+        self.assertEqual(status["right_battery"], 85)
+        with self.assertRaises(ValueError):
+            bridge.parse_device_status(tags, decoded[:-1])
+
+    def test_pending_relay_does_not_retransmit_cached_input(self):
+        relay = bridge.PendingRelay()
+        relay.add("/DS/HC/Hand", [1, "fixture", 1] + [0.1] * 20)
+        relay.add("/DS/HC/Hand", [1, "fixture", 1] + [0.5] * 20)
+        batch = relay.drain()
+        self.assertEqual(len(batch), 1)
+        self.assertAlmostEqual(bridge.decode_packet(batch[0])[0][2][3], 0.5)
+        self.assertEqual(relay.drain(), [])
+
+    def test_openvr_basis_and_alignment(self):
+        matrix = [[1, 0, 0, 1], [0, 1, 0, 2], [0, 0, 1, -3]]
+        position, rotation = bridge.convert_pose(matrix, 0, [0, 0, 0])
+        self.assertEqual(position, [300, 100, 200])
+        self.assertEqual(rotation, (0, 0, 0, 1))
+        position, rotation = bridge.convert_pose(matrix, 90, [10, 20, 30])
+        for actual, expected in zip(position, [-90, 320, 230]):
+            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(rotation[2], math.sqrt(0.5))
+        self.assertAlmostEqual(rotation[3], math.sqrt(0.5))
+
+    def test_alignment_required_for_separate_tracking_spaces(self):
+        with self.assertRaises(ValueError):
+            bridge.validate_tracker_config({"left_serial": "a", "right_serial": "b"})
+
+    def test_corrupt_tracker_rotation_rejected(self):
+        with self.assertRaises(ValueError):
+            bridge.convert_pose([[0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 3]], 0, [0, 0, 0])
+
+    def test_measured_alignment_fits_yaw_and_translation(self):
+        fit = alignment.fit_alignment([[0, 0, 0], [100, 0, 0], [0, 100, 0]], [[10, 20, 30], [10, 120, 30], [-90, 20, 30]])
+        self.assertAlmostEqual(fit["yaw_degrees"], 90)
+        for actual, expected in zip(fit["translation_cm"], [10, 20, 30]):
+            self.assertAlmostEqual(actual, expected)
+        self.assertLess(fit["rms_error_cm"], 1e-8)
+
+    def test_inconsistent_or_short_alignment_rejected(self):
+        for source, quest in [([[0, 0, 0], [1, 0, 0]], [[0, 0, 0], [1, 0, 0]]),
+                              ([[0, 0, 0], [100, 0, 0]], [[0, 0, 0], [150, 0, 0]])]:
+            with self.assertRaises(ValueError):
+                alignment.fit_alignment(source, quest)
+
+    def test_real_udp_bridge_connect_and_forward(self):
+        # A loopback protocol fixture exercises the actual process and UDP sockets.
+        station = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        target = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        station.bind(("127.0.0.1", 0))
+        target.bind(("127.0.0.1", 0))
+        station.settimeout(5)
+        target.settimeout(5)
+        reserve = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        reserve.bind(("127.0.0.1", 0))
+        listen_port = reserve.getsockname()[1]
+        reserve.close()
+        process = subprocess.Popen([sys.executable, str(MODULE_PATH), "--target", "127.0.0.1", "--target-port", str(target.getsockname()[1]), "--station-port", str(station.getsockname()[1]), "--listen-port", str(listen_port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            connect, source = station.recvfrom(8192)
+            self.assertEqual(bridge.decode_packet(connect)[0][2], [listen_port])
+            status = bridge.encode_message("/DS/HC/Device", 1, "cg2-fixture", 1, 2, "ContactGlove2", 6, 0.0, 1, 80, 0.0, 1, 80, 0.0)
+            station.sendto(status, source)
+            forwarded_status, _ = target.recvfrom(8192)
+            self.assertEqual(forwarded_status, status)
+            packet = bridge.encode_message("/DS/HC/Hand", 1, "cg2-fixture", 1, *([0.3] * 20))
+            station.sendto(packet, source)
+            forwarded, _ = target.recvfrom(8192)
+            self.assertEqual(forwarded, packet)
+            # Device selection is pinned after the first valid device; other IDs cannot replace it.
+            station.sendto(bridge.encode_message("/DS/HC/Hand", 1, "another-device", 1, *([0.6] * 20)), source)
+            target.settimeout(0.1)
+            with self.assertRaises(socket.timeout):
+                target.recvfrom(8192)
+            # A real Station sends these default Hand packets even when disconnected.
+            disconnected = bridge.encode_message("/DS/HC/Device", 1, "cg2-fixture", 1, 2, "ContactGlove2", 6, 0.0, 0, 0, 0.0, 0, 0, 0.0)
+            station.sendto(disconnected, source)
+            station.sendto(bridge.encode_message("/DS/HC/Hand", 1, "cg2-fixture", 1, *([0.0] * 20)), source)
+            self.assertEqual(target.recvfrom(8192)[0], disconnected)
+            with self.assertRaises(socket.timeout):
+                target.recvfrom(8192)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+            station.close()
+            target.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

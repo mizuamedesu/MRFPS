@@ -1,0 +1,26 @@
+{
+  "FileVersion": 3,
+  "DisableEnginePluginsByDefault": true,
+  "EngineAssociation": "5.8",
+  "Category": "Games",
+  "Description": "Networked 1v1 mixed reality arena and independent multi-view inspectors.",
+  "Modules": [
+    { "Name": "MRFPS", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "MRFPSEditor", "Type": "Editor", "LoadingPhase": "Default" }
+  ],
+  "Plugins": [
+    { "Name": "XRBase", "Enabled": true },
+    { "Name": "OpenXR", "Enabled": true, "PlatformAllowList": ["Win64", "Android", "Linux"], "TargetDenyList": ["Server"] },
+    { "Name": "OpenXRHandTracking", "Enabled": true, "PlatformAllowList": ["Win64", "Android", "Linux"], "TargetDenyList": ["Server"] },
+    { "Name": "AndroidPermission", "Enabled": true, "PlatformAllowList": ["Android"], "TargetDenyList": ["Server"] },
+    { "Name": "MRFPSXR", "Enabled": true, "TargetDenyList": ["Server"] },
+    { "Name": "ProceduralMeshComponent", "Enabled": true, "TargetDenyList": ["Server"] },
+    { "Name": "MRFPSGloves", "Enabled": true },
+    { "Name": "MRFPSHaptics", "Enabled": true },
+    { "Name": "MoBitsSDK", "Enabled": true },
+    { "Name": "MRFPSAuth", "Enabled": true },
+    { "Name": "MRFPSTransport", "Enabled": true },
+    { "Name": "DTLSHandlerComponent", "Enabled": true },
+    { "Name": "OnlineSubsystemNull", "Enabled": true }
+  ]
+}

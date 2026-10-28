@@ -1,0 +1,40 @@
+#version 450
+
+// Runtime-owned D16 array remains SHADER_READ_ONLY_OPTIMAL throughout this work.
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(set=0, binding=0) uniform sampler2DArray EnvironmentDepth;
+layout(std430, set=0, binding=1) buffer OutputPoints { vec4 Points[]; };
+layout(push_constant) uniform Parameters {
+    vec4 TanFov;       // left, right, up, down
+    vec4 DepthLimits;  // near, far; accepted forward depth min/max (meters)
+    vec4 Orientation;  // returned OpenXR depth-view quaternion xyzw
+    vec4 Position;     // returned OpenXR depth-view position in acquisition space
+    uvec4 Dimensions;  // source width/height, output grid width/height
+} P;
+
+vec3 rotateVector(vec4 q, vec3 v) {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+void main() {
+    uvec2 g=gl_GlobalInvocationID.xy;
+    if (g.x>=P.Dimensions.z || g.y>=P.Dimensions.w) return;
+    uint index=g.y*P.Dimensions.z+g.x;
+    Points[index]=vec4(0.0); // w=0 is invalid; CPU never publishes these vertices.
+    uvec2 pixel=min(((2u*g+uvec2(1))*P.Dimensions.xy)/(2u*P.Dimensions.zw),P.Dimensions.xy-uvec2(1));
+    vec2 uv=(vec2(pixel)+vec2(0.5))/vec2(P.Dimensions.xy);
+    float d=texelFetch(EnvironmentDepth,ivec3(pixel,0),0).r;
+    if (!(d>0.0 && d<1.0)) return;
+    float n=P.DepthLimits.x;
+    float f=P.DepthLimits.y;
+    // OpenXR specifies far<near for infinite projection, not just IEEE infinity.
+    float z=(f<n || isinf(f)) ? n/(1.0-d) : n*f/(f-d*(f-n));
+    if (isnan(z) || isinf(z) || z<P.DepthLimits.z || z>P.DepthLimits.w) return;
+    float x=mix(P.TanFov.x,P.TanFov.y,uv.x)*z;
+    float y=mix(P.TanFov.z,P.TanFov.w,uv.y)*z;
+    // z is forward-plane distance, so do not normalize the pinhole ray.
+    vec3 xr=rotateVector(P.Orientation,vec3(x,y,-z))+P.Position.xyz;
+    vec3 ue=vec3(-xr.z,xr.x,xr.y)*100.0;
+    if (any(isnan(ue)) || any(isinf(ue))) return;
+    Points[index]=vec4(ue,z);
+}

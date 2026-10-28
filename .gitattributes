@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.uasset binary
+*.umap binary
+*.ubulk binary
+*.uexp binary
+*.fbx binary
+*.blend binary
+*.png binary
+*.jpg binary
+*.ttf binary
+*.otf binary

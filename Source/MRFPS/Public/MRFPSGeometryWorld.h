@@ -1,0 +1,38 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Subsystems/WorldSubsystem.h"
+#include "MRFPSGeometryProtocol.h"
+#include "MRFPSGeometryWorld.generated.h"
+
+class AMRFPSPawn;
+class AActor;
+struct FMRFPSGeometryWorldState;
+
+/** Two bounded measured surface snapshots. Server collision is CPU-only;
+ * renderer clients may visualize them without creating any Chaos bodies. */
+UCLASS()
+class MRFPS_API UMRFPSGeometryWorld : public UTickableWorldSubsystem
+{
+    GENERATED_BODY()
+public:
+    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+    virtual void Deinitialize() override;
+    virtual void Tick(float DeltaTime) override;
+    virtual bool IsTickableWhenPaused() const override { return true; }
+    virtual TStatId GetStatId() const override;
+    bool Commit(AMRFPSPawn* Owner,const FMRFPSGeometryChunk& Header,FMRFPSGeometryMesh Mesh);
+    void RemoveOwner(AMRFPSPawn* Owner);
+    void ResetAll();
+    bool Trace(const FVector& Start,const FVector& End,FVector& HitPoint) const;
+    FString GetSafeStatus() const;
+protected:
+    virtual bool DoesSupportWorldType(EWorldType::Type Type) const override;
+private:
+    TSharedPtr<FMRFPSGeometryWorldState> State;
+    UPROPERTY(Transient) TArray<TObjectPtr<AActor>> RenderActors;
+    bool OwnerValid(int32 Slot) const;
+    bool OwnerIdentityValid(int32 Slot) const;
+    void ClearSlot(int32 Slot,bool Retire=true);
+    void UpdateVisual(int32 Slot);
+};

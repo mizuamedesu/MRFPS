@@ -1,0 +1,1283 @@
+#include "MRFPSGame.h"
+#include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Components/BoxComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/TextRenderComponent.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/Canvas.h"
+#include "CanvasItem.h"
+#include "Engine/Engine.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Engine/Texture2D.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/NetConnection.h"
+#include "Engine/NetDriver.h"
+#include "EngineUtils.h"
+#include "GameFramework/FloatingPawnMovement.h"
+#include "GameFramework/PlayerInput.h"
+#include "InputKeyEventArgs.h"
+#include "GameFramework/GameSession.h"
+#include "HeadMountedDisplayFunctionLibrary.h"
+#include "HeadMountedDisplayTypes.h"
+#include "MotionControllerComponent.h"
+#include "VRNotificationsComponent.h"
+#include "MRFPSGloveSubsystem.h"
+#include "MRFPSHapticsComponent.h"
+#include "MRFPSMenu.h"
+#include "MRFPSAdminPanel.h"
+#include "MRFPSVideoReceiver.h"
+#include "MRFPSGeometryWorld.h"
+#include "MRFPSAuthClientSubsystem.h"
+#include "MRFPSTransportModule.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Kismet/GameplayStatics.h"
+#include "Net/UnrealNetwork.h"
+#include "UObject/ConstructorHelpers.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Misc/PackageName.h"
+#include "Misc/NetworkVersion.h"
+#include "Materials/MaterialInterface.h"
+#include "TimerManager.h"
+#if !UE_SERVER
+#include "MRFPSXRModule.h"
+#include "MRFPSViewCaptureSubsystem.h"
+#include "GeometryCaptureSubsystem.h"
+#endif
+
+DEFINE_LOG_CATEGORY_STATIC(LogMRFPS, Log, All);
+static constexpr ECollisionChannel WeaponChannel = ECC_GameTraceChannel1;
+
+namespace MRFPS
+{
+    static void QueryOnly(UPrimitiveComponent* C)
+    {
+        C->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+        C->SetCollisionResponseToAllChannels(ECR_Ignore);
+        C->SetCollisionResponseToChannel(WeaponChannel, ECR_Block);
+        C->SetGenerateOverlapEvents(false);
+    }
+    static void Material(UStaticMeshComponent* C, const TCHAR* Name)
+    {
+        if (C->GetStaticMesh() && C->GetStaticMesh()->GetName().StartsWith(TEXT("SM_MR"))) return;
+        const FString Path = FString::Printf(TEXT("/Game/Materials/M_%s.M_%s"), Name, Name);
+        if (UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, *Path)) C->SetMaterial(0, M);
+    }
+    static UStaticMeshComponent* Mesh(AActor* A, USceneComponent* Parent, const TCHAR* Name, const TCHAR* Asset, FVector Scale, const TCHAR* GeneratedAsset=nullptr)
+    {
+        UStaticMeshComponent* M = A->CreateDefaultSubobject<UStaticMeshComponent>(Name);
+        M->SetupAttachment(Parent);
+        ConstructorHelpers::FObjectFinder<UStaticMesh> Found(Asset);
+        M->SetStaticMesh(Found.Object);
+        if (GeneratedAsset && FPackageName::DoesPackageExist(FString(TEXT("/Game/Meshes/"))+GeneratedAsset)) {
+            const FString Path=FString::Printf(TEXT("/Game/Meshes/%s.%s"),GeneratedAsset,GeneratedAsset);
+            if (auto* Custom=LoadObject<UStaticMesh>(nullptr,*Path)) { M->SetStaticMesh(Custom); Scale=FVector::OneVector; }
+        }
+        M->SetRelativeScale3D(Scale);
+        M->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        M->SetCastShadow(false);
+        return M;
+    }
+    static bool IsInspectorOption(const FString& Options)
+    {
+        return UGameplayStatics::GetIntOption(Options, TEXT("Admin"), 0) == 1 ||
+            UGameplayStatics::GetIntOption(Options, TEXT("Inspector"), 0) == 1 ||
+            UGameplayStatics::GetIntOption(Options, TEXT("SpectatorOnly"), 0) == 1;
+    }
+    static FString RequestedRole(const FString& Options)
+    { return UGameplayStatics::GetIntOption(Options,TEXT("Admin"),0)==1 ? TEXT("admin") : IsInspectorOption(Options)?TEXT("inspector"):TEXT("player"); }
+    static const FMRFPSArenaLayout& Layout(const UWorld* World)
+    {
+        static const FMRFPSArenaLayout Nominal;
+        const auto* GS=World?World->GetGameState<AMRFPSGameState>():nullptr;
+        return GS?GS->Layout:Nominal;
+    }
+    static bool HasDesktopFlag() { return FParse::Param(FCommandLine::Get(), TEXT("MRFPSDesktop")); }
+    static FString LoginToken(const FString& Options)
+    {
+        if (Options.Len()>8192) return FString();
+        TArray<FString> Parts; Options.ParseIntoArray(Parts,TEXT("?"),true);
+        int32 Count=0; FString Token;
+        for (const FString& Part:Parts) if (Part.StartsWith(TEXT("AuthToken="),ESearchCase::IgnoreCase)) { ++Count; Token=Part.Mid(10); }
+        return Count==1 ? Token : FString();
+    }
+}
+
+bool FMRFPSPose::IsSane() const
+{
+    if (Head.ContainsNaN() || Left.ContainsNaN() || Right.ContainsNaN() ||
+        HeadRotation.ContainsNaN() || LeftRotation.ContainsNaN() || RightRotation.ContainsNaN() ||
+        !FMath::IsFinite(LeftOpenness) || LeftOpenness < 0 || LeftOpenness > 1) return false;
+    if (FMath::Abs(Head.X)>MRFPSArenaLimits::MaxCoordinateCm || FMath::Abs(Head.Y)>MRFPSArenaLimits::MaxCoordinateCm || Head.Z < -1000 || Head.Z > 4000) return false;
+    return (!bLeftTracked || FVector::Dist(Head, Left) <= 180) &&
+        (!bRightTracked || FVector::Dist(Head, Right) <= 180);
+}
+bool FMRFPSPose::IsInsideArena(const FMRFPSArenaLayout& Layout) const
+{
+    return bHeadTracked && Layout.ContainsHead(Head);
+}
+void FMRFPSRiseGesture::Reset() { StartTime = LastTime = -1; bLatched = false; }
+bool FMRFPSRiseGesture::Update(float Z, double Time, bool bTracked)
+{
+    if (!bTracked || !FMath::IsFinite(Z) || !FMath::IsFinite(Time)) { Reset(); return false; }
+    if (LastTime < 0 || Time <= LastTime || Time - LastTime > .2) {
+        StartTime = LastTime = Time; StartZ = LastZ = Z; bLatched = false; return false;
+    }
+    const double Dt = Time - LastTime;
+    const float Speed = (Z - LastZ) / Dt;
+    LastTime = Time; LastZ = Z;
+    if (bLatched) {
+        if (Z < StartZ + 15) { bLatched = false; StartTime = Time; StartZ = Z; }
+        return false;
+    }
+    if (Z < StartZ || Time - StartTime > .65) { StartZ = Z; StartTime = Time; }
+    if (Z - StartZ >= 35 && Time - StartTime >= .08 && Speed >= 40) { bLatched = true; return true; }
+    return false;
+}
+
+AMRFPSPlayerState::AMRFPSPlayerState() { bAlwaysRelevant = true; }
+void AMRFPSPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(AMRFPSPlayerState, Slot); DOREPLIFETIME(AMRFPSPlayerState, bInspector);
+    DOREPLIFETIME(AMRFPSPlayerState,bAdmin);
+    DOREPLIFETIME(AMRFPSPlayerState, Kills); DOREPLIFETIME(AMRFPSPlayerState, Deaths);
+    DOREPLIFETIME(AMRFPSPlayerState,bAuthenticated); DOREPLIFETIME(AMRFPSPlayerState,AuthSubject); DOREPLIFETIME(AMRFPSPlayerState,AuthExpiresAt);
+    DOREPLIFETIME(AMRFPSPlayerState,VideoStreamId);
+    DOREPLIFETIME(AMRFPSPlayerState,GeometryStreamId);
+}
+void AMRFPSGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME(AMRFPSGameState, Phase); DOREPLIFETIME(AMRFPSGameState, WinnerSlot);
+    DOREPLIFETIME(AMRFPSGameState, ScoreToWin); DOREPLIFETIME(AMRFPSGameState, RestartAt);
+    DOREPLIFETIME(AMRFPSGameState,Layout); DOREPLIFETIME(AMRFPSGameState,bSharedFloorConfirmed);
+    DOREPLIFETIME(AMRFPSGameState,bCombatPaused); DOREPLIFETIME(AMRFPSGameState,bNominalDesktopSession);
+    DOREPLIFETIME(AMRFPSGameState,ControlRevision); DOREPLIFETIME(AMRFPSGameState,SharedFloorRevision);
+    DOREPLIFETIME(AMRFPSGameState,MeasuredAnchorDistanceCm);
+}
+
+AMRFPSBarrier::AMRFPSBarrier()
+{
+    bReplicates = true; bAlwaysRelevant = true; SetReplicateMovement(true);
+    Collision = CreateDefaultSubobject<UBoxComponent>(TEXT("WallCollision")); SetRootComponent(Collision);
+    Collision->InitBoxExtent(FVector(8,80,100)); MRFPS::QueryOnly(Collision);
+    Visual = MRFPS::Mesh(this, Collision, TEXT("Wall"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(.16,1.6,2),TEXT("SM_MRWall"));
+}
+void AMRFPSBarrier::BeginPlay()
+{
+    Super::BeginPlay(); MRFPS::Material(Visual, TEXT("Wall"));
+    if (HasAuthority() && !bAdminPlaced) SetLifeSpan(6);
+}
+void AMRFPSBarrier::ApplyShot(float Damage)
+{
+    if (!HasAuthority()) return;
+    Health -= Damage;
+    if (Health <= 0) Destroy();
+}
+void AMRFPSBarrier::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps); DOREPLIFETIME(AMRFPSBarrier, Health); DOREPLIFETIME(AMRFPSBarrier, OwnerSlot);
+    DOREPLIFETIME(AMRFPSBarrier,bAdminPlaced);
+}
+AMRFPSArena::AMRFPSArena()
+{
+    bReplicates = true; bAlwaysRelevant = true;
+    SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
+    Floor = MRFPS::Mesh(this, RootComponent, TEXT("ArenaFloor"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(4.5,7,.03));
+    Floor->SetRelativeLocation(FVector(0,0,-2));
+    for (int32 I=0; I<42; ++I) {
+        const FName Name(*FString::Printf(TEXT("Grid%d"), I));
+        UStaticMeshComponent* M = CreateDefaultSubobject<UStaticMeshComponent>(Name);
+        M->SetupAttachment(RootComponent);
+        ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
+        M->SetStaticMesh(Cube.Object); M->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        M->SetCastShadow(false); GridLines.Add(M);
+    }
+    for (int32 Slot=0;Slot<2;++Slot) {
+        const FName Name(*FString::Printf(TEXT("NominalStart%d"),Slot));
+        NominalStartMarkers.Add(MRFPS::Mesh(this,RootComponent,*Name.ToString(),TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),FVector(.4,.4,.01)));
+    }
+    ApplyLayout(FMRFPSArenaLayout());
+}
+void AMRFPSArena::BeginPlay()
+{
+    Super::BeginPlay(); MRFPS::Material(Floor, TEXT("Floor"));
+    TInlineComponentArray<UStaticMeshComponent*> Meshes(this);
+    for (auto* M : Meshes) if (M != Floor) MRFPS::Material(M, TEXT("Blue"));
+    if (NominalStartMarkers.IsValidIndex(1)) MRFPS::Material(NominalStartMarkers[1],TEXT("Orange"));
+    const bool XR = UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled() && !MRFPS::HasDesktopFlag();
+    Floor->SetVisibility(!XR);
+    ApplyLayout(MRFPS::Layout(GetWorld()));
+}
+
+AMRFPSPawn::AMRFPSPawn()
+{
+    PrimaryActorTick.bCanEverTick = true; bReplicates = true; bAlwaysRelevant = true;
+    SetNetUpdateFrequency(30); SetMinNetUpdateFrequency(15);
+    SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
+    XROrigin = CreateDefaultSubobject<USceneComponent>(TEXT("XROrigin")); XROrigin->SetupAttachment(RootComponent);
+    Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("HeadCamera")); Camera->SetupAttachment(XROrigin);
+    Camera->SetRelativeLocation(FVector(0,0,170)); Camera->bLockToHmd = true;
+    LeftController = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("LeftController"));
+    LeftController->SetupAttachment(XROrigin); LeftController->SetTrackingMotionSource(TEXT("Left"));
+    RightController = CreateDefaultSubobject<UMotionControllerComponent>(TEXT("RightController"));
+    RightController->SetupAttachment(XROrigin); RightController->SetTrackingMotionSource(TEXT("RightAim"));
+    HeadHitbox = CreateDefaultSubobject<USphereComponent>(TEXT("HeadHitbox")); HeadHitbox->SetupAttachment(RootComponent);
+    HeadHitbox->InitSphereRadius(13); MRFPS::QueryOnly(HeadHitbox);
+    BodyHitbox = CreateDefaultSubobject<UCapsuleComponent>(TEXT("BodyHitbox")); BodyHitbox->SetupAttachment(RootComponent);
+    BodyHitbox->InitCapsuleSize(22,50); MRFPS::QueryOnly(BodyHitbox);
+    MiniShield = CreateDefaultSubobject<UBoxComponent>(TEXT("MiniShield")); MiniShield->SetupAttachment(RootComponent);
+    MiniShield->InitBoxExtent(FVector(2,22,22)); MRFPS::QueryOnly(MiniShield);
+    HeadVisual = MRFPS::Mesh(this, RootComponent, TEXT("Head"), TEXT("/Engine/BasicShapes/Sphere.Sphere"), FVector(.26),TEXT("SM_MRHead"));
+    BodyVisual = MRFPS::Mesh(this, RootComponent, TEXT("Body"), TEXT("/Engine/BasicShapes/Cylinder.Cylinder"), FVector(.4,.4,.8),TEXT("SM_MRBody"));
+    LeftVisual = MRFPS::Mesh(this, RootComponent, TEXT("LeftHand"), TEXT("/Engine/BasicShapes/Sphere.Sphere"), FVector(.12),TEXT("SM_MRHand"));
+    GunVisual = MRFPS::Mesh(this, RootComponent, TEXT("Gun"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(.32,.065,.09),TEXT("SM_MRPistol"));
+    ShieldVisual = MRFPS::Mesh(this, MiniShield, TEXT("Shield"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(.04,.44,.44),TEXT("SM_MRMiniShield"));
+    HeadVisual->SetOwnerNoSee(true); BodyVisual->SetOwnerNoSee(true);
+    Label = CreateDefaultSubobject<UTextRenderComponent>(TEXT("PlayerInformation")); Label->SetupAttachment(RootComponent);
+    Label->SetHorizontalAlignment(EHTA_Center); Label->SetWorldSize(12); Label->SetOwnerNoSee(true);
+    HeadsetStatus = CreateDefaultSubobject<UTextRenderComponent>(TEXT("HeadsetStatus")); HeadsetStatus->SetupAttachment(Camera);
+    HeadsetStatus->SetRelativeLocation(FVector(100,0,-27)); HeadsetStatus->SetRelativeRotation(FRotator(0,180,0));
+    HeadsetStatus->SetHorizontalAlignment(EHTA_Center); HeadsetStatus->SetWorldSize(2.1);
+    HeadsetStatus->SetOnlyOwnerSee(true);
+    // The normal HUD already carries status. Do not put another text plane
+    // across the owning player's first-person view; remote labels remain.
+    HeadsetStatus->SetVisibility(false);
+    Haptics = CreateDefaultSubobject<UMRFPSHapticsComponent>(TEXT("MoBits"));
+    XRNotifications=CreateDefaultSubobject<UVRNotificationsComponent>(TEXT("XRNotifications"));
+}
+void AMRFPSPawn::BeginPlay()
+{
+    // Smoke/desktop clients must not consume the one official MoBits session.
+    if (MRFPS::HasDesktopFlag() || FParse::Param(FCommandLine::Get(), TEXT("MRFPSSmoke"))) Haptics->bAutoConnectTracking = false;
+    Super::BeginPlay(); MRFPS::Material(ShieldVisual, TEXT("Shield"));
+    XRNotifications->HMDRecenteredDelegate.AddDynamic(this,&AMRFPSPawn::OnXRSpaceChanged);
+    XRNotifications->XRTrackingOriginChangedDelegate.AddDynamic(this,&AMRFPSPawn::OnXRSpaceChanged);
+    XRNotifications->XRPlayAreaChangedDelegate.AddDynamic(this,&AMRFPSPawn::OnXRSpaceChanged);
+    XRNotifications->HMDRemovedFromHeadDelegate.AddDynamic(this,&AMRFPSPawn::InvalidateCalibration);
+    XRNotifications->HMDLostDelegate.AddDynamic(this,&AMRFPSPawn::InvalidateCalibration);
+}
+void AMRFPSPawn::EndPlay(const EEndPlayReason::Type Reason)
+{
+    if (GetWorld()) if (auto* Geometry=GetWorld()->GetSubsystem<UMRFPSGeometryWorld>()) Geometry->RemoveOwner(this);
+    if (IsLocallyControlled() && Haptics) Haptics->StopHaptics();
+    Super::EndPlay(Reason);
+}
+bool AMRFPSPawn::IsXR() const
+{
+    return IsLocallyControlled() && !MRFPS::HasDesktopFlag() && UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled();
+}
+int32 AMRFPSPawn::GetSlot() const
+{
+    const auto* PS = GetPlayerState<AMRFPSPlayerState>(); return PS ? PS->Slot : -1;
+}
+bool AMRFPSPawn::IsPoseFresh() const { return GetWorld()->GetTimeSeconds() - LastPoseReceived <= .3; }
+bool AMRFPSPawn::IsInsideArena() const { return Pose.IsInsideArena(MRFPS::Layout(GetWorld())); }
+bool AMRFPSPawn::GetGeometryCalibration(FTransform& TrackingToArena,double& CalibratedSince) const
+{
+    if (!bLocalReady || !bCalibrated || !IsXR() || !XROrigin ||
+        !MRFPSGeometryWire::CalibrationAcknowledged(GeometryCalibrationFence,GeometryCalibrationGeneration) || !GeometryCalibratedEpoch) return false;
+    TrackingToArena=XROrigin->GetComponentTransform(); CalibratedSince=GeometryCalibratedSince;
+    return !TrackingToArena.ContainsNaN();
+}
+void AMRFPSPawn::InvalidateGeometryCalibration() { InvalidateCalibration(); }
+bool AMRFPSPawn::CanAct() const
+{
+    const auto* GS = GetWorld()->GetGameState<AMRFPSGameState>();
+    const auto* PS = GetPlayerState<AMRFPSPlayerState>();
+    return PS && PS->bAuthenticated && PS->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp() && !PS->bInspector && !PS->bAdmin && PS->Slot>=0 && PS->Slot<2 &&
+        GS && GS->Phase==EMRFPSMatchPhase::Playing && !GS->bCombatPaused &&
+        ((GS->Layout.bCalibrated && GS->bSharedFloorConfirmed && bStageFloorReferenced && GS->SharedFloorRevision &&
+          GS->Layout.RegistrationRevision==GS->SharedFloorRevision) || (GS->bNominalDesktopSession && Pose.bDesktop)) &&
+        bCalibrated && Health>0 && IsInsideArena() && IsPoseFresh();
+}
+void AMRFPSPawn::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    DOREPLIFETIME_CONDITION(AMRFPSPawn, Pose, COND_SkipOwner);
+    DOREPLIFETIME(AMRFPSPawn, Health); DOREPLIFETIME(AMRFPSPawn, ShieldEnergy); DOREPLIFETIME(AMRFPSPawn, bShieldActive);
+    DOREPLIFETIME(AMRFPSPawn, bCalibrated); DOREPLIFETIME(AMRFPSPawn, RespawnAt); DOREPLIFETIME(AMRFPSPawn, WallReadyAt);
+    DOREPLIFETIME(AMRFPSPawn,bStageFloorReferenced);
+    DOREPLIFETIME(AMRFPSPawn, GeometryCalibrationGeneration);
+}
+void AMRFPSPawn::Calibrate()
+{
+    if (!IsLocallyControlled()) return;
+    if (!IsXR() && !MRFPS::HasDesktopFlag()) return;
+    if (IsXR()) {
+#if !UE_SERVER
+        if (!FMRFPSXRModule::IsPassthroughRunning()) return;
+#endif
+        IgnoreOriginChangesUntil=GetWorld()->GetTimeSeconds()+.5;
+        UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(EHMDTrackingOrigin::Stage);
+        FRotator R; FVector P; UHeadMountedDisplayFunctionLibrary::GetOrientationAndPosition(R,P);
+        if (!UHeadMountedDisplayFunctionLibrary::HasValidTrackingPosition()) return;
+        // Stand at the physical arena centre, facing its agreed +X direction.
+        const FQuat Q(FRotator(0,-R.Yaw,0));
+        XROrigin->SetRelativeTransform(FTransform(Q, Q.RotateVector(FVector(-P.X,-P.Y,0))));
+    }
+    if (!MRFPSGeometryWire::AdvanceCalibrationFence(GeometryCalibrationFence,GeometryCalibrationGeneration)) {
+        bLocalReady=false; GeometryCalibratedEpoch=0; ServerCalibrate(false); return;
+    }
+    GeometryCalibratedSince=FPlatformTime::Seconds();
+    GeometryCalibratedEpoch=0;
+#if !UE_SERVER
+    if (IsXR()) if (const auto* Geometry=GetGameInstance()->GetSubsystem<UMRFPSGeometryCaptureSubsystem>())
+        GeometryCalibratedEpoch=Geometry->GetTrackingSpaceEpoch();
+#endif
+    bLocalReady = true;
+    ServerCalibrate(true,IsXR() && UHeadMountedDisplayFunctionLibrary::GetTrackingOrigin()==EHMDTrackingOrigin::Stage);
+    UE_LOG(LogMRFPS, Display, TEXT("MRFPS_CALIBRATED slot=%d xr=%d"), GetSlot(), IsXR());
+}
+void AMRFPSPawn::InvalidateCalibration()
+{
+    if (!IsLocallyControlled() || MRFPS::HasDesktopFlag()) return;
+    (void)MRFPSGeometryWire::AdvanceCalibrationFence(GeometryCalibrationFence,GeometryCalibrationGeneration);
+    bLocalReady=false; GeometryCalibratedEpoch=0; bFiring=false; bFingerTriggerDown=false; ServerCalibrate(false);
+    if (Haptics) Haptics->StopHaptics();
+}
+void AMRFPSPawn::OnXRSpaceChanged()
+{
+    if (GetWorld() && GetWorld()->GetTimeSeconds()>=IgnoreOriginChangesUntil) InvalidateCalibration();
+}
+void AMRFPSPawn::ServerCalibrate_Implementation(bool bReady,bool FloorReferenced)
+{
+    if (auto* Geometry=GetWorld()->GetSubsystem<UMRFPSGeometryWorld>()) Geometry->RemoveOwner(this);
+    // Every reliable request advances the acknowledged epoch, including loss
+    // and requests during a finished match. Otherwise an old ack could unlock
+    // a newer local transform or leave stale physical geometry after recenter.
+    if (GeometryCalibrationGeneration>=MAX_uint32-1) bReady=false;
+    else ++GeometryCalibrationGeneration;
+    bCalibrated = bReady; bStageFloorReferenced=bReady && FloorReferenced;
+    LastPoseReceived=-100; Pose.bHeadTracked=false; ServerRise.Reset(); ForceNetUpdate();
+    if (auto* GM=GetWorld()->GetAuthGameMode<AMRFPSGameMode>()) GM->InvalidateSharedFloor();
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_CALIBRATED server slot=%d ready=%d"),GetSlot(),bReady);
+}
+void AMRFPSPawn::DesktopMove(const FVector& Input, float Dt)
+{
+    if (IsXR() || !IsLocallyControlled()) return;
+    DesktopHead += FRotator(0,DesktopRotation.Yaw,0).RotateVector(FVector(Input.X,Input.Y,0).GetClampedToMaxSize(1))*180*Dt;
+    if (!Input.IsNearlyZero()) DesktopHead=MRFPS::Layout(GetWorld()).ClampPlanar(DesktopHead);
+}
+void AMRFPSPawn::DesktopLook(float Yaw, float Pitch)
+{
+    if (IsXR()) return;
+    DesktopRotation.Yaw += Yaw; DesktopRotation.Pitch = FMath::Clamp(DesktopRotation.Pitch + Pitch,-80.,80.);
+}
+void AMRFPSPawn::SetFiring(bool bPressed)
+{
+    if (!bPressed) bRequireFireRelease=false;
+    bFiring=bPressed && !bRequireFireRelease;
+}
+void AMRFPSPawn::DesktopWall() { if (!IsXR()) ServerDesktopWall(); }
+void AMRFPSPawn::ServerDesktopWall_Implementation()
+{
+    if (Pose.bDesktop) DeployWall();
+}
+void AMRFPSPawn::OnRepPose() { UpdateVisuals(); }
+
+void AMRFPSPawn::SampleLocalPose(float Dt)
+{
+    if (GetSlot()<0) return;
+    if (!bDesktopInitialized) {
+        bDesktopInitialized = true;
+        DesktopHead=MRFPS::Layout(GetWorld()).NominalStart(GetSlot());
+        DesktopRotation=MRFPS::Layout(GetWorld()).StartRotation(GetSlot());
+        Camera->bLockToHmd = IsXR();
+        if (IsXR()) { Camera->SetRelativeLocation(FVector::ZeroVector); UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(EHMDTrackingOrigin::Stage); }
+    }
+    FMRFPSPose Next = Pose;
+    Next.bDesktop = MRFPS::HasDesktopFlag();
+    Camera->bLockToHmd=IsXR();
+    if (IsXR()) Camera->SetRelativeLocation(FVector::ZeroVector);
+    float IndexCurl = 0; bool bGloveTrigger = false;
+    if (IsXR()) {
+        FXRHMDData HMD; UHeadMountedDisplayFunctionLibrary::GetHMDData(this,HMD);
+        Next.bHeadTracked = HMD.bValid && HMD.TrackingStatus == ETrackingStatus::Tracked;
+        FRotator HRot; FVector HPos; UHeadMountedDisplayFunctionLibrary::GetOrientationAndPosition(HRot,HPos);
+        const FTransform T = XROrigin->GetComponentTransform();
+        Next.Head = T.TransformPosition(HPos); Next.HeadRotation = T.TransformRotation(HRot.Quaternion()).Rotator();
+        auto Hand = [&](EControllerHand Side, FVector_NetQuantize10& P, FRotator& R, bool& Tracked) {
+            FXRMotionControllerState M;
+            UHeadMountedDisplayFunctionLibrary::GetMotionControllerState(this,EXRSpaceType::XRTrackingSpace,Side,EXRControllerPoseType::Aim,M);
+            Tracked = M.bValid && M.TrackingStatus == ETrackingStatus::Tracked;
+            if (Tracked) { P=T.TransformPosition(M.ControllerLocation); R=T.TransformRotation(M.ControllerRotation).Rotator(); }
+            FXRHandTrackingState H;
+            UHeadMountedDisplayFunctionLibrary::GetHandTrackingState(this,EXRSpaceType::UnrealWorldSpace,Side,H);
+            if (!Tracked && H.bValid && H.TrackingStatus==ETrackingStatus::Tracked && H.HandKeyLocations.Num()>=26 && H.HandKeyRotations.Num()>=26) {
+                const FTransform EngineToTracking=UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(this).Inverse();
+                Tracked=true; P=T.TransformPosition(EngineToTracking.TransformPosition(H.HandKeyLocations[0]));
+                const FQuat Palm=T.TransformRotation(EngineToTracking.TransformRotation(H.HandKeyRotations[0]));
+                if (Side==EControllerHand::Left) R=FRotationMatrix::MakeFromXZ(-Palm.GetAxisZ(),Palm.GetAxisX()).Rotator();
+                else {
+                    const FVector IndexDirection=T.TransformVectorNoScale(EngineToTracking.TransformVectorNoScale(H.HandKeyLocations[10]-H.HandKeyLocations[7]));
+                    R=FRotationMatrix::MakeFromXZ(IndexDirection,Palm.GetAxisZ()).Rotator();
+                }
+            }
+            if (Side==EControllerHand::Left) Next.LeftOpenness=0;
+            if (H.bValid && H.TrackingStatus==ETrackingStatus::Tracked && H.HandKeyLocations.Num()>=26) {
+                // Flexion from the joint angle, independent of hand size.
+                float Curls[4]; const int32 Bases[] = {6,11,16,21};
+                for (int32 I=0; I<4; ++I) {
+                    const FVector A=(H.HandKeyLocations[Bases[I]+1]-H.HandKeyLocations[Bases[I]]).GetSafeNormal();
+                    const FVector B=(H.HandKeyLocations[Bases[I]+3]-H.HandKeyLocations[Bases[I]+2]).GetSafeNormal();
+                    Curls[I]=FMath::Clamp((1-FVector::DotProduct(A,B))*.7f,0.f,1.f);
+                }
+                if (Side==EControllerHand::Left) Next.LeftOpenness=1-(Curls[0]+Curls[1]+Curls[2]+Curls[3])*.25f;
+            }
+        };
+        Hand(EControllerHand::Left,Next.Left,Next.LeftRotation,Next.bLeftTracked);
+        Hand(EControllerHand::Right,Next.Right,Next.RightRotation,Next.bRightTracked);
+        TrackingDescription = TEXT("XR hands/controllers");
+    } else if (Next.bDesktop) {
+        Next.Head=DesktopHead; Next.HeadRotation=DesktopRotation; Next.bHeadTracked=true;
+        const FQuat Q=DesktopRotation.Quaternion();
+        Next.Left=DesktopHead+Q.RotateVector(FVector(35,-30,-40));
+        Next.Right=DesktopHead+Q.RotateVector(FVector(40,22,-25));
+        Next.LeftRotation=Next.RightRotation=DesktopRotation;
+        Next.bLeftTracked=Next.bRightTracked=true; Next.LeftOpenness=bDesktopShield ? 1.f : 0.f;
+        Camera->SetWorldLocationAndRotation(DesktopHead,DesktopRotation);
+        TrackingDescription=TEXT("Desktop simulation");
+    } else {
+        Next.bHeadTracked=Next.bLeftTracked=Next.bRightTracked=false;
+        Next.LeftOpenness=0;
+        bFiring=bFingerTriggerDown=false;
+        TrackingDescription=TEXT("XR tracking unavailable");
+    }
+    if (IsXR()) if (auto* Gloves=GetGameInstance()->GetSubsystem<UMRFPSGloveSubsystem>()) {
+        for (int32 I=0; I<2; ++I) {
+            FMRFPSGloveHandFrame G;
+            Gloves->GetLatestHand(I==0 ? EMRFPSGloveHand::Left : EMRFPSGloveHand::Right,G);
+            if (G.bControllerValid && bGloveControlsFresh[I]) {
+                if (G.bAButtonPressed && !bPreviousGloveA[I]) {
+                    if (I==0) { bPreviousGloveA[I]=true; Calibrate(); return; }
+                    if (auto* PC=Cast<AMRFPSPlayerController>(Controller)) PC->ArmHaptics();
+                }
+                if (I==1 && G.bBButtonPressed && !bPreviousGloveB[I]) if (auto* PC=Cast<AMRFPSPlayerController>(Controller)) PC->StopHaptics();
+            }
+            bGloveControlsFresh[I]=G.bControllerValid;
+            bPreviousGloveA[I]=G.bAButtonPressed; bPreviousGloveB[I]=G.bBButtonPressed;
+            if (I==0 && G.bFlexValid) Next.LeftOpenness = G.IsOpenPalm() ? 1.f : 0.f;
+            if (I==1) { IndexCurl=G.bFlexValid && G.FingerCurls.IsValidIndex(1) ? G.FingerCurls[1] : 0; bGloveTrigger=G.bControllerValid && G.bTriggerPressed; }
+            if (G.bPoseValid) {
+                const FTransform T=XROrigin->GetComponentTransform();
+                if (I==0) { Next.Left=T.TransformPosition(G.TrackingTransform.GetLocation()); const FQuat Palm=T.TransformRotation(G.TrackingTransform.GetRotation()); Next.LeftRotation=FRotationMatrix::MakeFromXZ(-Palm.GetAxisZ(),Palm.GetAxisX()).Rotator(); Next.bLeftTracked=true; }
+                else { Next.Right=T.TransformPosition(G.TrackingTransform.GetLocation()); Next.RightRotation=T.TransformRotation(G.TrackingTransform.GetRotation()).Rotator(); Next.bRightTracked=true; }
+            }
+            if (G.bFlexValid) TrackingDescription=TEXT("ContactGlove 2 + XR tracking");
+        }
+    }
+    if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) InvalidateCalibration();
+    // A bent right index or vendor trigger fires; hysteresis prevents chatter.
+    if (bRequireFireRelease && !bFiring && !bGloveTrigger && IndexCurl<.35f) bRequireFireRelease=false;
+    if (!bRequireFireRelease && (IndexCurl>.72f || bGloveTrigger)) bFingerTriggerDown=true;
+    if (IndexCurl<.35f && !bGloveTrigger) bFingerTriggerDown=false;
+    Next.Sequence = Pose.Sequence + 1;
+    // Client pose remains responsive; only the server can change combat state.
+    Pose = Next;
+    PoseAccumulator += Dt;
+    if (PoseAccumulator >= 1.f/30.f) { PoseAccumulator=0; ServerPose(Next); }
+    const double Now=GetWorld()->GetTimeSeconds();
+    const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
+    if (!bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || bFingerTriggerDown) && bLocalReady && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
+}
+
+void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
+{
+    const double Now=GetWorld()->GetTimeSeconds();
+    if (!Next.IsSane() || (LastPoseReceived>=0 && int32(Next.Sequence-Pose.Sequence)<=0 && !IsLocallyControlled())) return;
+    if (Next.bDesktop) { const auto* GM=GetWorld()->GetAuthGameMode<AMRFPSGameMode>(); if (!GM || !GM->bAllowDesktop) return; }
+    if (LastPoseReceived>=0 && Now-LastPoseReceived<1./120.) return;
+    if (LastPoseReceived>=0 && Next.bHeadTracked && Pose.bHeadTracked &&
+        FVector::Dist(Next.Head,Pose.Head)>FMath::Max(35.,800.*(Now-LastPoseReceived))) return;
+    Pose=Next; LastPoseReceived=Now;
+    const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
+    if (CombatState && !CombatState->bCombatPaused && ServerRise.Update(Pose.Left.Z,Now,Pose.bLeftTracked && Pose.bHeadTracked && bCalibrated)) DeployWall();
+    UpdateVisuals();
+}
+FVector AMRFPSPawn::Muzzle() const { return Pose.Right + Pose.RightRotation.Vector()*22; }
+void AMRFPSPawn::DeployWall()
+{
+    const double Now=GetWorld()->GetTimeSeconds();
+    if (!HasAuthority() || !CanAct() || !Pose.bLeftTracked || Now<WallReadyAt) return;
+    const FRotator R(0,Pose.HeadRotation.Yaw,0);
+    FVector P=Pose.Left+R.Vector()*85; P.Z=MRFPS::Layout(GetWorld()).Center.Z+100;
+    for (double X:{-8.,8.}) for (double Y:{-80.,80.})
+        if (!MRFPS::Layout(GetWorld()).ContainsPlanar(P+R.RotateVector(FVector(X,Y,0)))) return;
+    FActorSpawnParameters Params; Params.Owner=this; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    if (auto* Wall=GetWorld()->SpawnActor<AMRFPSBarrier>(P,R,Params)) {
+        Wall->OwnerSlot=GetSlot(); WallReadyAt=Now+4;
+        UE_LOG(LogMRFPS,Display,TEXT("MRFPS_WALL slot=%d at=%s"),GetSlot(),*P.ToString());
+    }
+}
+void AMRFPSPawn::ServerFire_Implementation()
+{
+    const double Now=GetWorld()->GetTimeSeconds();
+    if (!CanAct() || !Pose.bRightTracked || Now-LastServerFire<.15) return;
+    LastServerFire=Now; ++AcceptedShots;
+    const FVector Start=Muzzle(); const FVector End=Start+Pose.RightRotation.Vector()*2000;
+    FCollisionQueryParams Params(SCENE_QUERY_STAT(MRFPSShot),false,this);
+    FHitResult Hit; const bool bHit=GetWorld()->LineTraceSingleByChannel(Hit,Start,End,WeaponChannel,Params);
+    FVector GeometryHit; const auto* Geometry=GetWorld()->GetSubsystem<UMRFPSGeometryWorld>();
+    const bool bGeometryHit=Geometry && Geometry->Trace(Start,End,GeometryHit) &&
+        (!bHit || FVector::DistSquared(Start,GeometryHit)<=FVector::DistSquared(Start,Hit.ImpactPoint));
+    if (!bGeometryHit) {
+        if (auto* Target=Cast<AMRFPSPawn>(Hit.GetActor())) {
+            if (Hit.GetComponent()==Target->MiniShield && Target->bShieldActive) {
+                Target->ShieldEnergy=FMath::Max(0.f,Target->ShieldEnergy-22.f); Target->LastShieldUse=Now;
+                UE_LOG(LogMRFPS,Display,TEXT("MRFPS_BLOCK shooter=%d target=%d shield=%.1f"),GetSlot(),Target->GetSlot(),Target->ShieldEnergy);
+            } else Target->ApplyShot(Hit.GetComponent()==Target->HeadHitbox ? 30.f : 20.f,this,Hit.GetComponent()==Target->HeadHitbox);
+        } else if (auto* Wall=Cast<AMRFPSBarrier>(Hit.GetActor())) Wall->ApplyShot(20);
+    }
+    ClientFeedback(0,0); MulticastShot(Start,bGeometryHit ? GeometryHit : bHit ? Hit.ImpactPoint : End,bHit || bGeometryHit);
+    UE_LOG(LogMRFPS,Verbose,TEXT("MRFPS_SHOT slot=%d count=%d"),GetSlot(),AcceptedShots);
+}
+void AMRFPSPawn::ApplyShot(float Damage, AMRFPSPawn* Shooter, bool bHeadshot)
+{
+    if (!HasAuthority() || !CanAct() || !Shooter || !Shooter->CanAct() || Shooter==this || !FMath::IsFinite(Damage) || Damage<=0) return;
+    Health=FMath::Max(0.f,Health-Damage); ClientFeedback(Health<=0 ? 2 : 1,Damage);
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_DAMAGE target=%d shooter=%d health=%.1f headshot=%d"),GetSlot(),Shooter->GetSlot(),Health,bHeadshot);
+    if (Health<=0) {
+        bShieldActive=false; RespawnAt=GetWorld()->GetTimeSeconds()+3;
+        if (auto* GM=GetWorld()->GetAuthGameMode<AMRFPSGameMode>()) GM->OnElimination(this,Shooter);
+    }
+    ForceNetUpdate(); UpdateVisuals();
+}
+
+AMRFPSInspectorPawn::AMRFPSInspectorPawn()
+{
+    bReplicates=true; bOnlyRelevantToOwner=true;
+    auto* Sphere=CreateDefaultSubobject<USphereComponent>(TEXT("Root")); SetRootComponent(Sphere);
+    Sphere->SetCollisionEnabled(ECollisionEnabled::NoCollision); Sphere->InitSphereRadius(10);
+    Camera=CreateDefaultSubobject<UCameraComponent>(TEXT("FreeCamera")); Camera->SetupAttachment(RootComponent);
+    Camera->bUsePawnControlRotation=true; Camera->bLockToHmd=false;
+    Movement=CreateDefaultSubobject<UFloatingPawnMovement>(TEXT("Flight")); Movement->MaxSpeed=650; Movement->Acceleration=1800;
+}
+
+void AMRFPSPlayerController::BeginPlay()
+{
+    Super::BeginPlay();
+    if (IsLocalController()) {
+        bShowMouseCursor=false; SetInputMode(FInputModeGameOnly());
+        if (auto* Receiver=GetGameInstance()->GetSubsystem<UMRFPSVideoReceiver>()) Receiver->ResetAll();
+    }
+#if !PLATFORM_ANDROID
+    FString StartupServer;
+    if (IsLocalController() && GetNetMode()==NM_Standalone && !FParse::Param(FCommandLine::Get(),TEXT("MRFPSSmoke")) &&
+        !FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),StartupServer) && !UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled()) ToggleMenu();
+#endif
+}
+void AMRFPSPlayerController::EndPlay(const EEndPlayReason::Type Reason)
+{
+    if (IsLocalController()) StopGeometryPublisher();
+    Super::EndPlay(Reason);
+}
+void AMRFPSPlayerController::SetupInputComponent()
+{
+    Super::SetupInputComponent();
+    InputComponent->BindAction(TEXT("Fire"),IE_Pressed,this,&AMRFPSPlayerController::FirePressed);
+    InputComponent->BindAction(TEXT("Fire"),IE_Released,this,&AMRFPSPlayerController::FireReleased);
+    InputComponent->BindAction(TEXT("Calibrate"),IE_Pressed,this,&AMRFPSPlayerController::Calibrate);
+    InputComponent->BindAction(TEXT("Wall"),IE_Pressed,this,&AMRFPSPlayerController::WallPressed);
+    InputComponent->BindAction(TEXT("Shield"),IE_Pressed,this,&AMRFPSPlayerController::ShieldPressed);
+    InputComponent->BindAction(TEXT("Shield"),IE_Released,this,&AMRFPSPlayerController::ShieldReleased);
+    InputComponent->BindAction(TEXT("FreeView"),IE_Pressed,this,&AMRFPSPlayerController::FreeView);
+    InputComponent->BindAction(TEXT("NextView"),IE_Pressed,this,&AMRFPSPlayerController::NextView);
+    InputComponent->BindAction(TEXT("MultiView"),IE_Pressed,this,&AMRFPSPlayerController::ToggleMultiView);
+    InputComponent->BindAction(TEXT("ArmHaptics"),IE_Pressed,this,&AMRFPSPlayerController::ArmHaptics);
+    InputComponent->BindAction(TEXT("StopHaptics"),IE_Pressed,this,&AMRFPSPlayerController::StopHaptics);
+    InputComponent->BindAxis(TEXT("Forward"),this,&AMRFPSPlayerController::MoveForward);
+    InputComponent->BindAxis(TEXT("Right"),this,&AMRFPSPlayerController::MoveRight);
+    InputComponent->BindAxis(TEXT("Up"),this,&AMRFPSPlayerController::MoveUp);
+    InputComponent->BindAxis(TEXT("LookX"),this,&AMRFPSPlayerController::LookX);
+    InputComponent->BindAxis(TEXT("LookY"),this,&AMRFPSPlayerController::LookY);
+    InputComponent->BindKey(EKeys::One,IE_Pressed,this,&AMRFPSPlayerController::ViewPlayerOne);
+    InputComponent->BindKey(EKeys::Two,IE_Pressed,this,&AMRFPSPlayerController::ViewPlayerTwo);
+    InputComponent->BindKey(EKeys::F1,IE_Pressed,this,&AMRFPSPlayerController::ToggleMenu);
+    InputComponent->BindKey(EKeys::F2,IE_Pressed,this,&AMRFPSPlayerController::ToggleAdminPanel);
+    InputComponent->BindKey(EKeys::V,IE_Pressed,this,&AMRFPSPlayerController::MRFPSReconstructedViews);
+    InputComponent->BindAction(TEXT("ShareView"),IE_Pressed,this,&AMRFPSPlayerController::MRFPSShareView);
+}
+bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+    // UIOnly menus own their events. Only a click delivered by the viewport
+    // may reacquire inspection controls; a menu click must not do so.
+    if (IsLocalController() && IsInspector() && !(SessionMenu && SessionMenu->IsInViewport()) && !(AdminPanel && AdminPanel->IsInViewport())) {
+        if (Params.Key==EKeys::Escape) {
+            if (Params.Event==IE_Pressed) { StopHaptics(); SetAdminWallPlacement(false); SetInspectorMouseReleased(true); }
+            return true;
+        }
+        if (Params.Key==EKeys::LeftMouseButton) {
+            if (bAdminWallPlacement && IsAdmin()) {
+                if (Params.Event==IE_Pressed || Params.Event==IE_DoubleClick) {
+                    bConsumeAdminPlacementClick=true;
+                    FVector Origin,Direction;
+                    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+                    if (GS && ViewSlot<0 && DeprojectMousePositionToWorld(Origin,Direction))
+                        ServerAdminPlaceWall(Origin,Direction,AdminWallYaw,GS->Layout.Revision,GS->ControlRevision);
+                }
+                if (Params.Event==IE_Released) bConsumeAdminPlacementClick=false;
+                return true;
+            }
+            if (bConsumeAdminPlacementClick) {
+                if (Params.Event==IE_Released) bConsumeAdminPlacementClick=false;
+                return true;
+            }
+            if (bInspectorMouseReleased && (Params.Event==IE_Pressed || Params.Event==IE_DoubleClick)) {
+                bConsumeInspectorCaptureClick=true;
+                SetInspectorMouseReleased(false);
+                return true;
+            }
+            if (bConsumeInspectorCaptureClick) {
+                if (Params.Event==IE_Released) {
+                    bConsumeInspectorCaptureClick=false;
+                    FlushPressedKeys(); RotationInput=FRotator::ZeroRotator;
+                }
+                return true;
+            }
+        }
+        // Drop pointer motion before PlayerInput can queue it, including the
+        // cursor warp caused by capture. Gamepad look is gated in LookX/LookY.
+        if ((bInspectorMouseReleased || bConsumeInspectorCaptureClick) &&
+            (Params.Key==EKeys::MouseX || Params.Key==EKeys::MouseY)) return true;
+    }
+    // Players retain the existing Escape -> StopHaptics action binding.
+    return Super::InputKey(Params);
+}
+void AMRFPSPlayerController::ApplyInspectorMouseMode()
+{
+    if (!IsLocalController() || !IsInspector() || (SessionMenu && SessionMenu->IsInViewport()) || (AdminPanel && AdminPanel->IsInViewport())) return;
+    bShowMouseCursor=bInspectorMouseReleased;
+    if (bInspectorMouseReleased) {
+        FInputModeGameAndUI Mode;
+        Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+        Mode.SetHideCursorDuringCapture(false);
+        SetInputMode(Mode);
+    } else {
+        FInputModeGameOnly Mode; Mode.SetConsumeCaptureMouseDown(true);
+        SetInputMode(Mode);
+    }
+}
+void AMRFPSPlayerController::SetInspectorMouseReleased(bool Released)
+{
+    if (!IsLocalController() || !IsInspector() || (SessionMenu && SessionMenu->IsInViewport()) || (AdminPanel && AdminPanel->IsInViewport())) return;
+    bInspectorMouseReleased=Released;
+    if (Released) bConsumeInspectorCaptureClick=false;
+    MoveAxes=FVector::ZeroVector; RotationInput=FRotator::ZeroRotator;
+    FlushPressedKeys();
+    if (auto* InspectorPawn=GetPawn<AMRFPSInspectorPawn>(); InspectorPawn && InspectorPawn->Movement) {
+        InspectorPawn->Movement->StopMovementImmediately();
+        (void)InspectorPawn->Movement->ConsumeInputVector();
+    }
+    ApplyInspectorMouseMode();
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_INSPECTOR_MOUSE state=%s"),Released?TEXT("released"):TEXT("captured"));
+}
+bool AMRFPSPlayerController::IsInspector() const
+{
+    const auto* PS=GetPlayerState<AMRFPSPlayerState>(); return PS && PS->bInspector;
+}
+TArray<AMRFPSPawn*> AMRFPSPlayerController::GetPlayers() const
+{
+    TArray<AMRFPSPawn*> Players;
+    for (TActorIterator<AMRFPSPawn> It(GetWorld()); It; ++It) if (It->GetSlot()>=0) Players.Add(*It);
+    Players.Sort([](const AMRFPSPawn& A,const AMRFPSPawn& B) { return A.GetSlot()<B.GetSlot(); });
+    Players.Sort([](const AMRFPSPawn& A,const AMRFPSPawn& B) { return A.GetSlot()<B.GetSlot(); });
+    return Players;
+}
+AMRFPSPawn* AMRFPSPlayerController::FindPlayer(int32 Slot) const
+{
+    for (auto* P:GetPlayers()) if (P->GetSlot()==Slot) return P;
+    return nullptr;
+}
+void AMRFPSPlayerController::FreeView()
+{
+    if (!IsInspector()) return;
+    ViewSlot=-1; SetViewTargetWithBlend(GetPawn(),.15);
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_VIEW inspector=free"));
+}
+void AMRFPSPlayerController::MRFPSView(int32 Slot)
+{
+    if (!IsInspector()) return;
+    if (Slot<0 || Slot>1) return;
+    SetAdminWallPlacement(false);
+    ViewSlot=Slot;
+    if (auto* P=FindPlayer(Slot)) SetViewTargetWithBlend(P,.15);
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_VIEW inspector=player slot=%d"),Slot);
+}
+void AMRFPSPlayerController::NextView()
+{
+    if (!IsInspector()) return;
+    MRFPSView((ViewSlot+1)%2);
+}
+void AMRFPSPlayerController::ViewPlayerOne() { MRFPSView(0); }
+void AMRFPSPlayerController::ViewPlayerTwo() { MRFPSView(1); }
+void AMRFPSPlayerController::ToggleMultiView()
+{
+    if (!IsInspector()) return;
+    if (bAdminWallPlacement) { SetAdminWallPlacement(false); return; }
+    bMultiView=!bMultiView;
+}
+void AMRFPSPlayerController::FirePressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetFiring(true); }
+void AMRFPSPlayerController::FireReleased() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetFiring(false); }
+void AMRFPSPlayerController::WallPressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopWall(); }
+void AMRFPSPlayerController::ShieldPressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetDesktopShield(true); }
+void AMRFPSPlayerController::ShieldReleased() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetDesktopShield(false); }
+void AMRFPSPlayerController::Calibrate() { if (auto* P=GetPawn<AMRFPSPawn>()) P->Calibrate(); }
+void AMRFPSPlayerController::MRFPSReady() { Calibrate(); }
+void AMRFPSPlayerController::ArmHaptics()
+{
+    if (auto* P=GetPawn<AMRFPSPawn>(); P && P->Haptics) {
+        FString Error; if (P->Haptics->GetConnectionState()!=EMoBitsConnectionState::Connected) P->Haptics->Connect(Error);
+        P->Haptics->ArmHaptics();
+    }
+}
+void AMRFPSPlayerController::StopHaptics() { if (auto* P=GetPawn<AMRFPSPawn>(); P && P->Haptics) P->Haptics->StopHaptics(); }
+void AMRFPSPlayerController::ToggleMenu()
+{
+    MoveAxes=FVector::ZeroVector; bConsumeInspectorCaptureClick=false;
+    SetAdminWallPlacement(false);
+    if (AdminPanel && AdminPanel->IsInViewport()) AdminPanel->Close();
+    if (SessionMenu && SessionMenu->IsInViewport()) SessionMenu->Close();
+    else SessionMenu=UMRFPSMenu::CreateFor(this);
+}
+void AMRFPSPlayerController::LookX(float V)
+{
+    if (IsLookInputIgnored() || (IsInspector() && (bInspectorMouseReleased || bConsumeInspectorCaptureClick))) return;
+    if (IsInspector() && ViewSlot<0) AddYawInput(V);
+    else if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopLook(V,0);
+}
+void AMRFPSPlayerController::LookY(float V)
+{
+    if (IsLookInputIgnored() || (IsInspector() && (bInspectorMouseReleased || bConsumeInspectorCaptureClick))) return;
+    if (IsInspector() && ViewSlot<0) AddPitchInput(V);
+    // MouseY's -1 axis mapping is already compensated by the controller's
+    // legacy pitch scale. DesktopLook changes FRotator.Pitch directly instead.
+    else if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopLook(0,-V);
+}
+void AMRFPSPlayerController::RefreshCaptures()
+{
+    if (!IsLocalController() || !IsInspector() || !FApp::CanEverRender()) return;
+    if (!bReconstructedViews) {
+        for (const auto& C:Captures) if (C) C->DestroyComponent(); Captures.Reset(); ViewTextures.Reset(); return;
+    }
+    const auto Players=GetPlayers();
+    while (Captures.Num()>Players.Num()) { Captures.Last()->DestroyComponent(); Captures.Pop(); ViewTextures.Pop(); }
+    while (Captures.Num()<Players.Num()) {
+        auto* Texture=NewObject<UTextureRenderTarget2D>(this); Texture->InitAutoFormat(512,288); Texture->ClearColor=FLinearColor::Black;
+        ViewTextures.Add(Texture);
+        auto* C=NewObject<USceneCaptureComponent2D>(this); C->TextureTarget=Texture;
+        C->CaptureSource=ESceneCaptureSource::SCS_FinalColorLDR; C->FOVAngle=90;
+        C->bCaptureEveryFrame=false; C->bCaptureOnMovement=false; C->RegisterComponentWithWorld(GetWorld());
+        C->ShowFlags.SetMotionBlur(false); Captures.Add(C);
+    }
+    for (int32 I=0; I<Captures.Num(); ++I) {
+        Captures[I]->HiddenActors.Reset();
+        Captures[I]->HiddenComponents.Reset();
+        if (!Players.IsValidIndex(I) || !bMultiView) continue;
+        auto* P=Players[I]; Captures[I]->HiddenComponents.Add(P->HeadVisual); Captures[I]->HiddenComponents.Add(P->BodyVisual);
+        Captures[I]->SetWorldLocationAndRotation(P->Pose.Head,P->Pose.HeadRotation); Captures[I]->CaptureScene();
+    }
+}
+void AMRFPSPlayerController::MRFPSConnect(const FString& Address, bool Inspector)
+{ ConnectWithRole(Address,Inspector?TEXT("inspector"):TEXT("player")); }
+void AMRFPSPlayerController::MRFPSConnectAdmin(const FString& Address)
+{ ConnectWithRole(Address,TEXT("admin")); }
+void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FString& RequestedRole)
+{
+    // Address may belong to the executing timer's lambda. Clearing that timer
+    // releases its captures, so own the destination before cancelling it.
+    const FString Destination=Address;
+    const FString ExpectedRole=RequestedRole;
+    GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
+    if (Destination.IsEmpty() || Destination.Len()>255) return;
+    for (const TCHAR C:Destination) if (!FChar::IsAlnum(C) && C!='.' && C!=':' && C!='-' && C!='[' && C!=']') {
+        ConnectionError=TEXT("Enter a hostname or IP address, with optional :port"); return;
+    }
+    auto* Credentials=GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>();
+    if (!Credentials || !Credentials->ValidateForRole(ExpectedRole,ConnectionError)) {
+        if (ConnectionError.IsEmpty()) ConnectionError=TEXT("AUTH_MISSING");
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_CLIENT_REJECT code=%s role=%s"),*ConnectionError,*ExpectedRole); return;
+    }
+    if (!FMRFPSTransportModule::SetClientServerFingerprint(Credentials->GetServerFingerprint(),ConnectionError)) return;
+    const double ActivationDelay = FMRFPSTransportModule::GetClientCertificateActivationDelay();
+    if (ActivationDelay > 0.0) {
+        ConnectionError=TEXT("Connecting...");
+        UE_LOG(LogMRFPS,Display,TEXT("MRFPS_DTLS_CLIENT_WAIT seconds=%.2f"),ActivationDelay);
+        // A new certificate's notBefore must be in the past on both devices.
+        // Wait before opening the connection, then revalidate token/time/role.
+        GetWorldTimerManager().SetTimer(PendingConnectionTimer,FTimerDelegate::CreateWeakLambda(this,[this,Destination,ExpectedRole]() {
+            ConnectWithRole(Destination,ExpectedRole);
+        }),static_cast<float>(ActivationDelay)+0.02f,false);
+        return;
+    }
+    ConnectionError.Empty();
+    const FString RoleOptions=ExpectedRole==TEXT("admin")?TEXT("?Admin=1?Inspector=1"):ExpectedRole==TEXT("inspector")?TEXT("?Inspector=1"):TEXT("");
+    ClientTravel(Destination+RoleOptions+TEXT("?EncryptionToken=")+FMRFPSTransportModule::GetHelloMarker(),TRAVEL_Absolute);
+}
+void AMRFPSPlayerController::PlayerTick(float Dt)
+{
+    Super::PlayerTick(Dt); if (!IsLocalController()) return;
+    if (bAdminWallPlacement && !IsAdmin()) SetAdminWallPlacement(false);
+    TickQuestVideo();
+    TickMeasuredGeometry();
+    const double Now=GetWorld()->GetTimeSeconds();
+    if (IsMoveInputIgnored() || (IsInspector() && bInspectorMouseReleased)) MoveAxes=FVector::ZeroVector;
+    if (IsInspector()) {
+        if ((SessionMenu && SessionMenu->IsInViewport()) || (AdminPanel && AdminPanel->IsInViewport())) bConsumeInspectorCaptureClick=false;
+        // Menus temporarily own UIOnly input. Their close handler restores
+        // GameOnly; restore the inspector's previous release state afterward
+        // without changing the menu's ignore-move/look counter ownership.
+        if (bInspectorMouseReleased) {
+            if (!(SessionMenu && SessionMenu->IsInViewport()) && !(AdminPanel && AdminPanel->IsInViewport()) && !bShowMouseCursor) ApplyInspectorMouseMode();
+            if (auto* InspectorPawn=GetPawn<AMRFPSInspectorPawn>(); InspectorPawn && InspectorPawn->Movement) {
+                InspectorPawn->Movement->StopMovementImmediately();
+                (void)InspectorPawn->Movement->ConsumeInputVector();
+            }
+        }
+        if (!bInspectorMouseReleased && ViewSlot<0 && GetPawn()) {
+            GetPawn()->AddMovementInput(GetControlRotation().Vector(),MoveAxes.X);
+            GetPawn()->AddMovementInput(FRotationMatrix(GetControlRotation()).GetUnitAxis(EAxis::Y),MoveAxes.Y);
+            GetPawn()->AddMovementInput(FVector::UpVector,MoveAxes.Z);
+        }
+        if (bReconstructedViews && ViewSlot>=0 && !FindPlayer(ViewSlot)) FreeView();
+        if (Now-LastCaptureRefresh>=.1) { LastCaptureRefresh=Now; RefreshCaptures(); }
+    } else if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopMove(MoveAxes,Dt);
+    if (FParse::Param(FCommandLine::Get(),TEXT("MRFPSAutoReady"))) {
+        if (auto* P=GetPawn<AMRFPSPawn>(); P && P->GetSlot()>=0 && !P->bCalibrated && Now>.5) P->Calibrate();
+    }
+    if (FParse::Param(FCommandLine::Get(),TEXT("MRFPSSmoke"))) {
+        const auto* SmokeGS=GetWorld()->GetGameState<AMRFPSGameState>();
+        if (SmokeGS && SmokeGS->Phase==EMRFPSMatchPhase::Playing && SmokeCombatStartedAt<0) SmokeCombatStartedAt=Now;
+        const double CombatTime=SmokeCombatStartedAt<0 ? -100 : Now-SmokeCombatStartedAt;
+        if (auto* P=GetPawn<AMRFPSPawn>()) {
+            if (P->GetSlot()==1) {
+                P->SetDesktopShield(CombatTime>=2 && CombatTime<4);
+                if (CombatTime>=4.5 && SmokeStage==0) { SmokeStage=1; P->DesktopWall(); }
+            } else if (P->GetSlot()==0) {
+                if (auto* Other=FindPlayer(1)) {
+                    const FVector Aim=Other->bShieldActive ? Other->MiniShield->GetComponentLocation() : FVector(Other->Pose.Head)+FVector(0,0,-52);
+                    const FRotator Want=(Aim-P->Muzzle()).Rotation();
+                    const FRotator Delta=(Want-P->Pose.RightRotation).GetNormalized(); P->DesktopLook(Delta.Yaw,Delta.Pitch);
+                    P->SetFiring((CombatTime>=2.5 && CombatTime<3.6) || (CombatTime>=5 && CombatTime<9));
+                }
+            }
+        }
+        if (Now>=NextSmokeAction) {
+            NextSmokeAction=Now+1;
+            const auto Players=GetPlayers(); int32 Walls=0; for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) ++Walls;
+            const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+            UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SNAPSHOT players=%d role=%s phase=%d walls=%d p0hp=%.1f p1hp=%.1f kills0=%d"),
+                Players.Num(),IsInspector()?TEXT("inspector"):TEXT("player"),GS?int32(GS->Phase):-1,Walls,
+                FindPlayer(0)?FindPlayer(0)->Health:-1,FindPlayer(1)?FindPlayer(1)->Health:-1,
+                FindPlayer(0)&&FindPlayer(0)->GetPlayerState<AMRFPSPlayerState>()?FindPlayer(0)->GetPlayerState<AMRFPSPlayerState>()->Kills:-1);
+            if (IsInspector() && Players.Num()==2) { if (SmokeStage==0) { MRFPSView(0); SmokeStage=1; } else if (SmokeStage==1) { MRFPSView(1); SmokeStage=2; } else if (SmokeStage==2) { FreeView(); SmokeStage=3; } }
+        }
+    }
+}
+
+void AMRFPSHUD::DrawHUD()
+{
+    Super::DrawHUD(); if (!Canvas) return;
+    auto* PC=Cast<AMRFPSPlayerController>(PlayerOwner); if (!PC) return;
+    auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+    const bool Inspector=PC->IsInspector();
+    const auto DrawVideo=[this](UTexture2D* Texture,float X,float Y,float W,float H) {
+        DrawRect(FLinearColor::Black,X,Y,W,H);
+        if (!Texture || Texture->GetSizeX()<=0 || Texture->GetSizeY()<=0) return;
+        const float Scale=FMath::Min(W/Texture->GetSizeX(),H/Texture->GetSizeY());
+        const float TW=Texture->GetSizeX()*Scale,TH=Texture->GetSizeY()*Scale;
+        DrawTexture(Texture,X+(W-TW)*.5f,Y+(H-TH)*.5f,TW,TH,0,0,1,1,FLinearColor::White,BLEND_Opaque);
+    };
+    if (Inspector && PC->ViewSlot>=0 && !PC->bReconstructedViews) {
+        auto* Video=PC->GetQuestVideoTexture(PC->ViewSlot);
+        DrawVideo(Video,0,0,Canvas->SizeX,Canvas->SizeY);
+        if (!Video) DrawText(PC->GetQuestVideoStatus(PC->ViewSlot),FLinearColor(.7f,.8f,.85f),32,Canvas->SizeY*.45f);
+    }
+    DrawRect(FLinearColor(.008,.016,.03,.9),16,16,620,138);
+    const FString Heading=PC->IsAdmin()?TEXT("MRFPS / ADMIN / F2 CONTROLS"):Inspector?TEXT("MRFPS / INSPECTOR"):
+        FString::Printf(TEXT("MRFPS / ARENA X %.2f x Y %.2f m"),GS?GS->Layout.WidthCm/100:4.5,GS?GS->Layout.LengthCm/100:7.);
+    DrawText(Heading,FLinearColor(.25,.8,1),32,28,nullptr,1.3);
+    FString State=TEXT("Waiting for ready players and ADMIN start");
+    if (GS && GS->Phase==EMRFPSMatchPhase::Playing) State=FString::Printf(TEXT("1 vs 1  |  first to %d eliminations"),GS->ScoreToWin);
+    if (GS && GS->Phase==EMRFPSMatchPhase::Finished) State=FString::Printf(TEXT("P%d wins / ADMIN reset to continue"),GS->WinnerSlot+1);
+    if (GS && GS->bCombatPaused) State=TEXT("COMBAT PAUSED / tracking, video and network live");
+    DrawText(State,FLinearColor::White,32,58);
+    float Y=84;
+    for (auto* P:PC->GetPlayers()) {
+        const auto* PS=P->GetPlayerState<AMRFPSPlayerState>();
+        DrawText(FString::Printf(TEXT("P%d   HP %3.0f   SHIELD %3.0f   %d K / %d D   %s"),P->GetSlot()+1,P->Health,P->ShieldEnergy,
+            PS?PS->Kills:0,PS?PS->Deaths:0,P->bCalibrated?TEXT("READY"):TEXT("ALIGN CENTRE")),
+            P->GetSlot()==0 ? FLinearColor(.2,.7,1) : FLinearColor(1,.5,.1),32,Y); Y+=24;
+    }
+    DrawRect(FLinearColor(.008,.016,.03,.88),16,Canvas->SizeY-66,Canvas->SizeX-32,48);
+    if (Inspector) {
+        if (GS) DrawText(FString::Printf(TEXT("Floor %s / epoch %u%s"),GS->bNominalDesktopSession?TEXT("DESKTOP NOMINAL"):
+            GS->Layout.bCalibrated&&GS->bSharedFloorConfirmed?TEXT("CALIBRATED"):TEXT("UNAVAILABLE"),GS->Layout.Revision,
+            PC->IsAdminWallPlacement()?TEXT(" / CLICK 3D FLOOR TO PLACE WALL / Esc cancels"):TEXT("")),FLinearColor(.6,.8,.95),32,159);
+        if (PC->IsAdmin()) DrawText(PC->AdminStatus,FLinearColor(.8,.9,1),32,182);
+        if (const auto* Geometry=GetWorld()->GetSubsystem<UMRFPSGeometryWorld>())
+            DrawText(Geometry->GetSafeStatus(),FLinearColor(.4,.9,1),650,32);
+        const FString Mode=PC->bReconstructedViews ? TEXT("3D RECONSTRUCTION") : TEXT("PLAYER POV");
+        DrawText(FString::Printf(TEXT("%s | %s | %s | WASD/R/F: fly  1/2: player  Tab: free  M: panels  V: POV/3D"),
+            PC->ViewSlot<0 ? TEXT("FREE CAMERA") : *FString::Printf(TEXT("P%d"),PC->ViewSlot+1),*Mode,
+            PC->IsInspectorMouseReleased()?TEXT("Click viewport to control"):TEXT("Esc: release mouse")),FLinearColor::White,28,Canvas->SizeY-50);
+        if (PC->bMultiView) for (int32 I=0; I<2; ++I) {
+            const float W=FMath::Min(340.f,(Canvas->SizeX-64.f)/2); const float H=W*9/16;
+            const float X=24+I*(W+16); const float Top=Canvas->SizeY-H-100;
+            DrawRect(FLinearColor(.03,.09,.13,.95),X-3,Top-25,W+6,H+28);
+            DrawText(FString::Printf(TEXT("P%d / %s"),I+1,PC->bReconstructedViews ? TEXT("3D RECONSTRUCTION") : TEXT("PLAYER POV")),FLinearColor(.4,.9,1),X+6,Top-22);
+            if (PC->bReconstructedViews) {
+                if (PC->ViewTextures.IsValidIndex(I)) DrawTexture(PC->ViewTextures[I],X,Top,W,H,0,0,1,1,FLinearColor::White,BLEND_Opaque);
+            } else {
+                auto* Video=PC->GetQuestVideoTexture(I); DrawVideo(Video,X,Top,W,H);
+                if (!Video) DrawText(PC->GetQuestVideoStatus(I),FLinearColor(.7f,.8f,.85f),X+10,Top+H*.45f);
+            }
+        }
+    } else {
+        DrawText(TEXT("C/Y: align   X: share/stop player view   Fire: trigger   Left palm: shield   Raise left hand: wall"),FLinearColor::White,28,Canvas->SizeY-52);
+        if (auto* P=PC->GetPawn<AMRFPSPawn>()) {
+            DrawText(P->TrackingDescription+TEXT(" | MoBits: ")+P->Haptics->GetStatus(),FLinearColor(.7,.85,.9),28,Canvas->SizeY-30);
+#if !UE_SERVER
+            if (const auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>())
+                DrawText(Capture->GetSafeStatus(),FLinearColor(.7f,.85f,.9f),28,Canvas->SizeY-86);
+            if (const auto* Geometry=GetGameInstance()->GetSubsystem<UMRFPSGeometryCaptureSubsystem>())
+                DrawText(Geometry->GetSafeStatus(),FLinearColor(.5f,.9f,.9f),28,Canvas->SizeY-104);
+#endif
+            if (!P->bCalibrated) DrawText(TEXT("Stand at physical arena centre, face agreed +X, then calibrate"),FLinearColor(1,.8,.3),32,170,nullptr,1.1);
+        }
+    }
+    if (!PC->ConnectionError.IsEmpty()) DrawText(PC->ConnectionError,FLinearColor(1,.4,.3),32,210);
+}
+
+AMRFPSGameMode::AMRFPSGameMode()
+{
+    PrimaryActorTick.bCanEverTick=true;
+    PlayerControllerClass=AMRFPSPlayerController::StaticClass(); PlayerStateClass=AMRFPSPlayerState::StaticClass();
+    GameStateClass=AMRFPSGameState::StaticClass(); DefaultPawnClass=AMRFPSPawn::StaticClass(); HUDClass=AMRFPSHUD::StaticClass();
+}
+AMRFPSGameMode::~AMRFPSGameMode()=default;
+void AMRFPSGameMode::BeginPlay()
+{
+    Super::BeginPlay();
+    if (GetNetMode()!=NM_Standalone) {
+        AuthVerifier=MakeUnique<FMRFPSAuthVerifier>();
+        FString SafeError,Fingerprint,ConfiguredComponent;
+        GConfig->GetString(TEXT("PacketHandlerComponents"),TEXT("EncryptionComponent"),ConfiguredComponent,GEngineIni);
+        const auto* EncryptionCvar=IConsoleManager::Get().FindConsoleVariable(TEXT("net.AllowEncryption"));
+        const auto* PskCvar=IConsoleManager::Get().FindConsoleVariable(TEXT("DTLS.PreSharedKeys"));
+        const bool TransportConfig=ConfiguredComponent==TEXT("MRFPSTransport") && EncryptionCvar && EncryptionCvar->GetInt()==2 && PskCvar && PskCvar->GetInt()==0;
+        bNetworkAdmissionReady=TransportConfig && AuthVerifier->InitializeFromEnvironment(SafeError) &&
+            FMRFPSTransportModule::EnsureServerCertificate(Fingerprint,SafeError) && AuthVerifier->SetExpectedServerFingerprint(Fingerprint,SafeError);
+        if (!bNetworkAdmissionReady) {
+            UE_LOG(LogMRFPS,Error,TEXT("MRFPS_AUTH_STARTUP_FAILED code=%s"),SafeError.IsEmpty()?TEXT("AUTH_TRANSPORT_CONFIG"):*SafeError);
+            FPlatformMisc::RequestExitWithStatus(true,78); return;
+        }
+        UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_TRANSPORT_READY fingerprint=%s"),*Fingerprint);
+    }
+    bAllowDesktop=!FParse::Param(FCommandLine::Get(),TEXT("MRFPSRequireXR"));
+    if (auto* GS=GetGameState<AMRFPSGameState>()) {
+        GS->ScoreToWin=ScoreToWin; GS->Layout.WidthCm=ArenaWidthCm; GS->Layout.LengthCm=ArenaLengthCm;
+        if (!GS->Layout.IsSane()) { UE_LOG(LogMRFPS,Error,TEXT("MRFPS_LAYOUT_CONFIG_INVALID")); FPlatformMisc::RequestExitWithStatus(true,78); return; }
+    }
+    MaxAdminWalls=FMath::Clamp(MaxAdminWalls,1,32);
+    GetWorld()->SpawnActor<AMRFPSArena>();
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SERVER_READY engine=5.8 widthcm=%.0f lengthcm=%.0f players=2 maxinspectors=%d desktop=%d adminstart=%d"),ArenaWidthCm,ArenaLengthCm,MaxInspectors,bAllowDesktop,bRequireAdminStart);
+}
+int32 AMRFPSGameMode::CountFighters() const
+{
+    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && !PS->bInspector && PS->Slot>=0) ++N; return N;
+}
+int32 AMRFPSGameMode::CountInspectors() const
+{
+    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && PS->bInspector && !PS->bAdmin) ++N; return N;
+}
+int32 AMRFPSGameMode::CountAdmins() const
+{
+    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && PS->bAdmin) ++N; return N;
+}
+void AMRFPSGameMode::PreLogin(const FString& Options,const FString& Address,const FUniqueNetIdRepl& ID,FString& Error)
+{
+    const FString ExpectedRole=MRFPS::RequestedRole(Options);
+    FMRFPSAuthClaims Claims;
+    if (!bNetworkAdmissionReady || !AuthVerifier || !AuthVerifier->VerifyOnly(MRFPS::LoginToken(Options),ExpectedRole,Claims,Error)) {
+        if (Error.IsEmpty()) Error=TEXT("AUTH_CONFIG");
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_REJECT code=%s role=%s"),*Error,*ExpectedRole); return;
+    }
+    const FString BaseOptions=Options.Replace(TEXT("?SpectatorOnly=1"),TEXT("?Inspector=1"),ESearchCase::IgnoreCase);
+    Super::PreLogin(BaseOptions,Address,ID,Error); if (!Error.IsEmpty()) return;
+    if (ExpectedRole==TEXT("admin")) { if (CountAdmins()>=MaxAdmins) Error=TEXT("ADMIN_FULL"); }
+    else if (MRFPS::IsInspectorOption(Options)) { if (CountInspectors()>=MaxInspectors) Error=TEXT("INSPECTOR_FULL"); }
+    else if (CountFighters()>=2) Error=TEXT("ARENA_FULL: join with ?Inspector=1 to observe");
+    if (!Error.IsEmpty()) return;
+    if (PendingAuthentication.Num()>=128) { Error=TEXT("AUTH_CAPACITY"); return; }
+    if (!AuthVerifier->VerifyAndReserve(MRFPS::LoginToken(Options),ExpectedRole,Claims,Error)) {
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_REJECT code=%s role=%s"),*Error,*ExpectedRole); return;
+    }
+    PendingAuthentication.Add(Claims.TokenId,Claims);
+    PendingAuthenticationDeadlines.Add(Claims.TokenId,GetWorld()->GetTimeSeconds()+30);
+}
+APlayerController* AMRFPSGameMode::Login(UPlayer* NewPlayer,ENetRole InRemoteRole,const FString& Portal,const FString& Options,const FUniqueNetIdRepl& ID,FString& Error)
+{
+    if (GetNetMode()!=NM_Standalone) {
+        const auto* Connection=Cast<UNetConnection>(NewPlayer);
+        if (!bNetworkAdmissionReady || !Connection || !Connection->IsEncryptionEnabled()) {
+            Error=TEXT("AUTH_TRANSPORT_REQUIRED"); UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_REJECT code=AUTH_TRANSPORT_REQUIRED")); return nullptr;
+        }
+    }
+    return Super::Login(NewPlayer,InRemoteRole,Portal,Options,ID,Error);
+}
+FString AMRFPSGameMode::InitNewPlayer(APlayerController* PC,const FUniqueNetIdRepl& ID,const FString& Options,const FString& Portal)
+{
+    FMRFPSAuthClaims Claims;
+    const bool Online=GetNetMode()!=NM_Standalone;
+    if (Online) {
+        FString Error;
+        if (!bNetworkAdmissionReady || !AuthVerifier || !AuthVerifier->VerifyOnly(MRFPS::LoginToken(Options),MRFPS::RequestedRole(Options),Claims,Error)) return Error.IsEmpty()?TEXT("AUTH_CONFIG"):Error;
+        const auto* Pending=PendingAuthentication.Find(Claims.TokenId);
+        if (!Pending || Pending->Subject!=Claims.Subject || Pending->Role!=Claims.Role || Pending->ExpiresAt!=Claims.ExpiresAt) return TEXT("AUTH_RESERVATION_MISSING");
+        PendingAuthentication.Remove(Claims.TokenId); PendingAuthenticationDeadlines.Remove(Claims.TokenId);
+    }
+    const FString BaseOptions=Options.Replace(TEXT("?SpectatorOnly=1"),TEXT("?Inspector=1"),ESearchCase::IgnoreCase);
+    FString Error=Super::InitNewPlayer(PC,ID,BaseOptions,Portal); if (!Error.IsEmpty()) return Error;
+    auto* PS=PC->GetPlayerState<AMRFPSPlayerState>(); if (!PS) return TEXT("PLAYER_STATE_UNAVAILABLE");
+    PS->bAuthenticated=Online;
+    PS->AuthSubject=Online?Claims.Subject:TEXT("local-preview"); PS->AuthExpiresAt=Online?Claims.ExpiresAt:0;
+    if (Online) { PS->SetPlayerName(Claims.Subject); UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_ACCEPT role=%s subject=%s expires=%lld"),*Claims.Role,*Claims.Subject,Claims.ExpiresAt); }
+    PS->bAdmin=Online && Claims.Role==TEXT("admin");
+    PS->bInspector=Online ? Claims.Role!=TEXT("player") : MRFPS::IsInspectorOption(Options);
+    // Inspector is our own pawn role; let UE possess its free camera normally.
+    PS->SetIsOnlyASpectator(false); PS->SetIsSpectator(false);
+    if (PS->bInspector) {
+        if (PS->bAdmin && CountAdmins()>MaxAdmins) return TEXT("ADMIN_FULL");
+        if (!PS->bAdmin && CountInspectors()>MaxInspectors) return TEXT("INSPECTOR_FULL");
+        PS->Slot=-1;
+    }
+    else {
+        bool Occupied[2]={false,false};
+        for (APlayerState* Base:GameState->PlayerArray) if (const auto* Other=Cast<AMRFPSPlayerState>(Base); Other && Other!=PS && !Other->bInspector && Other->Slot>=0 && Other->Slot<2) Occupied[Other->Slot]=true;
+        PS->Slot=!Occupied[0] ? 0 : !Occupied[1] ? 1 : -1;
+        if (PS->Slot<0) return TEXT("ARENA_FULL");
+    }
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_JOIN role=%s slot=%d name=%s"),PS->bAdmin?TEXT("admin"):PS->bInspector?TEXT("inspector"):TEXT("player"),PS->Slot,*PS->GetPlayerName());
+    return FString();
+}
+void AMRFPSGameMode::RestartPlayer(AController* NewPlayer)
+{
+    if (!NewPlayer || NewPlayer->GetPawn()) return;
+    auto* PS=NewPlayer->GetPlayerState<AMRFPSPlayerState>(); if (!PS) return;
+    const bool Inspector=PS->bInspector;
+    const FVector Pos=Inspector ? FVector(-850,-750,650) : FVector::ZeroVector;
+    const FRotator Rot=Inspector ? FRotator(-30,42,0) : FRotator::ZeroRotator;
+    FActorSpawnParameters P; P.Owner=NewPlayer; P.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    APawn* Pawn=GetWorld()->SpawnActor<APawn>(Inspector ? AMRFPSInspectorPawn::StaticClass() : AMRFPSPawn::StaticClass(),Pos,Rot,P);
+    if (!Pawn) return;
+    NewPlayer->Possess(Pawn);
+    if (auto* PC=Cast<APlayerController>(NewPlayer)) { PC->SetControlRotation(Rot); PC->ClientSetRotation(Rot,true); PC->ClientRestart(Pawn); }
+}
+void AMRFPSGameMode::Logout(AController* Exiting)
+{
+    if (Exiting && Exiting->GetPawn()) Exiting->GetPawn()->Destroy();
+    Super::Logout(Exiting);
+    if (!RegisteredAnchorsValid()) InvalidateSharedFloor();
+    if (auto* GS=GetGameState<AMRFPSGameState>(); GS && CountFighters()<2) GS->Phase=EMRFPSMatchPhase::Waiting;
+}
+void AMRFPSGameMode::OnElimination(AMRFPSPawn* Victim,AMRFPSPawn* Killer)
+{
+    auto* VPS=Victim->GetPlayerState<AMRFPSPlayerState>(); auto* KPS=Killer->GetPlayerState<AMRFPSPlayerState>();
+    if (VPS) ++VPS->Deaths;
+    if (KPS) ++KPS->Kills;
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_ELIMINATION winner=%d victim=%d kills=%d"),Killer->GetSlot(),Victim->GetSlot(),KPS?KPS->Kills:-1);
+    if (KPS && KPS->Kills>=ScoreToWin) if (auto* GS=GetGameState<AMRFPSGameState>()) {
+        GS->Phase=EMRFPSMatchPhase::Finished; GS->WinnerSlot=KPS->Slot; GS->RestartAt=GetWorld()->GetTimeSeconds()+8;
+        UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH winner=%d"),KPS->Slot);
+    }
+}
+void AMRFPSGameMode::ResetMatch()
+{
+    SetCombatPaused(false);
+    for (APlayerState* Base:GameState->PlayerArray) if (auto* PS=Cast<AMRFPSPlayerState>(Base)) { PS->Kills=0; PS->Deaths=0; }
+    for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) It->Respawn();
+    for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) It->Destroy();
+    if (auto* GS=GetGameState<AMRFPSGameState>()) { GS->Phase=EMRFPSMatchPhase::Playing; GS->WinnerSlot=-1; GS->RestartAt=0; }
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH playing"));
+}
+void AMRFPSGameMode::Tick(float Dt)
+{
+    Super::Tick(Dt);
+    for (FConstPlayerControllerIterator It=GetWorld()->GetPlayerControllerIterator();It;++It)
+        if (auto* PC=Cast<AMRFPSPlayerController>(It->Get())) { PC->ServiceVideoRelay(); PC->ServiceGeometryRelay(); }
+    const double Now=GetWorld()->GetTimeSeconds();
+    if (Now>=NextAuthenticationCheck) {
+        NextAuthenticationCheck=Now+.5;
+        for (auto It=PendingAuthenticationDeadlines.CreateIterator();It;++It) if (Now>=It.Value()) { PendingAuthentication.Remove(It.Key()); It.RemoveCurrent(); }
+        TArray<APlayerController*> Expired;
+        const int64 Utc=FDateTime::UtcNow().ToUnixTimestamp();
+        for (FConstPlayerControllerIterator It=GetWorld()->GetPlayerControllerIterator();It;++It) if (auto* PC=It->Get()) {
+            if (auto* PS=PC->GetPlayerState<AMRFPSPlayerState>(); PS && PS->bAuthenticated && Utc>=PS->AuthExpiresAt) { PS->bAuthenticated=false; PS->ForceNetUpdate(); Expired.Add(PC); }
+        }
+        for (auto* PC:Expired) if (GameSession) { UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_SESSION_EXPIRED")); GameSession->KickPlayer(PC,FText::FromString(TEXT("AUTH_EXPIRED"))); }
+    }
+    auto* GS=GetGameState<AMRFPSGameState>(); if (!GS) return;
+    if (GS->bSharedFloorConfirmed && !RegisteredAnchorsValid()) InvalidateSharedFloor();
+    // Administrator control never pauses network, tracking, video, geometry,
+    // or authentication checks above. Only match progression waits here.
+    if (bRequireAdminStart || GS->bCombatPaused) return;
+    int32 Ready=0; bool Nominal=true;
+    for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) if (const auto* PS=It->GetPlayerState<AMRFPSPlayerState>(); PS && PS->bAuthenticated && It->GetSlot()>=0 && It->bCalibrated && It->IsInsideArena() && It->IsPoseFresh()) { ++Ready; Nominal=Nominal&&It->Pose.bDesktop; }
+    if (!Nominal && !(GS->bSharedFloorConfirmed && GS->Layout.bCalibrated)) return;
+    if (Ready==2) GS->bNominalDesktopSession=Nominal;
+    if (GS->Phase==EMRFPSMatchPhase::Waiting && Ready==2 && CountFighters()==2) ResetMatch();
+    if (GS->Phase==EMRFPSMatchPhase::Finished && GetWorld()->GetTimeSeconds()>=GS->RestartAt) {
+        if (Ready==2 && CountFighters()==2) ResetMatch(); else GS->Phase=EMRFPSMatchPhase::Waiting;
+    }
+}
+
+void UMRFPSGameInstance::Init()
+{
+    FNetworkVersion::SetGameNetworkProtocolVersion(4);
+    Super::Init(); if (GEngine) GEngine->OnNetworkFailure().AddUObject(this,&UMRFPSGameInstance::NetworkFailure);
+}
+void UMRFPSGameInstance::OnStart()
+{
+    Super::OnStart(); FString Address;
+    if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),Address)) {
+        const bool Inspector=FParse::Param(FCommandLine::Get(),TEXT("MRFPSInspector"));
+        const bool Admin=FParse::Param(FCommandLine::Get(),TEXT("MRFPSAdmin"));
+        FTimerHandle Handle; GetWorld()->GetTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this,Address,Inspector,Admin]() {
+            if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) {
+                if (Admin) PC->MRFPSConnectAdmin(Address); else PC->MRFPSConnect(Address,Inspector);
+            }
+        }),.2f,false);
+    }
+}
+void UMRFPSGameInstance::NetworkFailure(UWorld* World,UNetDriver* Driver,ENetworkFailure::Type Type,const FString& Error)
+{
+    if (auto* Receiver=GetSubsystem<UMRFPSVideoReceiver>()) Receiver->ResetAll();
+#if !UE_SERVER
+    if (auto* Capture=GetSubsystem<UMRFPSViewCaptureSubsystem>()) Capture->StopCapture();
+    if (auto* Geometry=GetSubsystem<UMRFPSGeometryCaptureSubsystem>()) Geometry->StopCapture();
+#endif
+    UE_LOG(LogMRFPS,Error,TEXT("MRFPS_NETWORK_FAILURE %s"),*Error);
+    if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) PC->ConnectionError=Error;
+}
+void UMRFPSGameInstance::ReceivedNetworkEncryptionToken(const FString& Token,const FOnEncryptionKeyResponse& Delegate)
+{
+    FMRFPSTransportModule::HandleServerEncryptionToken(Token,Delegate);
+}
+void UMRFPSGameInstance::ReceivedNetworkEncryptionAck(const FOnEncryptionKeyResponse& Delegate)
+{
+    FString Error;
+    auto* Credentials=GetSubsystem<UMRFPSAuthClientSubsystem>();
+    if (Credentials && Credentials->HasAccessToken()) FMRFPSTransportModule::SetClientServerFingerprint(Credentials->GetServerFingerprint(),Error);
+    else FMRFPSTransportModule::ClearClientServerFingerprint();
+    FMRFPSTransportModule::HandleClientEncryptionAck(Delegate);
+}
+EEncryptionFailureAction UMRFPSGameInstance::ReceivedNetworkEncryptionFailure(UNetConnection* Connection)
+{
+    UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_REJECT code=AUTH_ENCRYPTION_REQUIRED"));
+    return EEncryptionFailureAction::RejectConnection;
+}
+void AMRFPSPawn::Respawn()
+{
+    if (!HasAuthority()) return;
+    if (Pose.bDesktop) {
+        const auto& ArenaLayout=MRFPS::Layout(GetWorld());
+        ClientNominalDesktopStart(ArenaLayout.NominalStart(GetSlot()),ArenaLayout.StartRotation(GetSlot()));
+    }
+    Health=100; ShieldEnergy=100; bShieldExhausted=false; RespawnAt=0; ClientFeedback(3,0); ForceNetUpdate();
+}
+void AMRFPSPawn::ClientFeedback_Implementation(uint8 Kind, float Damage)
+{
+    if (!IsLocallyControlled() || !Haptics) return;
+    if (Kind==0) Haptics->NotifyShotFired();
+    else if (Kind==3) Haptics->NotifyRespawn();
+    else Haptics->NotifyDamage(Damage,Kind==2);
+}
+void AMRFPSPawn::MulticastShot_Implementation(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit)
+{
+    if (GetNetMode()==NM_DedicatedServer) return;
+    AActor* A=GetWorld()->SpawnActor<AActor>();
+    auto* C=NewObject<UStaticMeshComponent>(A); A->SetRootComponent(C); A->AddInstanceComponent(C);
+    C->SetStaticMesh(LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Cylinder.Cylinder")));
+    C->SetCollisionEnabled(ECollisionEnabled::NoCollision); C->RegisterComponent(); MRFPS::Material(C,TEXT("Tracer"));
+    const FVector Delta=FVector(End)-FVector(Start);
+    A->SetActorLocation((FVector(Start)+FVector(End))*.5);
+    A->SetActorRotation(FRotationMatrix::MakeFromZ(Delta).Rotator());
+    A->SetActorScale3D(FVector(.012,.012,Delta.Size()/100)); A->SetLifeSpan(.065);
+}
+void AMRFPSPawn::UpdateVisuals()
+{
+    if (GetSlot()>=0 && VisualTeam!=GetSlot()) {
+        VisualTeam=GetSlot();
+        const FString TeamPath=VisualTeam==0 ? TEXT("/Game/Materials/M_Blue.M_Blue") : TEXT("/Game/Materials/M_Orange.M_Orange");
+        if (auto* Team=LoadObject<UMaterialInterface>(nullptr,*TeamPath)) for (auto* C:{HeadVisual.Get(),BodyVisual.Get(),LeftVisual.Get(),GunVisual.Get()}) {
+            if (C->GetStaticMesh() && C->GetStaticMesh()->GetName().StartsWith(TEXT("SM_MR"))) {
+                const auto& Slots=C->GetStaticMesh()->GetStaticMaterials();
+                for (int32 I=0;I<Slots.Num();++I) if (Slots[I].MaterialSlotName.ToString().Contains(TEXT("Blue")) || Slots[I].MaterialSlotName.ToString().Contains(TEXT("Orange"))) C->SetMaterial(I,Team);
+            } else C->SetMaterial(0,Team);
+        }
+    }
+    HeadHitbox->SetWorldLocation(Pose.Head);
+    BodyHitbox->SetWorldLocation(FVector(Pose.Head)+FVector(0,0,-58));
+    MiniShield->SetWorldLocationAndRotation(FVector(Pose.Left)+Pose.LeftRotation.Vector()*13,Pose.LeftRotation);
+    const bool Alive=Health>0;
+    const bool Targetable=Alive && IsInsideArena() && (!HasAuthority() || IsPoseFresh());
+    HeadHitbox->SetCollisionEnabled(Targetable ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+    BodyHitbox->SetCollisionEnabled(Targetable ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+    MiniShield->SetCollisionEnabled(Targetable && bShieldActive ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
+    HeadVisual->SetWorldLocationAndRotation(Pose.Head,Pose.HeadRotation);
+    BodyVisual->SetWorldLocation(FVector(Pose.Head)+FVector(0,0,-58));
+    const FQuat LeftQ=Pose.LeftRotation.Quaternion();
+    if (LeftVisual->GetStaticMesh() && LeftVisual->GetStaticMesh()->GetName()==TEXT("SM_MRHand")) {
+        LeftVisual->SetWorldLocationAndRotation(FVector(Pose.Left)-LeftQ.GetAxisZ()*8,FRotationMatrix::MakeFromXZ(LeftQ.GetAxisZ(),-LeftQ.GetAxisX()).Rotator());
+    } else LeftVisual->SetWorldLocation(Pose.Left);
+    const bool CustomGun=GunVisual->GetStaticMesh() && GunVisual->GetStaticMesh()->GetName()==TEXT("SM_MRPistol");
+    GunVisual->SetWorldLocationAndRotation(FVector(Pose.Right)+Pose.RightRotation.Vector()*(CustomGun ? 0 : 8),Pose.RightRotation);
+    HeadVisual->SetVisibility(Alive && Pose.bHeadTracked); BodyVisual->SetVisibility(Alive && Pose.bHeadTracked);
+    LeftVisual->SetVisibility(Alive && Pose.bLeftTracked); GunVisual->SetVisibility(Alive && Pose.bRightTracked);
+    ShieldVisual->SetVisibility(Alive && bShieldActive);
+    Label->SetWorldLocation(FVector(Pose.Head)+FVector(0,0,35));
+    const auto* PS=GetPlayerState<AMRFPSPlayerState>();
+    Label->SetText(FText::FromString(FString::Printf(TEXT("P%d | HP %.0f | shield %.0f\n%d K / %d D | %s"),GetSlot()+1,Health,ShieldEnergy,
+        PS ? PS->Kills : 0, PS ? PS->Deaths : 0,bCalibrated ? TEXT("READY") : TEXT("ALIGN CENTRE"))));
+}
+void AMRFPSPawn::Tick(float Dt)
+{
+    Super::Tick(Dt);
+    if (IsLocallyControlled()) SampleLocalPose(Dt);
+    const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
+    if (HasAuthority() && (!CombatState || !CombatState->bCombatPaused)) {
+        const double Now=GetWorld()->GetTimeSeconds();
+        if (Pose.LeftOpenness<.5 || !Pose.bLeftTracked) bShieldExhausted=false;
+        if (ShieldEnergy<=0) bShieldExhausted=true;
+        bShieldActive=CanAct() && Pose.bLeftTracked && Pose.LeftOpenness>.8 && !bShieldExhausted && ShieldEnergy>0;
+        if (bShieldActive) { ShieldEnergy=FMath::Max(0.f,ShieldEnergy-18*Dt); LastShieldUse=Now; }
+        else if (Now-LastShieldUse>1.0) ShieldEnergy=FMath::Min(100.f,ShieldEnergy+14*Dt);
+        if (Health<=0 && Now>=RespawnAt) if (auto* GS=GetWorld()->GetGameState<AMRFPSGameState>(); GS && GS->Phase==EMRFPSMatchPhase::Playing) Respawn();
+    }
+    UpdateVisuals();
+    if (APlayerController* PC=GetWorld()->GetFirstPlayerController(); PC && PC->PlayerCameraManager) {
+        Label->SetWorldRotation((PC->PlayerCameraManager->GetCameraLocation()-Label->GetComponentLocation()).Rotation());
+    }
+    if (!IsLocallyControlled()) { Camera->bLockToHmd=false; Camera->SetWorldLocationAndRotation(Pose.Head,Pose.HeadRotation); }
+    else {
+        FString MR=TEXT("Desktop");
+#if !UE_SERVER
+        if (IsXR()) MR=FMRFPSXRModule::IsPassthroughRunning() ? TEXT("MR passthrough active") : TEXT("PASSTHROUGH UNAVAILABLE");
+#endif
+        const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+        const FString State=!Pose.bHeadTracked ? TEXT("TRACKING LOST - combat disabled") :
+            !bLocalReady ? TEXT("Stand at arena centre, face +X, press left Y / glove A") :
+            !IsInsideArena() ? TEXT("OUT OF ARENA - return inside boundary") :
+            GS && GS->bCombatPaused ? TEXT("COMBAT PAUSED - tracking/video remain live") :
+            GS && GS->Phase==EMRFPSMatchPhase::Waiting ? TEXT("Waiting for ADMIN start") :
+            Health<=0 ? TEXT("Eliminated - respawning") : TEXT("Left palm: shield | raise left hand: wall");
+        HeadsetStatus->SetText(FText::FromString(FString::Printf(TEXT("%s | P%d | HP %.0f | shield %.0f\n%s\n%s\nA: arm calibrated MoBits | B: STOP"),
+            *MR,GetSlot()+1,Health,ShieldEnergy,*State,*TrackingDescription)));
+    }
+}
