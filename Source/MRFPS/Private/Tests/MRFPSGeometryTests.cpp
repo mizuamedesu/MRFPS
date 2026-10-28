@@ -300,4 +300,26 @@ bool FMRFPSGeometryLifetimeTest::RunTest(const FString& Parameters)
     ADD_LATENT_AUTOMATION_COMMAND(MRFPSGeometryTests::FLifetimeScenario(this));
     return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSAvatarGroundTest,"MRFPS.Geometry.AvatarGroundPreservesAuthority",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSAvatarGroundTest::RunTest(const FString& Parameters)
+{
+    MRFPSGeometryTests::FLifetimeWorld F;
+    if(!TestTrue(TEXT("A real client-mode world without sockets"),F.Create(true))) return false;
+    auto H=MRFPSGeometryTests::Header(1);H.StreamId=1;H.Calibration=1;
+    H.CaptureMs=uint32(F.World->GetTimeSeconds()*1000);
+    FMRFPSGeometryMesh Mesh;Mesh.Vertices={FVector(-20,-20,15),FVector(20,-20,15),FVector(20,20,15),FVector(-20,20,15)};
+    Mesh.Indices={0,1,2,0,2,3};TArray<uint8> Bytes;
+    if(!TestTrue(TEXT("A measured horizontal platform is encoded and committed"),Mesh.Encode(H,Bytes)&&F.Geometry->Commit(F.Owner,H,MoveTemp(Mesh)))) return false;
+    float Ground=-100;FVector Hit;
+    TestTrue(TEXT("Client avatar can read a validated measured platform"),F.Geometry->SampleAvatarGround(FVector(0,0,15),Ground));
+    TestEqual(TEXT("Foot support uses the actual measured surface height"),Ground,15.f);
+    TestFalse(TEXT("Visual ground queries do not unlock client combat trace"),F.Geometry->Trace(FVector(0,0,50),FVector(0,0,-20),Hit));
+    ++F.Owner->GeometryCalibrationGeneration;
+    TestFalse(TEXT("An old calibration cannot hold a foot up between ticks"),F.Geometry->SampleAvatarGround(FVector(0,0,15),Ground));
+    --F.Owner->GeometryCalibrationGeneration;
+    F.Player->AuthExpiresAt=FDateTime::UtcNow().ToUnixTimestamp()-1;
+    TestFalse(TEXT("Expired ownership immediately removes visual support"),F.Geometry->SampleAvatarGround(FVector(0,0,15),Ground));
+    return true;
+}
 #endif

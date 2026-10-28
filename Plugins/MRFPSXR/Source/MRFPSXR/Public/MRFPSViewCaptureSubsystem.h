@@ -48,7 +48,7 @@ private:
     double NextDebugPollAt = 0.0;
     bool bDebugSource = false;
 
-#if PLATFORM_WINDOWS || PLATFORM_MAC && !UE_SERVER
+#if (PLATFORM_WINDOWS || PLATFORM_MAC) && !UE_SERVER
     void OnDesktopViewportRendered(FViewport* DrawnViewport);
     void ClearDesktopFrame();
     bool IsDesktopFrameFresh() const;

@@ -127,7 +127,17 @@ void UMRFPSGeometryWorld::Tick(float DeltaTime)
 }
 bool UMRFPSGeometryWorld::Trace(const FVector& Start,const FVector& End,FVector& HitPoint) const
 {
-    if (!State || GetWorld()->GetNetMode()==NM_Client) return false;
+    return GetWorld()->GetNetMode()!=NM_Client && TraceMeasuredSurface(Start,End,HitPoint);
+}
+bool UMRFPSGeometryWorld::SampleAvatarGround(const FVector& Probe,float& GroundZ) const
+{
+    FVector Hit;
+    if(Probe.ContainsNaN() || !TraceMeasuredSurface(Probe+FVector(0,0,70),Probe-FVector(0,0,70),Hit)) return false;
+    GroundZ=Hit.Z;return true;
+}
+bool UMRFPSGeometryWorld::TraceMeasuredSurface(const FVector& Start,const FVector& End,FVector& HitPoint) const
+{
+    if(!State || Start.ContainsNaN() || End.ContainsNaN()) return false;
     bool Found=false; double Best=1; const double Now=FPlatformTime::Seconds();
     for (int32 Slot=0;Slot<2;++Slot) {
         const auto& S=State->Slots[Slot]; if (!S.bActive || Now>=S.ExpiresAt || !OwnerValid(Slot)) continue;

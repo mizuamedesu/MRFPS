@@ -2,6 +2,8 @@
 #include "FileHelpers.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionConstant.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
 #include "HAL/FileManager.h"
@@ -13,6 +15,7 @@
 #include "Factories/FbxImportUI.h"
 #include "Factories/FbxStaticMeshImportData.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/PrimaryAssetLabel.h"
 
 static bool ImportBlenderAssets()
 {
@@ -93,6 +96,19 @@ int32 UMRFPSSetupCommandlet::Main(const FString& Params)
         IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
         if (!UPackage::SavePackage(Package, Material, *Filename, Args)) return 1;
     }
+    if (!FPackageName::DoesPackageExist(TEXT("/Game/Materials/M_Preview"))) {
+        const FString PackageName=TEXT("/Game/Materials/M_Preview");
+        auto* Package=CreatePackage(*PackageName);
+        auto* Material=NewObject<UMaterial>(Package,TEXT("M_Preview"),RF_Public|RF_Standalone);
+        Material->SetShadingModel(MSM_Unlit);Material->BlendMode=BLEND_Translucent;Material->TwoSided=true;
+        auto* Tint=NewObject<UMaterialExpressionVectorParameter>(Material);Tint->ParameterName=TEXT("Tint");Tint->DefaultValue=FLinearColor(.05,1,.55);
+        auto* Opacity=NewObject<UMaterialExpressionConstant>(Material);Opacity->R=.3f;
+        Material->GetExpressionCollection().AddExpression(Tint);Material->GetExpressionCollection().AddExpression(Opacity);
+        Material->GetEditorOnlyData()->EmissiveColor.Expression=Tint;Material->GetEditorOnlyData()->Opacity.Expression=Opacity;
+        Material->PostEditChange();FSavePackageArgs Args;Args.TopLevelFlags=RF_Public|RF_Standalone;
+        const FString Filename=FPackageName::LongPackageNameToFilename(PackageName,FPackageName::GetAssetPackageExtension());
+        if(!UPackage::SavePackage(Package,Material,*Filename,Args)) return 4;
+    }
     if (!FPackageName::DoesPackageExist(TEXT("/Game/Maps/MRFPSArena"))) {
         IFileManager::Get().MakeDirectory(*(FPaths::ProjectContentDir()/TEXT("Maps")),true);
         UWorld* World = UEditorLoadingAndSavingUtils::NewBlankMap(false);
@@ -100,6 +116,23 @@ int32 UMRFPSSetupCommandlet::Main(const FString& Params)
         if (!World || !UEditorLoadingAndSavingUtils::SaveMap(World, TEXT("/Game/Maps/MRFPSArena"))) return 2;
     }
     if (!ImportBlenderAssets()) return 3;
+    // These paths are loaded by the native avatar at runtime. Explicit labels
+    // cook their dependencies without cooking unused template Blueprints/rigs.
+    const FString AvatarPackage=TEXT("/Game/RuntimeAssets/Manny");
+    if(!FPackageName::DoesPackageExist(AvatarPackage)) {
+        auto* Package=CreatePackage(*AvatarPackage);
+        auto* Label=NewObject<UPrimaryAssetLabel>(Package,TEXT("Manny"),RF_Public|RF_Standalone);
+        Label->bIsRuntimeLabel=true;Label->bLabelAssetsInMyDirectory=false;
+        Label->Rules.CookRule=EPrimaryAssetCookRule::AlwaysCook;Label->Rules.bApplyRecursively=true;
+        for(const TCHAR* Path:{TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple"),
+            TEXT("/Game/Characters/Mannequins/Anims/Unarmed/BS_Idle_Walk_Run.BS_Idle_Walk_Run"),
+            TEXT("/Game/Characters/Mannequins/Anims/Unarmed/MM_Idle.MM_Idle")}) Label->ExplicitAssets.Add(TSoftObjectPtr<UObject>(FSoftObjectPath(Path)));
+        Label->UpdateAssetBundleData();Label->PostEditChange();
+        const FString Filename=FPackageName::LongPackageNameToFilename(AvatarPackage,FPackageName::GetAssetPackageExtension());
+        IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename),true);
+        FSavePackageArgs Args;Args.TopLevelFlags=RF_Public|RF_Standalone;
+        if(!UPackage::SavePackage(Package,Label,*Filename,Args)) return 5;
+    }
     UE_LOG(LogTemp, Display, TEXT("MRFPS_SETUP_PASS materials and arena map ready"));
     return 0;
 }

@@ -1,6 +1,8 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_SERVER
 #include "MRFPSGame.h"
 #include "MRFPSHapticsComponent.h"
+#include "Components/BoxComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -120,7 +122,7 @@ bool FMRFPSAdminAuthorityTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Authorized floor click creates a real replicated barrier"),F.Mode->PlaceAdminWall(F.Admin,FVector(0,0,500),FVector(0,0,-1),0,Error));
     TestEqual(TEXT("One stage click produces one wall"),F.Walls(),1);
     for (TActorIterator<AMRFPSBarrier> It(F.World);It;++It) TestTrue(TEXT("Admin wall is persistent, replicated and has no fake fighter owner"),It->bAdminPlaced && It->GetIsReplicated() && It->OwnerSlot==-1 && It->GetLifeSpan()==0);
-    TestFalse(TEXT("All wall corners must fit the configured width"),F.Mode->PlaceAdminWall(F.Admin,FVector(224,0,500),FVector(0,0,-1),0,Error));
+    TestFalse(TEXT("All snapped wall corners must fit the configured width"),F.Mode->PlaceAdminWall(F.Admin,FVector(274,0,500),FVector(0,0,-1),0,Error));
     TestFalse(TEXT("Nonfinite placement is refused"),F.Mode->PlaceAdminWall(F.Admin,FVector(std::numeric_limits<double>::quiet_NaN(),0,500),FVector(0,0,-1),0,Error));
     F.Mode->MaxAdminWalls=1;
     TestFalse(TEXT("Authoritative wall cap bounds actor allocation"),F.Mode->PlaceAdminWall(F.Admin,FVector(100,0,500),FVector(0,0,-1),0,Error));
@@ -143,6 +145,41 @@ bool FMRFPSAdminAuthorityTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Unavailable calibration retains last floor transform"),F.State->Layout.Center==Frozen.Center && F.State->Layout.YawDegrees==Frozen.YawDegrees);
     F.Admin->GetPlayerState<AMRFPSPlayerState>()->AuthExpiresAt=FDateTime::UtcNow().ToUnixTimestamp()-1;
     TestFalse(TEXT("Expired admin cannot mutate state between authentication ticks"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Reset,FVector2D::ZeroVector,Error));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSBuildingTest,"MRFPS.Admin.BuildGridKindsAndRemoval",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSBuildingTest::RunTest(const FString& Parameters)
+{
+    FMRFPSArenaLayout Layout;Layout.Center=FVector(300,-200,20);Layout.YawDegrees=35;
+    FTransform Snapped;
+    TestTrue(TEXT("Grid coordinates are floor local even after rotated calibration"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Crate,Layout.ToWorld(FVector(71,-119,0)),89,Snapped));
+    TestTrue(TEXT("Fifty centimetre grid does not alter the configured floor"),Layout.ToLocal(Snapped.GetLocation()).Equals(FVector(50,-100,50),.01));
+    TestTrue(TEXT("Rotation snaps to floor-relative quarter turns"),FMath::IsNearlyEqual(Snapped.Rotator().Yaw,125.,.01));
+    TestFalse(TEXT("Invalid object kind cannot allocate a preview or server actor"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind(255),Layout.Center,0,Snapped));
+    TestFalse(TEXT("NaN yaw is rejected"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Wall,Layout.Center,std::numeric_limits<float>::quiet_NaN(),Snapped));
+    TestFalse(TEXT("High stacks are bounded"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Crate,Layout.ToWorld(FVector(0,0,600)),0,Snapped));
+    FAdminWorld F;if(!TestTrue(TEXT("Isolated authority world"),F.Create())) return false;
+    FString Error;
+    for(int32 Kind=0;Kind<4;++Kind) {
+        const FVector Origin(-150+Kind*100,0,1000);
+        TestFalse(TEXT("Observers cannot place any kind"),F.Mode->PlaceAdminObject(F.Observer,EMRFPSBuildKind(Kind),Origin,FVector(0,0,-1),0,Error));
+        TestTrue(TEXT("Admin can place each kind"),F.Mode->PlaceAdminObject(F.Admin,EMRFPSBuildKind(Kind),Origin,FVector(0,0,-1),0,Error));
+    }
+    TestEqual(TEXT("Four server actors are replicated"),F.Walls(),4);
+    AMRFPSBarrier* Stairs=nullptr;
+    for(TActorIterator<AMRFPSBarrier> It(F.World);It;++It) {
+        TestTrue(TEXT("All build objects have their actual kind replicated"),It->GetIsReplicated()&&It->bAdminPlaced);
+        if(It->BuildKind==EMRFPSBuildKind::Stairs) Stairs=*It;
+    }
+    if(TestNotNull(TEXT("Stair actor"),Stairs)) {
+        TestEqual(TEXT("Stair body is not an invisible solid box"),Stairs->Collision->GetCollisionEnabled(),ECollisionEnabled::NoCollision);
+        for(const auto& Step:Stairs->BuildSteps) TestTrue(TEXT("Each visible stair step has real bullet collision"),Step&&Step->IsVisible()&&Step->GetCollisionResponseToChannel(ECC_GameTraceChannel1)==ECR_Block);
+    }
+    TestFalse(TEXT("Observers cannot delete an object"),F.Mode->RemoveAdminObject(F.Observer,FVector(-150,0,1000),FVector(0,0,-1),Error));
+    TestTrue(TEXT("Admin ray deletes the selected object"),F.Mode->RemoveAdminObject(F.Admin,FVector(-150,0,1000),FVector(0,0,-1),Error));
+    TestEqual(TEXT("Deletion leaves the other kinds intact"),F.Walls(),3);
     return true;
 }
 namespace

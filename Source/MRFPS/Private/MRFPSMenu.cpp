@@ -24,6 +24,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "String/LexFromString.h"
 #include "Styling/CoreStyle.h"
+#include "Misc/Paths.h"
 
 namespace MRFPSMenu
 {
@@ -38,7 +39,7 @@ UTextBlock* Text(UWidgetTree* Tree, const FString& Value, int32 Size, FLinearCol
 {
     auto* Widget = Tree->ConstructWidget<UTextBlock>();
     Widget->SetText(FText::FromString(Value));
-    Widget->SetFont(FCoreStyle::GetDefaultFontStyle(bBold ? TEXT("Bold") : TEXT("Regular"), Size));
+    Widget->SetFont(FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size));
     Widget->SetColorAndOpacity(FSlateColor(Color));
     return Widget;
 }
@@ -118,8 +119,8 @@ void UMRFPSMenu::NativeOnInitialized()
     BackdropSlot->SetOffsets(FMargin(0));
 
     auto* Width = WidgetTree->ConstructWidget<USizeBox>();
-    Width->SetWidthOverride(600);
-    Width->SetHeightOverride(660);
+    Width->SetWidthOverride(560);
+    Width->SetHeightOverride(610);
     auto* PanelSlot = Canvas->AddChildToCanvas(Width);
     PanelSlot->SetAnchors(FAnchors(.5f, .5f));
     PanelSlot->SetAlignment(FVector2D(.5, .5));
@@ -132,16 +133,15 @@ void UMRFPSMenu::NativeOnInitialized()
     auto* Scroll=WidgetTree->ConstructWidget<UScrollBox>();
     Panel->SetContent(Scroll); Scroll->AddChild(Body);
 
-    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("MR ARENA / FIXED CONFIGURED FLOOR / 1 V 1"), 10, Highlight, true));
+    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("アリーナ"), 10, Highlight, true));
     Space(WidgetTree, Body, 4);
     auto* Header = WidgetTree->ConstructWidget<UHorizontalBox>();
     Body->AddChildToVerticalBox(Header);
     Header->AddChildToHorizontalBox(Text(WidgetTree, TEXT("MRFPS"), 34, White, true))->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-    auto* CloseButton = Button(WidgetTree, TEXT("CloseMenu"), TEXT("CLOSE / F1"), Secondary, 10);
+    auto* CloseButton = Button(WidgetTree, TEXT("CloseMenu"), TEXT("閉じる"), Secondary, 10);
     auto* CloseSlot = Header->AddChildToHorizontalBox(CloseButton);
     CloseSlot->SetVerticalAlignment(VAlign_Center);
     CloseButton->OnClicked.AddDynamic(this, &UMRFPSMenu::Close);
-    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("Shared-space combat. Independent observation."), 12, Muted));
     Space(WidgetTree, Body, 17);
 
     auto* StatusPanel = WidgetTree->ConstructWidget<UBorder>();
@@ -149,19 +149,19 @@ void UMRFPSMenu::NativeOnInitialized()
     StatusPanel->SetPadding(FMargin(13, 10));
     auto* StatusBody = WidgetTree->ConstructWidget<UVerticalBox>();
     StatusPanel->SetContent(StatusBody);
-    RoleText = Text(WidgetTree, TEXT("LOCAL PREVIEW"), 13, White, true);
-    MatchText = Text(WidgetTree, TEXT("Waiting for a session"), 11, Muted);
+    RoleText = Text(WidgetTree, TEXT("プレビュー"), 13, White, true);
+    MatchText = Text(WidgetTree, TEXT("接続待ち"), 11, Muted);
     MatchText->SetAutoWrapText(true);
     StatusBody->AddChildToVerticalBox(RoleText);
     StatusBody->AddChildToVerticalBox(MatchText)->SetPadding(FMargin(0, 4, 0, 0));
     Body->AddChildToVerticalBox(StatusPanel);
     Space(WidgetTree, Body, 16);
 
-    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("SERVER"), 10, Muted, true));
+    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("接続先"), 10, Muted, true));
     Space(WidgetTree, Body, 6);
     ServerBox = WidgetTree->ConstructWidget<UEditableTextBox>(UEditableTextBox::StaticClass(), TEXT("ServerAddress"));
     FEditableTextBoxStyle Field = FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
-    Field.SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 15));
+    Field.SetFont(FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),15));
     Field.SetPadding(FMargin(12, 10));
     Field.SetForegroundColor(FSlateColor(White));
     Field.SetBackgroundImageNormal(FSlateRoundedBoxBrush(FLinearColor(.012f, .024f, .044f, 1.f), 6.f,
@@ -169,7 +169,7 @@ void UMRFPSMenu::NativeOnInitialized()
     Field.SetBackgroundImageHovered(FSlateRoundedBoxBrush(FLinearColor(.016f, .032f, .057f, 1.f), 6.f, Highlight, 1.f));
     Field.SetBackgroundImageFocused(FSlateRoundedBoxBrush(FLinearColor(.016f, .032f, .057f, 1.f), 6.f, Highlight, 1.f));
     ServerBox->SetWidgetStyle(Field);
-    ServerBox->SetHintText(FText::FromString(TEXT("hostname or IP:port")));
+    ServerBox->SetHintText(FText::FromString(TEXT("サーバー名:ポート")));
     ServerBox->SetSelectAllTextWhenFocused(true);
     FString Address = TEXT("127.0.0.1:7777");
     if (GConfig) GConfig->GetString(TEXT("MRFPS.Connection"), TEXT("Server"), Address, GGameUserSettingsIni);
@@ -179,15 +179,15 @@ void UMRFPSMenu::NativeOnInitialized()
     Space(WidgetTree,Body,8);
     AccessTokenBox=WidgetTree->ConstructWidget<UEditableTextBox>(UEditableTextBox::StaticClass(),TEXT("AccessToken"));
     AccessTokenBox->SetWidgetStyle(Field); AccessTokenBox->SetIsPassword(true);
-    AccessTokenBox->SetHintText(FText::FromString(TEXT("Paste access token, or use the provisioned token file")));
+    AccessTokenBox->SetHintText(FText::FromString(TEXT("接続用トークン")));
     Body->AddChildToVerticalBox(AccessTokenBox);
-    AuthenticationText=Text(WidgetTree,TEXT("Signed player / inspector / admin credential required"),10,Muted);
+    AuthenticationText=Text(WidgetTree,TEXT("認証情報を確認中"),10,Muted);
     AuthenticationText->SetAutoWrapText(true); Body->AddChildToVerticalBox(AuthenticationText);
     Space(WidgetTree, Body, 9);
     auto* JoinRow = WidgetTree->ConstructWidget<UHorizontalBox>();
-    auto* PlayerJoin = Button(WidgetTree, TEXT("JoinPlayer"), TEXT("Join player"), Blue);
-    auto* InspectorJoin = Button(WidgetTree, TEXT("JoinInspector"), TEXT("Join inspector"), Secondary);
-    auto* AdminJoin = Button(WidgetTree, TEXT("JoinAdmin"), TEXT("Join admin"), Secondary);
+    auto* PlayerJoin = Button(WidgetTree, TEXT("JoinPlayer"), TEXT("プレイ"), Blue);
+    auto* InspectorJoin = Button(WidgetTree, TEXT("JoinInspector"), TEXT("観戦"), Secondary);
+    auto* AdminJoin = Button(WidgetTree, TEXT("JoinAdmin"), TEXT("管理"), Secondary);
     PlayerJoin->OnClicked.AddDynamic(this, &UMRFPSMenu::JoinPlayer);
     InspectorJoin->OnClicked.AddDynamic(this, &UMRFPSMenu::JoinInspector);
     AdminJoin->OnClicked.AddDynamic(this, &UMRFPSMenu::JoinAdmin);
@@ -197,26 +197,26 @@ void UMRFPSMenu::NativeOnInitialized()
     Body->AddChildToVerticalBox(JoinRow);
 
     Divider(WidgetTree, Body);
-    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("PLAYER SETUP"), 10, Muted, true));
+    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("プレイヤー"), 10, Muted, true));
     Space(WidgetTree, Body, 7);
-    AlignButton = Button(WidgetTree, TEXT("AlignArena"), TEXT("Align arena centre"), Secondary);
+    AlignButton = Button(WidgetTree, TEXT("AlignArena"), TEXT("原点登録"), Secondary);
     AlignButton->OnClicked.AddDynamic(this, &UMRFPSMenu::Align);
     Body->AddChildToVerticalBox(AlignButton);
-    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("Stand at the centre and face the agreed forward direction."), 10, Muted))->SetPadding(FMargin(0, 5, 0, 0));
+    AlignButton->SetToolTipText(FText::FromString(TEXT("共有原点に立ち、決めた正面を向いて登録します")));
     Space(WidgetTree, Body, 12);
     auto* HapticsRow = WidgetTree->ConstructWidget<UHorizontalBox>();
-    ConnectButton = Button(WidgetTree, TEXT("ConnectMoBits"), TEXT("Connect MoBits"), Secondary, 12);
-    ArmButton = Button(WidgetTree, TEXT("ArmMoBits"), TEXT("ARM"), Blue, 12);
-    StopButton = Button(WidgetTree, TEXT("StopMoBits"), TEXT("STOP"), FLinearColor(.31f, .040f, .065f, 1.f), 12);
+    ConnectButton = Button(WidgetTree, TEXT("ConnectMoBits"), TEXT("MoBits接続"), Secondary, 12);
+    ArmButton = Button(WidgetTree, TEXT("ArmMoBits"), TEXT("有効化"), Blue, 12);
+    StopButton = Button(WidgetTree, TEXT("StopMoBits"), TEXT("停止"), FLinearColor(.31f, .040f, .065f, 1.f), 12);
     ConnectButton->OnClicked.AddDynamic(this, &UMRFPSMenu::ConnectHaptics);
     ArmButton->OnClicked.AddDynamic(this, &UMRFPSMenu::ArmHaptics);
     StopButton->OnClicked.AddDynamic(this, &UMRFPSMenu::StopHaptics);
-    ArmButton->SetToolTipText(FText::FromString(TEXT("Arm only after your calibrated MoBits presets are ready.")));
+    ArmButton->SetToolTipText(FText::FromString(TEXT("装着・調整済みのMoBitsを有効にします。")));
     RowButton(HapticsRow, ConnectButton);
     RowButton(HapticsRow, ArmButton);
     RowButton(HapticsRow, StopButton, true);
     Body->AddChildToVerticalBox(HapticsRow);
-    HapticsText = Text(WidgetTree, TEXT("MoBits: disconnected"), 10, Muted);
+    HapticsText = Text(WidgetTree, TEXT("MoBits 未接続"), 10, Muted);
     HapticsText->SetAutoWrapText(true);
     auto* HapticsHeight = WidgetTree->ConstructWidget<USizeBox>();
     HapticsHeight->SetMinDesiredHeight(30);
@@ -224,12 +224,12 @@ void UMRFPSMenu::NativeOnInitialized()
     Body->AddChildToVerticalBox(HapticsHeight)->SetPadding(FMargin(0, 6, 0, 0));
 
     Space(WidgetTree, Body, 8);
-    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("INSPECTOR CAMERA"), 10, Muted, true));
+    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("視点"), 10, Muted, true));
     Space(WidgetTree, Body, 7);
     auto* Cameras = WidgetTree->ConstructWidget<UHorizontalBox>();
-    PlayerOneButton = Button(WidgetTree, TEXT("ViewPlayerOne"), TEXT("Quest P1"), Secondary, 12);
-    PlayerTwoButton = Button(WidgetTree, TEXT("ViewPlayerTwo"), TEXT("Quest P2"), Secondary, 12);
-    FreeButton = Button(WidgetTree, TEXT("ViewFree"), TEXT("Free view"), Secondary, 12);
+    PlayerOneButton = Button(WidgetTree, TEXT("ViewPlayerOne"), TEXT("P1の映像"), Secondary, 12);
+    PlayerTwoButton = Button(WidgetTree, TEXT("ViewPlayerTwo"), TEXT("P2の映像"), Secondary, 12);
+    FreeButton = Button(WidgetTree, TEXT("ViewFree"), TEXT("自由視点"), Secondary, 12);
     PlayerOneButton->OnClicked.AddDynamic(this, &UMRFPSMenu::ViewPlayerOne);
     PlayerTwoButton->OnClicked.AddDynamic(this, &UMRFPSMenu::ViewPlayerTwo);
     FreeButton->OnClicked.AddDynamic(this, &UMRFPSMenu::ViewFree);
@@ -242,7 +242,7 @@ void UMRFPSMenu::NativeOnInitialized()
     ErrorText->SetAutoWrapText(true);
     Body->AddChildToVerticalBox(ErrorText)->SetPadding(FMargin(0, 9, 0, 0));
     Space(WidgetTree, Body, 11);
-    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("F1 menu    C align    H arm    Esc stop    Tab free view"), 10, Muted));
+    Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("F1 メニュー   Esc 解除・停止"), 10, Muted));
 }
 
 void UMRFPSMenu::NativeConstruct()
@@ -324,14 +324,14 @@ bool UMRFPSMenu::ReadAddress(FString& Address, FString& Error) const
     Address = ServerBox ? ServerBox->GetText().ToString().TrimStartAndEnd() : FString();
     if (Address.IsEmpty() || Address.Len() > 255)
     {
-        Error = TEXT("Enter a server hostname or IP address, with optional :port.");
+        Error = TEXT("接続先を入力してください");
         return false;
     }
     for (const TCHAR C : Address)
     {
         if (!FChar::IsAlnum(C) && C != '.' && C != ':' && C != '-' && C != '[' && C != ']')
         {
-            Error = TEXT("Use a hostname or IP address without a URL prefix or spaces.");
+            Error = TEXT("接続先に空白やURLは使えません");
             return false;
         }
     }
@@ -342,7 +342,7 @@ bool UMRFPSMenu::ReadAddress(FString& Address, FString& Error) const
         int32 CloseBracket;
         if (!Address.FindChar(']', CloseBracket) || CloseBracket < 2)
         {
-            Error = TEXT("Use [IPv6 address]:port for an IPv6 server.");
+            Error = TEXT("IPv6は [アドレス]:ポート で入力してください");
             return false;
         }
         Host = Address.Mid(1, CloseBracket - 1);
@@ -351,11 +351,11 @@ bool UMRFPSMenu::ReadAddress(FString& Address, FString& Error) const
         {
             if (!Tail.StartsWith(TEXT(":")))
             {
-                Error = TEXT("Enter a valid server port after the IPv6 address.");
+                Error = TEXT("ポート番号を確認してください");
                 return false;
             }
             Port = Tail.Mid(1);
-            if (Port.IsEmpty()) { Error = TEXT("Enter a server port after the colon."); return false; }
+            if (Port.IsEmpty()) { Error = TEXT("ポート番号を入力してください"); return false; }
         }
     }
     else
@@ -365,16 +365,16 @@ bool UMRFPSMenu::ReadAddress(FString& Address, FString& Error) const
         {
             Host = Address.Left(Colon);
             Port = Address.Mid(Colon + 1);
-            if (Port.IsEmpty()) { Error = TEXT("Enter a server port after the colon."); return false; }
+            if (Port.IsEmpty()) { Error = TEXT("ポート番号を入力してください"); return false; }
         }
     }
-    if (Host.IsEmpty()) { Error = TEXT("Enter a server hostname or IP address."); return false; }
+    if (Host.IsEmpty()) { Error = TEXT("接続先を入力してください"); return false; }
     if (!Port.IsEmpty())
     {
         int32 Number = 0;
         if (!Port.IsNumeric() || !LexTryParseString(Number, *Port) || Number < 1 || Number > 65535)
         {
-            Error = TEXT("The server port must be a number from 1 to 65535.");
+            Error = TEXT("ポートは1〜65535で指定してください");
             return false;
         }
     }
@@ -439,41 +439,31 @@ void UMRFPSMenu::AddressChanged(const FText& Value)
 
 void UMRFPSMenu::RefreshStatus()
 {
-    auto* PC = Controller();
-    if (!PC || !RoleText) return;
-    auto* Pawn = PC->GetPawn<AMRFPSPawn>();
-    const auto* Player = PC->GetPlayerState<AMRFPSPlayerState>();
-    const auto* State = GetWorld() ? GetWorld()->GetGameState<AMRFPSGameState>() : nullptr;
-    const bool Inspector = PC->IsInspector();
-    if (AuthenticationText) if (auto* Credentials=PC->GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>()) AuthenticationText->SetText(FText::FromString(Credentials->GetCredentialStatus()));
-    FString Role = PC->GetNetMode() == NM_Standalone ? TEXT("LOCAL PREVIEW") :
-        PC->IsAdmin()?TEXT("ADMIN / F2 controls"):Inspector ? TEXT("INSPECTOR") : FString::Printf(TEXT("PLAYER %d"), Player ? Player->Slot + 1 : 0);
-    if (Pawn) Role += FString::Printf(TEXT("     HP %.0f  /  SHIELD %.0f"), Pawn->Health, Pawn->ShieldEnergy);
+    auto* PC=Controller();if(!PC||!RoleText) return;
+    auto* Pawn=PC->GetPawn<AMRFPSPawn>();const auto* Player=PC->GetPlayerState<AMRFPSPlayerState>();
+    const auto* State=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+    const bool Inspector=PC->IsInspector();
+    if(AuthenticationText) if(auto* Credentials=PC->GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>())
+        AuthenticationText->SetText(FText::FromString(Credentials->HasAccessToken()?TEXT("認証情報を設定済み"):TEXT("接続用トークンを設定してください")));
+    const FString Role=PC->GetNetMode()==NM_Standalone?TEXT("プレビュー"):PC->IsAdmin()?TEXT("管理者"):Inspector?TEXT("観戦"):FString::Printf(TEXT("プレイヤー%d"),Player?Player->Slot+1:0);
     RoleText->SetText(FText::FromString(Role));
-
-    FString Match = TEXT("Join a server as a fighter or an independent inspector.");
-    if (State && PC->GetNetMode() != NM_Standalone)
-    {
-        if (State->bCombatPaused) Match=TEXT("COMBAT PAUSED / tracking and video live");
-        else if (State->Phase == EMRFPSMatchPhase::Playing) Match = FString::Printf(TEXT("LIVE DUEL  /  First to %d eliminations"), State->ScoreToWin);
-        else if (State->Phase == EMRFPSMatchPhase::Finished) Match = FString::Printf(TEXT("MATCH COMPLETE  /  Player %d wins"), State->WinnerSlot + 1);
-        else Match = TEXT("Waiting for ADMIN start and ready players.");
-        Match+=FString::Printf(TEXT("  Floor X %.2f x Y %.2f m / %s / epoch %u"),State->Layout.WidthCm/100,State->Layout.LengthCm/100,
-            State->bNominalDesktopSession?TEXT("DESKTOP NOMINAL"):State->Layout.bCalibrated&&State->bSharedFloorConfirmed?TEXT("CALIBRATED"):TEXT("UNAVAILABLE"),State->Layout.Revision);
-        if (Pawn) Match += Pawn->bCalibrated ? TEXT("  Arena aligned.") : TEXT("  Align your arena before playing.");
-        if (Inspector) Match += PC->ViewSlot < 0 ? TEXT("  Free view.") : FString::Printf(TEXT("  Viewing Player %d."), PC->ViewSlot + 1);
+    FString Match=TEXT("接続待ち");
+    if(State&&PC->GetNetMode()!=NM_Standalone) {
+        Match=State->bCombatPaused?TEXT("一時停止"):State->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):State->Phase==EMRFPSMatchPhase::Finished?FString::Printf(TEXT("P%dの勝利"),State->WinnerSlot+1):TEXT("開始待ち");
+        if(Pawn&&!Pawn->bCalibrated) Match+=TEXT("  原点を登録してください");
     }
     MatchText->SetText(FText::FromString(Match));
-    const bool Fighter = Pawn != nullptr && !Inspector;
-    AlignButton->SetIsEnabled(Fighter);
-    const auto* Haptics = Fighter ? Pawn->Haptics.Get() : nullptr;
-    const auto Connection = Haptics ? Haptics->GetConnectionState() : EMoBitsConnectionState::Disconnected;
-    ConnectButton->SetIsEnabled(Haptics && Connection != EMoBitsConnectionState::Connected && Connection != EMoBitsConnectionState::Connecting);
-    ArmButton->SetIsEnabled(Haptics && Connection == EMoBitsConnectionState::Connected && !Haptics->IsHapticsArmed());
-    StopButton->SetIsEnabled(Fighter);
-    HapticsText->SetText(FText::FromString(Haptics ? TEXT("MoBits: ") + Haptics->GetStatus().Left(180) : TEXT("MoBits feedback is available to fighters.")));
-    PlayerOneButton->SetIsEnabled(Inspector && PC->FindPlayer(0));
-    PlayerTwoButton->SetIsEnabled(Inspector && PC->FindPlayer(1));
-    FreeButton->SetIsEnabled(Inspector);
-    ErrorText->SetText(FText::FromString(ActionError.IsEmpty() ? PC->ConnectionError.Left(220) : ActionError));
+    const bool Fighter=Pawn&&!Inspector;AlignButton->SetIsEnabled(Fighter);
+    const auto* Haptics=Fighter?Pawn->Haptics.Get():nullptr;
+    const auto Connection=Haptics?Haptics->GetConnectionState():EMoBitsConnectionState::Disconnected;
+    const bool Connected=Connection==EMoBitsConnectionState::Connected;
+    ConnectButton->SetIsEnabled(Haptics&&!Connected&&Connection!=EMoBitsConnectionState::Connecting);
+    ArmButton->SetIsEnabled(Haptics&&Connected&&!Haptics->IsHapticsArmed());StopButton->SetIsEnabled(Fighter);
+    const FString DeviceStatus=!Fighter?TEXT(""):Haptics&&Haptics->IsHapticsArmed()?TEXT("MoBits 有効"):Connected?TEXT("MoBits 接続済み"):Connection==EMoBitsConnectionState::Connecting?TEXT("MoBits 接続中"):TEXT("MoBits 未接続");
+    HapticsText->SetText(FText::FromString(DeviceStatus));
+    PlayerOneButton->SetIsEnabled(Inspector&&PC->FindPlayer(0));PlayerTwoButton->SetIsEnabled(Inspector&&PC->FindPlayer(1));FreeButton->SetIsEnabled(Inspector);
+    FString Error=ActionError.IsEmpty()?PC->ConnectionError:ActionError;
+    if(!Error.IsEmpty()&&(Error.StartsWith(TEXT("AUTH_"))||Error.StartsWith(TEXT("DTLS_")))) Error=TEXT("認証情報を確認して再接続してください");
+    else if(ActionError.IsEmpty()&&!PC->ConnectionError.IsEmpty()) Error=TEXT("接続できません。接続先と認証情報を確認してください");
+    ErrorText->SetText(FText::FromString(Error.Left(100)));
 }

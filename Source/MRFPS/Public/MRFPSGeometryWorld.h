@@ -25,6 +25,9 @@ public:
     void RemoveOwner(AMRFPSPawn* Owner);
     void ResetAll();
     bool Trace(const FVector& Start,const FVector& End,FVector& HitPoint) const;
+    /** Read-only visual foot placement on validated replicated measurements.
+     * Combat still uses the authority-only Trace entry point. */
+    bool SampleAvatarGround(const FVector& Probe,float& GroundZ) const;
     FString GetSafeStatus() const;
 protected:
     virtual bool DoesSupportWorldType(EWorldType::Type Type) const override;
@@ -32,6 +35,7 @@ private:
     TSharedPtr<FMRFPSGeometryWorldState> State;
     UPROPERTY(Transient) TArray<TObjectPtr<AActor>> RenderActors;
     bool OwnerValid(int32 Slot) const;
+    bool TraceMeasuredSurface(const FVector& Start,const FVector& End,FVector& HitPoint) const;
     bool OwnerIdentityValid(int32 Slot) const;
     void ClearSlot(int32 Slot,bool Retire=true);
     void UpdateVisual(int32 Slot);

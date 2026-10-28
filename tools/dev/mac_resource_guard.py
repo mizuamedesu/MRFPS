@@ -1,6 +1,7 @@
 """macOS-only memory reserve guard; terminates only its own child process group."""
 import argparse
 import json
+import math
 import os
 import pathlib
 import re
@@ -29,8 +30,8 @@ def main():
     if sys.platform != "darwin" or not command:
         parser.error("macOSと実行するコマンドが必要です。")
     total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
-    reserve = args.reserve_gb * 2**30 if args.reserve_gb else max(3*2**30, min(10*2**30, total/4))
-    if reserve <= 0 or available_memory() < reserve:
+    reserve = args.reserve_gb * 2**30 if args.reserve_gb is not None else max(3*2**30, min(10*2**30, total/4))
+    if not math.isfinite(reserve) or reserve <= 0 or reserve >= total or available_memory() < reserve:
         raise RuntimeError("必要な空きメモリがありません。起動していません。")
     # New session prevents signals from reaching the terminal or existing apps.
     child = subprocess.Popen(command, start_new_session=True)
@@ -48,13 +49,23 @@ def main():
         if result is None:
             result = child.returncode
     finally:
-        if child.poll() is None:
+        # The launcher can exit before a compiler/worker. A process group still
+        # belongs to this launch even after its leader has finished.
+        try:
             os.killpg(child.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        if child.poll() is None:
             try:
                 child.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait()
+                pass
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if child.poll() is None:
+            child.wait()
         print(json.dumps({"exit_code": result, "reserve_gb": round(reserve/2**30, 2), "minimum_available_gb": round(minimum/2**30, 2), "scope": "own process group only"}))
     return result
 

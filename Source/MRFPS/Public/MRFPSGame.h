@@ -12,6 +12,7 @@
 #include "MRFPSVideoProtocol.h"
 #include "MRFPSGeometryProtocol.h"
 #include "MRFPSArenaLayout.h"
+#include "MRFPSBuild.h"
 #include "MRFPSGame.generated.h"
 
 class UCameraComponent;
@@ -29,6 +30,7 @@ class UVRNotificationsComponent;
 class UMRFPSMenu;
 class UTexture2D;
 class UMRFPSAdminPanel;
+class UMRFPSAvatarComponent;
 
 UENUM()
 enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFloor,CalibrateFloor,SetDimensions,ClearAdminWalls };
@@ -122,6 +124,11 @@ public:
     UPROPERTY(Replicated) float Health = 120;
     UPROPERTY(Replicated) int32 OwnerSlot = -1;
     UPROPERTY(Replicated) bool bAdminPlaced=false;
+    UPROPERTY(ReplicatedUsing=ApplyBuildKind) EMRFPSBuildKind BuildKind=EMRFPSBuildKind::Wall;
+    UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> BuildSteps;
+    bool bPlacementPreview=false;
+    UFUNCTION() void ApplyBuildKind();
+    void SetPreviewColor(bool Valid);
 };
 
 UCLASS()
@@ -193,6 +200,7 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UBoxComponent> MiniShield;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> HeadVisual;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> BodyVisual;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSAvatarComponent> Avatar;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> LeftVisual;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> GunVisual;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> ShieldVisual;
@@ -275,6 +283,10 @@ public:
     FString AdminStatus;
     UPROPERTY() TObjectPtr<UMRFPSAdminPanel> AdminPanel;
     float AdminWallYaw=0;
+    EMRFPSBuildKind AdminBuildKind=EMRFPSBuildKind::Wall;
+    bool bAdminPreviewValid=false;
+    FString AdminFeedback() const;
+    void SetAdminFeedback(FName Code);
     UFUNCTION(Exec) void MRFPSConnect(const FString& Address, bool Inspector = false);
     UFUNCTION(Exec) void MRFPSConnectAdmin(const FString& Address);
     UFUNCTION(Exec) void MRFPSView(int32 Slot);
@@ -297,6 +309,8 @@ private:
     void ConnectWithRole(const FString& Address,const FString& RequestedRole);
     UFUNCTION(Server,Reliable) void ServerAdminAction(EMRFPSAdminAction Action,FVector2D Dimensions,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminPlaceWall(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
+    UFUNCTION(Server,Reliable) void ServerAdminPlaceObject(EMRFPSBuildKind Kind,FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
+    UFUNCTION(Server,Reliable) void ServerAdminRemoveObject(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Client,Reliable) void ClientAdminResult(FName SafeCode);
     bool bAdminWallPlacement=false;
     bool bAdminPlacementWasMultiView=true;
@@ -304,6 +318,11 @@ private:
     bool bAdminPanelWasReleased=false;
     double LastAdminActionAt=-100;
     double LastAdminWallAt=-100;
+    double LastAdminFeedbackAt=-100,NextAdminRepeatAt=0;
+    UPROPERTY(Transient) TObjectPtr<AMRFPSBarrier> AdminPreview;
+    void TickAdminPreview();
+    void PlaceSelectedBuild();
+    void RemoveSelectedBuild();
     UFUNCTION(Server, Unreliable) void ServerPublishGeometry(const FMRFPSGeometryChunk& Chunk);
     UFUNCTION(Server, Reliable) void ServerStopGeometry(uint32 Calibration,uint32 FinalSequence,uint32 LayoutRevision);
     UFUNCTION(Client, Unreliable) void ClientMeasuredGeometry(const FMRFPSGeometryChunk& Chunk);
@@ -360,9 +379,9 @@ private:
     void SetInspectorMouseReleased(bool Released);
     bool bInspectorMouseReleased = false;
     bool bConsumeInspectorCaptureClick = false;
-    void MoveForward(float V) { MoveAxes.X = IsInspector() && bInspectorMouseReleased ? 0.f : V; }
-    void MoveRight(float V) { MoveAxes.Y = IsInspector() && bInspectorMouseReleased ? 0.f : V; }
-    void MoveUp(float V) { MoveAxes.Z = IsInspector() && bInspectorMouseReleased ? 0.f : V; }
+    void MoveForward(float V) { MoveAxes.X = IsInspector() && bInspectorMouseReleased && !bAdminWallPlacement ? 0.f : V; }
+    void MoveRight(float V) { MoveAxes.Y = IsInspector() && bInspectorMouseReleased && !bAdminWallPlacement ? 0.f : V; }
+    void MoveUp(float V) { MoveAxes.Z = IsInspector() && bInspectorMouseReleased && !bAdminWallPlacement ? 0.f : V; }
     void LookX(float V);
     void LookY(float V);
     FVector MoveAxes = FVector::ZeroVector;
@@ -398,6 +417,8 @@ public:
     void OnElimination(AMRFPSPawn* Victim, AMRFPSPawn* Killer);
     bool HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdminAction Action,FVector2D Dimensions,FString& SafeError);
     bool PlaceAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
+    bool PlaceAdminObject(AMRFPSPlayerController* Admin,EMRFPSBuildKind Kind,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
+    bool RemoveAdminObject(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,FString& SafeError);
     void InvalidateSharedFloor();
     UPROPERTY(Config) int32 MaxInspectors = 32;
     UPROPERTY(Config) int32 MaxAdmins=4;

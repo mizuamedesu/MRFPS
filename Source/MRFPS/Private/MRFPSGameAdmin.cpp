@@ -111,13 +111,17 @@ void AMRFPSPlayerController::SetAdminWallPlacement(bool Enabled)
     if (!IsLocalController()) return;
     const bool WasEnabled=bAdminWallPlacement;
     bAdminWallPlacement=Enabled && IsAdmin();
+    if(!bAdminWallPlacement) {
+        bConsumeAdminPlacementClick=false;
+        if(AdminPreview) { AdminPreview->Destroy();AdminPreview=nullptr; }
+    }
     if (WasEnabled && !bAdminWallPlacement) bMultiView=bAdminPlacementWasMultiView;
     if (bAdminWallPlacement) {
         if (!WasEnabled) bAdminPlacementWasMultiView=bMultiView;
         bMultiView=false; // No video tiles may obscure the 3D picking surface.
         if (AdminPanel && AdminPanel->IsInViewport()) AdminPanel->Close();
         FreeView(); SetInspectorMouseReleased(true);
-        AdminStatus=TEXT("WALL_PLACEMENT_ACTIVE: click the 3D floor; Esc cancels");
+        AdminStatus.Empty();
     }
 }
 void AMRFPSPlayerController::RequestAdminAction(EMRFPSAdminAction Action,FVector2D Dimensions)
@@ -156,7 +160,9 @@ void AMRFPSPlayerController::ServerAdminPlaceWall_Implementation(FVector_NetQuan
     ClientAdminResult(GM->PlaceAdminWall(this,Origin,Direction,Yaw,Error)?FName(TEXT("ADMIN_WALL_PLACED")):FName(*Error));
 }
 void AMRFPSPlayerController::ClientAdminResult_Implementation(FName SafeCode)
-{ AdminStatus=SafeCode.ToString(); }
+{ SetAdminFeedback(SafeCode); }
+void AMRFPSPlayerController::SetAdminFeedback(FName Code)
+{ AdminStatus=Code.ToString();LastAdminFeedbackAt=GetWorld()->GetTimeSeconds(); }
 
 bool AMRFPSGameMode::AdminAuthorized(const AMRFPSPlayerController* Admin) const
 { return HasAuthority() && Admin && Admin->GetWorld()==GetWorld() && Admin->HasAuthority() && Admin->IsAdmin(); }
@@ -279,32 +285,4 @@ bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdmin
     ++GS->ControlRevision; GS->ForceNetUpdate(); SafeError.Empty(); return true;
 }
 bool AMRFPSGameMode::PlaceAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError)
-{
-    SafeError=TEXT("ADMIN_REQUIRED");
-    const auto* GS=GetGameState<AMRFPSGameState>();
-    if (!AdminAuthorized(Admin) || !GS) return false;
-    SafeError=TEXT("ADMIN_WALL_INVALID_RAY");
-    if (Origin.ContainsNaN() || Direction.ContainsNaN() || !FMath::IsFinite(Yaw) || FMath::Abs(Yaw)>360 ||
-        Origin.SizeSquared()>FMath::Square(25000.) || !FMath::IsNearlyEqual(Direction.SizeSquared(),1.,.02) || Direction.Z>=-.001) return false;
-    const double Distance=(GS->Layout.Center.Z-Origin.Z)/Direction.Z;
-    if (Distance<0 || Distance>20000) return false;
-    const FVector FloorPoint=Origin+Direction*Distance;
-    const FRotator Rotation(0,GS->Layout.YawDegrees+Yaw,0);
-    SafeError=TEXT("ADMIN_WALL_OUTSIDE_LAYOUT");
-    for (double X:{-8.,8.}) for (double Y:{-80.,80.})
-        if (!GS->Layout.ContainsPlanar(FloorPoint+Rotation.RotateVector(FVector(X,Y,0)),2)) return false;
-    SafeError=TEXT("ADMIN_WALL_CAPACITY");
-    int32 Count=0;
-    for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if (It->bAdminPlaced) ++Count;
-    if (Count>=MaxAdminWalls) return false;
-    const FVector Center=FloorPoint+FVector(0,0,100);
-    FCollisionQueryParams Params;
-    SafeError=TEXT("ADMIN_WALL_OCCUPIED");
-    if (GetWorld()->OverlapBlockingTestByChannel(Center,Rotation.Quaternion(),ECC_GameTraceChannel1,
-        FCollisionShape::MakeBox(FVector(10,82,102)),Params)) return false;
-    const FTransform Transform(Rotation,Center);
-    auto* Wall=GetWorld()->SpawnActorDeferred<AMRFPSBarrier>(AMRFPSBarrier::StaticClass(),Transform,Admin,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-    if (!Wall) { SafeError=TEXT("ADMIN_WALL_SPAWN_FAILED"); return false; }
-    Wall->bAdminPlaced=true; Wall->OwnerSlot=-1;
-    UGameplayStatics::FinishSpawningActor(Wall,Transform); Wall->ForceNetUpdate(); SafeError.Empty(); return true;
-}
+{ return PlaceAdminObject(Admin,EMRFPSBuildKind::Wall,Origin,Direction,Yaw,SafeError); }

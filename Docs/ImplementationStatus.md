@@ -1,34 +1,25 @@
 # 完了条件と証拠
 
-このファイルは実装範囲と実測証拠の索引です。各結果は下記のrun reportと対応ログで判断します。`Scripts/Get-ValidationSummary.ps1` は実ログとlive processから `Saved/Validation/summary.json` を作る補助集計です。集計値だけで未検証の実機gateを合格にしません。
+## 現在の確認範囲（2026-10-29）
 
-## 現在の完了範囲と残作業（2026-10-28更新）
+| 項目 | 状態 |
+| --- | --- |
+| Manny・全身IK・ロコモーション | protocol5で実装。実測するのは頭・両手、腰・足は推定。UEテストで立位最大0.942cm、しゃがみ1.089cm、骨の長さの偏差0.000cm。実機での見た目と遅延は確認中 |
+| 建築・日本語UI | 壁・床・階段・箱、プレビュー、50cmグリッド、90度回転、連続設置、削除。権限・範囲・段の弾判定などの自動試験が合格。新UIの配布版実画面を確認中 |
+| UE Automation | protocol5、33件合格。`MannyBuild-20261028-1745/Automation-20261028-175401/report.json` |
+| Linux Docker・認証 | protocol4のproduction containerがhealthy。RAM1GiB/swap0/CPU2、公開鍵のみのenv、runtime/negative各8件、4230ファイルの公開鍵・ELF監査が合格。Windows配布版から認証33件合格。protocol5へ更新準備中 |
+| Windows配布版 | protocol4で実ゲーム画面の送信と観戦アプリ内表示を目視確認。直結とLAN中継で約23〜24fps。protocol5の配布版をビルド中 |
+| 複数クライアント | protocol4の2対戦者＋3観戦者、27項目と300秒継続試験が合格。別QAコンテナのscore1・自動開始で検証。物理MRや管理者進行UIの完全な通し試験とは別 |
+| Questの実映像 | 旧Editor実行で実写パススルー＋仮想物を603枚受信表示して目視確認。その後停止。protocol3では取得約18fps・受信2〜5fps。protocol4 APKは更新済みだがQuestがAsleepでアプリ起動未完了。最新経路の安定性は未確認 |
+| 固定床・管理 | 既定X4.5m/Y7m。明示校正時だけ二人のXY中点・方向を反映し、床高さ・サイズ・追跡縮尺を維持。protocol4の実UIで壁の配置・他クライアント反映、幅変更と復元、Esc解放を確認 |
+| 実測ジオメトリ | 動的な表面送受信、鮮度・校正世代管理、サーバーの三角形弾遮蔽を実装。クライアントの足接地問い合わせも追加。8自動試験が合格。実障害物を使う確認は未完了 |
+| Mac | OpenXR依存の分離、共通映像・認証経路、ビルド・起動スクリプト、メモリ監視を追加。Bash構文・接続先文字種とメモリ計測の3Pythonテスト合格。Mac実機でのビルド・表示は未確認 |
+| ContactGlove | USBドングルとDivingStationのOSC通信を確認。両手disconnected、実ジェスチャーは未確認 |
+| MoBits | 実GUI SDK通信、Rust SDKとUEの障害復旧結合試験が合格。GUI検出devices0/ARM0/PLAY0、Bluetooth/ドングル利用不可。実出力は未確認 |
 
-**プロジェクト全体は未完了です。Quest映像だけが残っている状態ではありません。**
+最新の作業runは`Saved/Validation/MannyBuild-20261028-1745/`。protocol4の配布・ネットワーク・画面証拠は`Saved/Validation/AdminVideoRecovery-20261028-1518/`にあります。秘密鍵、JWT、部屋の画像はGitに含めません。実測した範囲と未検証の実機条件を分けて記録します。
 
-| 項目 | 現在の状態 |
-|---|---|
-| Windowsの実ゲーム画面を観戦アプリ内に表示 | 自身のゲーム画面とHUD、認証Linux配信、2台同時受信、停止再開、Escのマウス解放を確認。以前の2fps制限を30fps目標へ変更し、配布版での再実測待ち。Windowsを映した結果をQuest映像の証拠に数えない |
-| リアルタイム環境スキャン→サーバー障害物→弾の遮蔽 | protocol3へ統合済み。深度取得、座標・世代管理、期限付き共有メッシュ、サーバーの弾遮蔽を実装。Editor・LinuxServer・Questのビルドとgeometryの7自動試験に合格。Questの実障害物を使った確認は未完了 |
-| 配布用Windowsアプリ | protocol4のnativeビルド中。現在までのWindows描画確認は `UnrealEditor.exe -game`。配布EXEの実起動・映像受信・管理UIを検証する |
-| Questの実プレイヤー視点配信 | 実写パススルーと仮想物を含む実映像をWindowsで目視確認済み（13:27 UTC、603枚受信表示）。その後停止した。protocol3改修の実測は約18fps取得、2〜5fps表示で未解決。ADBは承認済み、最新の再接続ではOSの共有許可待ち |
-| 管理者と固定床 | signed admin、開始・一時停止・再開・リセット、最大32壁、サイズ変更、明示校正を実装。既定X450cm/Y700cm。校正時の二人のXY中点とY方向だけを反映し、床高さ・サイズ・追跡縮尺を維持。3件の新UEテスト合格、実UI・実ネットワーク・二台の物理登録は検証待ち |
-| QuestのMR表示・追跡・位置合わせ | パススルーを含む映像と認証接続を確認。固定4.5m×7m床の実空間校正、二台の共通原点・床高さの物理登録は未検証 |
-| ContactGlove 2 | SDK/OSC処理とドライバー導入済み。USBドングル・DivingStationのOSC通信を再確認。両手はdisconnected、実際の指変化・壁・盾ジェスチャーは未検証 |
-| MoBitsの発射・被弾フィードバック | 実Rust SDKとUEの通信・障害復旧の結合試験に合格。実GUI appのSDK通信も再確認（devices0、ARM0、PLAY0）。Bluetooth／MoBits USBドングルが利用できず、実デバイス出力は未検証 |
-| 実機構成の最終通し試験 | Linux専用サーバーでのQuestを含む1対1、認証の追加試験、長時間の試合・安定性は未完了 |
-
-最新の作業runは `Saved/Validation/AdminVideoRecovery-20261028-1518/`。最新Editorと **30件のUEテスト**は `Automation-20261028-152514/report.json` で合格。初回の管理テストではGameModeの生成した別GameStateをfixtureが参照する不備があり、実ゲームと同じ状態を共有するようfixtureを修正して再実行した。現在はLinux、Quest、Windows配布版を10GiB空き・commit75%上限のguard下で直列ビルド中。映像にはsource/server/viewerのchunk数、NetReady待ち、組立完了・期限・更新による破棄、rate拒否、DTLS空出力の安全なメタデータ計測を追加した。これ自体をFPS改善の証拠には数えない。
-
-Questの実映像証拠は `Saved/Validation/Complete-20261028-104616/Quest3LiveViewer/quest-passthrough-in-windows-panels.jpg` と `visual-review.json`。直近の低FPSは `Saved/Validation/Video30-20261028-142948/` のQuest nativeログとWindows receiverログを照合した。受信255枚はすべてdecode/upload成功で、主な減少点はdecoderより前。外部キャスト開始時の停止というユーザーの再現報告は、別MediaProjectionで既存セッションが終了する [Meta公式仕様](https://developers.meta.com/vr/documentation/native/native-media-projection/) と一致する。停止callback処理と再許可操作を維持し、まだ有効な共有の画像停止には同一displayへのbounded-backoff再接続を追加した。
-
-以前の `Complete-20261028-104616/` では実Rust SDKの通常通信と障害復旧は `mobits-interop-result.json`、LinuxServerは `LinuxGuard2/report.json`、Quest APKは `QuestGuard2/report.json` で合格。Rustの出力先はFakeBackendであり、身体への出力試験ではない。
-
-実GUI appの追加観測は旧Complete runの `mobits-realapp-observation2.json`（HELLO両channel、96 motion packets、32 PONG、STOP確認、devices0）と `glove-realapp-observation.json`（両手disconnected）。デバイス未接続時のmotion packetを実際の身体の動きとして数えない。MoBits検索エラーの実画面は `mobits-hardware-unavailable.jpg`。QuestのADB承認とprotocol3 APK配備はその後完了した。
-
-Windows実映像の過去の表示・操作は `Saved/Validation/DesktopPovStable-20261028-085045/visual-review.json`、2台配信は `Saved/Validation/InspectorFanout-20261028-082409/stream2-and-shutdown-check.json`。監視レポートの共有競合は8チェックと実クライアント動作中のロック試験で修正を確認した。旧検証クライアントは09:40:47 UTCに設定期限で正常終了した。
-
-以下は個々の履歴です。過去の「未確認」は、そのrun時点の範囲を示します。
+以下は以前の検証経過です。最新状態は上表と[Handoff.md](Handoff.md)を参照してください。
 
 ## 以前の実UE Automation
 

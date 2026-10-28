@@ -1,5 +1,15 @@
 # 開発の引き継ぎ
 
+## 追加変更（protocol5）
+
+- UE5標準`SKM_Manny_Simple`、標準8方向の歩行・走行BlendSpace、頭・両手・両足のPBIK。腰・足は推定、骨を伸ばさず、しゃがみと接地を補正する。
+- 壁・床・階段・箱の建築。50cmグリッド、半透明の可否プレビュー、90度回転、長押し配置、削除。Bで開始、1〜4で選択、R回転、Del削除、右クリック/Escで終了。
+- 日本語の短いHUD・管理・接続UI。建築のカメラ上下はE/Qに変更し、Rの回転と分離。
+- UE Automation **33件合格**。`MannyBuild-20261028-1745/Automation-20261028-175401/report.json`。テスト姿勢で最大IK誤差は立位0.942cm・しゃがみ1.089cm、手足の長さの偏差0.000cm。実機の計測結果ではない。
+- AnimationDataとACLPluginを明示有効化。テンプレートのアニメーションが使う標準依存で、無効だとEditorでDataModelをロードできない。必要なManny・BlendSpace・Idleとその依存は`Content/RuntimeAssets/Manny.uasset`のlabelでcookする。
+- Macメモリ監視の入力・計測テスト3件合格、Bash構文とIPv4/IPv6/ホスト名の文字種確認が合格。Mac実機は未検証。
+- 新しいWindows配布版をビルド中。Linuxコンテナ・Quest APKも同じprotocol5へ更新して検証する。
+
 ## 2026-10-29時点の検証済み基盤
 
 - UE5.8.1、protocol4。Windows配布版、Linux Docker専用サーバー、Quest APKを生成。
@@ -9,11 +19,10 @@
 - 2プレイヤー＋3観戦者、27項目と勝敗・スコアボードの確認、および300秒の継続試験が合格。別のQAコンテナでscore1と自動開始を明示設定した検証で、管理者進行UIの通し試験や物理MRの証拠とはしない。
 - UE Automation30件合格。床は4.5m×7m固定。明示校正時だけ二人の中点・方向を反映し、距離に合わせて伸縮しない。
 
-## 現在進めている変更
+## 開発の参照
 
-- グリッド吸着、半透明プレビュー、回転、複数種類の建築オブジェクト。
-- 常時表示を減らした日本語UI。
-- UE5標準Mannyと、計測した頭・手を使う全身IK、ロコモーションと足の接地。
+- 建築・日本語UIの操作は[Controls.md](Controls.md)。
+- Mannyと推定する身体の仕様は[Avatar.md](Avatar.md)。
 - Mac観戦・管理クライアント。手順は[Mac.md](Mac.md)。Windows専用のOpenXR依存をMacから外し、Mac実機でのビルド・表示は未確認。
 
 ## 実機で残っている確認

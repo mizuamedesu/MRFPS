@@ -1,22 +1,20 @@
 # MRFPS
 
-UE **5.8.1** のC++製、オンライン1対1のMR FPS。床は既定 **X4.5m × Y7m** の固定長方形です。署名された管理者が校正を押した時だけ、二人のXY中点を床中心、P0→P1を床の+Y方向として再計算します。距離に合わせた伸縮や追従は行いません。Linux専用サーバーが試合、壁、盾、HP、勝敗を管理し、Windows観戦アプリは自由視点とプレイヤー視点を表示します。
+UE **5.8.1** のC++製、オンライン1対1のMR FPSです。Questをプレイヤー、Windows / Macを観戦・管理クライアントとして使います。Linux Docker専用サーバーが認証、試合、建築、弾・盾・HP・勝敗を管理します。
 
-Quest 3の実写パススルーと仮想アリーナを含む実プレイヤー視点を、Windows観戦アプリ内で目視確認しました（`Saved/Validation/Complete-20261028-104616/Quest3LiveViewer/visual-review.json`）。確認時は `UnrealEditor.exe -game` です。配信停止と低FPSが残っており、30fpsを達成したとは扱いません。直近のprotocol3実測は受信2〜5fps、画像取得約18fpsでした。配布用Windows EXEはビルド・起動検証中です。
+床は既定 **X4.5m × Y7m** の固定長方形です。管理者が「床の位置調整」を押した瞬間の二人のXY中点を床の中心、P1→P2を+Y方向として計算します。歩行への追従、二人の間隔による伸縮、頭の高さによる床の上下移動は行いません。
 
-認証admin、進行制御、クリックによる壁配置、固定床校正、リアルタイム環境スキャンとサーバーの弾遮蔽をprotocol4へ統合しています。最新のUE Automationは **30件合格**（`Saved/Validation/AdminVideoRecovery-20261028-1518/Automation-20261028-152514/report.json`）。全ターゲットのビルド・配備、実障害物、二台の物理校正、安定した映像、グローブ操作、身体へのMoBits出力の最終検証は継続中です。[完了条件と残作業](Docs/ImplementationStatus.md) を参照してください。
+プレイヤー表示には**UE5標準Manny**、方向別の歩行・走行BlendSpace、PBIKによる全身IKを使います。頭・両手は計測、腰・足は推定です。しゃがみで体を縮尺変更せず、足の接地を補正します。[身体の仕組みと制限](Docs/Avatar.md)を参照してください。管理者は壁・床・階段・箱を、半透明プレビューとグリッド吸着で配置・回転・削除できます。UIは日本語の短い表示にしています。[操作](Docs/Controls.md)
 
-全プレイヤー、インスペクター、管理者の接続に、roleを含むEd25519署名JWTと、そのJWTに署名された稼働サーバーのDTLS証明書fingerprintが必要です。コンテナへ渡す発行者の鍵は公開鍵だけで、署名秘密鍵は発行ホストに保持します。tokenは1接続に1回だけ使え、再接続には新規発行が必要です。
+全クライアントはrole付きEd25519署名JWTと、稼働サーバーのDTLS証明書pinが必要です。発行者の秘密鍵はホストに保持し、コンテナのenvには公開鍵のみを渡します。JWTは1接続で1回使用でき、再接続には新規発行が必要です。鍵・JWT・部屋の映像はGitに含めません。
 
-**開発中です。** 実Rust SDKの通常通信と障害復旧の2結合試験も合格しました（`Complete-20261028-104616/mobits-interop-result.json`）。結合試験の出力はFakeBackendであり、実機出力の確認には数えません。v2アート全6FBXのUE再import・寸法照合も成功しています。
+現在のソースはprotocol5です。**UE Automation33件が合格**し、テスト姿勢で頭・手のIK最大誤差は立位0.94cm、しゃがみ1.09cmでした。新しい配布版のビルド・実画面確認は進行中です。
 
-更新したprotocol3のLinuxゲームコンテナはhealthyで、RAM 1 GiB・swap 0・CPU 2、公開鍵設定／healthのnegative 8件、4228ファイルおよびenvに発行者秘密鍵がないことの監査が合格しています。protocol2の実Linux認証試験22件は正常接続、replay、接続後失効、偽署名／audience拒否、client-local拒否、DTLS pin拒否を分けて記録しています。protocol3での配布版Windowsによる2対戦者＋複数観戦者の試合と安定性は次の検証段階です。
+直前のprotocol4配布版では、実Windowsゲーム画面をWindows観戦アプリ内で約23〜24fps表示し、LAN中継でも確認しました。認証33件、2プレイヤー＋3観戦者の27項目と300秒継続試験も合格しました。これはQuest映像のFPSや物理MRの最終確認とは別です。
 
-Questの旧protocol2 APKでは、install、Alpha1・MobileMultiView1・Vulkan/native passthrough API起動に加え、**cold-process認証接続が合格**しました（03:58:33Z）。private credentialsと6秒pretravel待機を使い、client/server双方のnative DTLS、署名player admission、Linuxのslot0 join、remote map読み込みを確認しました。これは更新したprotocol3 APKの実機確認を代替しません。継続session、MRの見え方・追跡・実空間校正・グローブの物理gesture・MoBitsの物理feedbackは未確認です。
+Questの実写パススルーと仮想物を含む実映像は旧Editor実行で目視確認しましたが、停止・低FPSの解決はまだ実機で確認できていません。現在のQuestはADB承認済み・スリープ中で、アプリは停止しています。共有にはQuest側の許可が必要です。他のキャストがMediaProjectionを開始すると既存共有が終了するため、MRFPSの1配信をサーバーで観戦者へ分配します。[Metaの仕様](https://developers.meta.com/vr/documentation/native/native-media-projection/)
 
-MoBits実GUI appのSDK診断は再確認済みです（GET_DEVICES・96 motion packets・32 PONG・STOP応答、devices0・ARM0・PLAY0）。機器検索はBluetooth／MoBits USBドングル利用不可、ContactGloveはUSBドングルとDivingStationのOSC通信まで確認し両手disconnectedでした。未接続状態のpacketを実際の身体の動き・出力として数えません。QuestはADB承認済みで、protocol3更新APKのinstallと認証接続を確認しました。実測範囲は [ImplementationStatus](Docs/ImplementationStatus.md)、[実機確認](Docs/DeviceValidation.md)、`Saved/Validation` に記録します。
-
-Quest側では画面共有を一つだけ起動し、必要な観戦台数へサーバーから配信します。別アプリのMediaProjection開始が既存共有を終了するのは [Meta公式仕様](https://developers.meta.com/vr/documentation/native/native-media-projection/) です。OSが共有を終了した時は、他のキャストを閉じてQuestでXの共有操作を行い、改めて許可します。許可済みセッションの一時的な画像停止には、上限付きの再接続間隔で同じ共有出力を再接続します。
+Macのビルド・起動手順とメモリ監視を同梱していますが、**Mac実機でのビルド・描画・接続は未確認**です。[Macで開発する](Docs/Mac.md)。二台の物理共通原点、実障害物での弾遮蔽、ContactGlove実ジェスチャー、MoBits実デバイス出力も未確認です。最新の実測範囲は[引き継ぎ](Docs/Handoff.md)と[完了条件・証拠](Docs/ImplementationStatus.md)に記録します。
 
 ## ビルドと起動
 

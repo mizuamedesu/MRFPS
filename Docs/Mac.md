@@ -2,6 +2,8 @@
 
 UE **5.8.1**、同版に対応するXcode、Python3を用意します。エンジンはGitに含めません。既存のWindows固有のEngineAssociationを5.8へ変更し、MacではQuest用OpenXRをロードしない構成にしています。観戦・管理者の署名JWT、公開鍵、DTLS pin、映像受信、共有ジオメトリはWindowsと共通です。Mac実機のビルド・描画・接続はまだ検証していません。
 
+この開発環境のUE5.8.1は、`Engine/Config/Apple/Apple_SDK.json`の標準Xcodeが**26.1.1**、`Engine/Config/Mac/Mac_SDK.json`の対象OSが**macOS 14.0以上**です。使用するエンジン側の同ファイルを確認し、Xcode初回起動とコマンドラインツールの設定を済ませてください。ビルド時にFullBodyIK、ControlRig、IKRigも有効になります。
+
 ```bash
 git clone https://github.com/mizuamedesu/MRFPS.git
 cd MRFPS

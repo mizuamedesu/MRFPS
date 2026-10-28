@@ -1,4 +1,6 @@
 #include "MRFPSGame.h"
+#include "MRFPSAvatar.h"
+#include "Misc/Paths.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/BoxComponent.h"
@@ -44,6 +46,9 @@
 #include "Materials/MaterialInterface.h"
 #include "TimerManager.h"
 #if !UE_SERVER
+#include "Components/DirectionalLightComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Engine/TextureCube.h"
 #include "MRFPSXRModule.h"
 #include "MRFPSViewCaptureSubsystem.h"
 #include "GeometryCaptureSubsystem.h"
@@ -167,10 +172,15 @@ AMRFPSBarrier::AMRFPSBarrier()
     Collision = CreateDefaultSubobject<UBoxComponent>(TEXT("WallCollision")); SetRootComponent(Collision);
     Collision->InitBoxExtent(FVector(8,80,100)); MRFPS::QueryOnly(Collision);
     Visual = MRFPS::Mesh(this, Collision, TEXT("Wall"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(.16,1.6,2),TEXT("SM_MRWall"));
+    for(int32 I=0;I<8;++I) {
+        auto* Step=MRFPS::Mesh(this,Collision,*FString::Printf(TEXT("Step%d"),I),TEXT("/Engine/BasicShapes/Cube.Cube"),FVector::OneVector);
+        Step->SetVisibility(false);MRFPS::QueryOnly(Step);Step->SetCollisionEnabled(ECollisionEnabled::NoCollision);BuildSteps.Add(Step);
+    }
 }
 void AMRFPSBarrier::BeginPlay()
 {
     Super::BeginPlay(); MRFPS::Material(Visual, TEXT("Wall"));
+    ApplyBuildKind();
     if (HasAuthority() && !bAdminPlaced) SetLifeSpan(6);
 }
 void AMRFPSBarrier::ApplyShot(float Damage)
@@ -183,12 +193,20 @@ void AMRFPSBarrier::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps); DOREPLIFETIME(AMRFPSBarrier, Health); DOREPLIFETIME(AMRFPSBarrier, OwnerSlot);
     DOREPLIFETIME(AMRFPSBarrier,bAdminPlaced);
+    DOREPLIFETIME(AMRFPSBarrier,BuildKind);
 }
 AMRFPSArena::AMRFPSArena()
 {
     bReplicates = true; bAlwaysRelevant = true;
     SetRootComponent(CreateDefaultSubobject<USceneComponent>(TEXT("Root")));
     Floor = MRFPS::Mesh(this, RootComponent, TEXT("ArenaFloor"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(4.5,7,.03));
+#if !UE_SERVER
+    auto* Sun=CreateDefaultSubobject<UDirectionalLightComponent>(TEXT("AvatarKeyLight"));Sun->SetupAttachment(RootComponent);
+    Sun->SetRelativeRotation(FRotator(-55,-35,0));Sun->SetIntensity(3.5f);Sun->SetCastShadows(false);
+    auto* Ambient=CreateDefaultSubobject<USkyLightComponent>(TEXT("AvatarAmbient"));Ambient->SetupAttachment(RootComponent);
+    ConstructorHelpers::FObjectFinder<UTextureCube> Sky(TEXT("/Engine/EngineResources/DefaultTextureCube.DefaultTextureCube"));
+    Ambient->SourceType=SLS_SpecifiedCubemap;Ambient->Cubemap=Sky.Object;Ambient->SetIntensity(.8f);Ambient->SetCastShadows(false);
+#endif
     Floor->SetRelativeLocation(FVector(0,0,-2));
     for (int32 I=0; I<42; ++I) {
         const FName Name(*FString::Printf(TEXT("Grid%d"), I));
@@ -239,6 +257,7 @@ AMRFPSPawn::AMRFPSPawn()
     GunVisual = MRFPS::Mesh(this, RootComponent, TEXT("Gun"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(.32,.065,.09),TEXT("SM_MRPistol"));
     ShieldVisual = MRFPS::Mesh(this, MiniShield, TEXT("Shield"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(.04,.44,.44),TEXT("SM_MRMiniShield"));
     HeadVisual->SetOwnerNoSee(true); BodyVisual->SetOwnerNoSee(true);
+    Avatar=CreateDefaultSubobject<UMRFPSAvatarComponent>(TEXT("Manny"));Avatar->SetupAttachment(RootComponent);
     Label = CreateDefaultSubobject<UTextRenderComponent>(TEXT("PlayerInformation")); Label->SetupAttachment(RootComponent);
     Label->SetHorizontalAlignment(EHTA_Center); Label->SetWorldSize(12); Label->SetOwnerNoSee(true);
     HeadsetStatus = CreateDefaultSubobject<UTextRenderComponent>(TEXT("HeadsetStatus")); HeadsetStatus->SetupAttachment(Camera);
@@ -608,6 +627,19 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
     // UIOnly menus own their events. Only a click delivered by the viewport
     // may reacquire inspection controls; a menu click must not do so.
     if (IsLocalController() && IsInspector() && !(SessionMenu && SessionMenu->IsInViewport()) && !(AdminPanel && AdminPanel->IsInViewport())) {
+        if(IsAdmin()&&Params.Key==EKeys::B&&Params.Event==IE_Pressed) { SetAdminWallPlacement(!bAdminWallPlacement);return true; }
+        if(bAdminWallPlacement&&IsAdmin()) {
+            if(Params.Key==EKeys::RightMouseButton) { if(Params.Event==IE_Pressed) SetAdminWallPlacement(false);return true; }
+            if(Params.Event==IE_Pressed) {
+                if(Params.Key==EKeys::R) { AdminWallYaw=FMath::Fmod(AdminWallYaw+90,360.f);return true; }
+                if(Params.Key==EKeys::Delete) { RemoveSelectedBuild();return true; }
+                const FKey Choices[]={EKeys::One,EKeys::Two,EKeys::Three,EKeys::Four};
+                for(int32 I=0;I<4;++I) if(Params.Key==Choices[I]) { AdminBuildKind=EMRFPSBuildKind(I);return true; }
+                if(Params.Key==EKeys::MouseScrollUp||Params.Key==EKeys::MouseScrollDown) {
+                    AdminBuildKind=EMRFPSBuildKind((int32(AdminBuildKind)+(Params.Key==EKeys::MouseScrollUp?1:3))%4);return true;
+                }
+            }
+        }
         if (Params.Key==EKeys::Escape) {
             if (Params.Event==IE_Pressed) { StopHaptics(); SetAdminWallPlacement(false); SetInspectorMouseReleased(true); }
             return true;
@@ -616,10 +648,7 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
             if (bAdminWallPlacement && IsAdmin()) {
                 if (Params.Event==IE_Pressed || Params.Event==IE_DoubleClick) {
                     bConsumeAdminPlacementClick=true;
-                    FVector Origin,Direction;
-                    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
-                    if (GS && ViewSlot<0 && DeprojectMousePositionToWorld(Origin,Direction))
-                        ServerAdminPlaceWall(Origin,Direction,AdminWallYaw,GS->Layout.Revision,GS->ControlRevision);
+                    PlaceSelectedBuild();
                 }
                 if (Params.Event==IE_Released) bConsumeAdminPlacementClick=false;
                 return true;
@@ -780,6 +809,7 @@ void AMRFPSPlayerController::RefreshCaptures()
         Captures[I]->HiddenComponents.Reset();
         if (!Players.IsValidIndex(I) || !bMultiView) continue;
         auto* P=Players[I]; Captures[I]->HiddenComponents.Add(P->HeadVisual); Captures[I]->HiddenComponents.Add(P->BodyVisual);
+        Captures[I]->HiddenComponents.Add(P->Avatar);
         Captures[I]->SetWorldLocationAndRotation(P->Pose.Head,P->Pose.HeadRotation); Captures[I]->CaptureScene();
     }
 }
@@ -823,10 +853,11 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
 {
     Super::PlayerTick(Dt); if (!IsLocalController()) return;
     if (bAdminWallPlacement && !IsAdmin()) SetAdminWallPlacement(false);
+    TickAdminPreview();
     TickQuestVideo();
     TickMeasuredGeometry();
     const double Now=GetWorld()->GetTimeSeconds();
-    if (IsMoveInputIgnored() || (IsInspector() && bInspectorMouseReleased)) MoveAxes=FVector::ZeroVector;
+    if (IsMoveInputIgnored() || (IsInspector() && bInspectorMouseReleased && !bAdminWallPlacement)) MoveAxes=FVector::ZeroVector;
     if (IsInspector()) {
         if ((SessionMenu && SessionMenu->IsInViewport()) || (AdminPanel && AdminPanel->IsInViewport())) bConsumeInspectorCaptureClick=false;
         // Menus temporarily own UIOnly input. Their close handler restores
@@ -834,18 +865,18 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
         // without changing the menu's ignore-move/look counter ownership.
         if (bInspectorMouseReleased) {
             if (!(SessionMenu && SessionMenu->IsInViewport()) && !(AdminPanel && AdminPanel->IsInViewport()) && !bShowMouseCursor) ApplyInspectorMouseMode();
-            if (auto* InspectorPawn=GetPawn<AMRFPSInspectorPawn>(); InspectorPawn && InspectorPawn->Movement) {
+            if (auto* InspectorPawn=GetPawn<AMRFPSInspectorPawn>(); !bAdminWallPlacement && InspectorPawn && InspectorPawn->Movement) {
                 InspectorPawn->Movement->StopMovementImmediately();
                 (void)InspectorPawn->Movement->ConsumeInputVector();
             }
         }
-        if (!bInspectorMouseReleased && ViewSlot<0 && GetPawn()) {
+        if ((!bInspectorMouseReleased || bAdminWallPlacement) && ViewSlot<0 && GetPawn()) {
             GetPawn()->AddMovementInput(GetControlRotation().Vector(),MoveAxes.X);
             GetPawn()->AddMovementInput(FRotationMatrix(GetControlRotation()).GetUnitAxis(EAxis::Y),MoveAxes.Y);
             GetPawn()->AddMovementInput(FVector::UpVector,MoveAxes.Z);
         }
         if (bReconstructedViews && ViewSlot>=0 && !FindPlayer(ViewSlot)) FreeView();
-        if (Now-LastCaptureRefresh>=.1) { LastCaptureRefresh=Now; RefreshCaptures(); }
+        if (Now-LastCaptureRefresh>=1./30.) { LastCaptureRefresh=Now; RefreshCaptures(); }
     } else if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopMove(MoveAxes,Dt);
     if (FParse::Param(FCommandLine::Get(),TEXT("MRFPSAutoReady"))) {
         if (auto* P=GetPawn<AMRFPSPawn>(); P && P->GetSlot()>=0 && !P->bCalibrated && Now>.5) P->Calibrate();
@@ -869,7 +900,7 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
         }
         if (Now>=NextSmokeAction) {
             NextSmokeAction=Now+1;
-            const auto Players=GetPlayers(); int32 Walls=0; for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) ++Walls;
+            const auto Players=GetPlayers(); int32 Walls=0; for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if(!It->bPlacementPreview) ++Walls;
             const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
             UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SNAPSHOT players=%d role=%s phase=%d walls=%d p0hp=%.1f p1hp=%.1f kills0=%d"),
                 Players.Num(),IsInspector()?TEXT("inspector"):TEXT("player"),GS?int32(GS->Phase):-1,Walls,
@@ -882,76 +913,50 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
 
 void AMRFPSHUD::DrawHUD()
 {
-    Super::DrawHUD(); if (!Canvas) return;
-    auto* PC=Cast<AMRFPSPlayerController>(PlayerOwner); if (!PC) return;
-    auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
-    const bool Inspector=PC->IsInspector();
-    const auto DrawVideo=[this](UTexture2D* Texture,float X,float Y,float W,float H) {
-        DrawRect(FLinearColor::Black,X,Y,W,H);
-        if (!Texture || Texture->GetSizeX()<=0 || Texture->GetSizeY()<=0) return;
-        const float Scale=FMath::Min(W/Texture->GetSizeX(),H/Texture->GetSizeY());
-        const float TW=Texture->GetSizeX()*Scale,TH=Texture->GetSizeY()*Scale;
+    Super::DrawHUD();if(!Canvas) return;
+    auto* PC=Cast<AMRFPSPlayerController>(PlayerOwner);if(!PC) return;
+    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();const bool Inspector=PC->IsInspector();
+    const auto Text=[this](const FString& Value,float X,float Y,int32 Size=16,FLinearColor Color=FLinearColor::White) {
+        FCanvasTextItem Item(FVector2D(X,Y),FText::FromString(Value),FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size),Color);
+        Item.EnableShadow(FLinearColor(0,0,0,.6));Canvas->DrawItem(Item);
+    };
+    const auto Video=[this](UTexture2D* Texture,float X,float Y,float W,float H) {
+        DrawRect(FLinearColor::Black,X,Y,W,H);if(!Texture||Texture->GetSizeX()<=0||Texture->GetSizeY()<=0) return;
+        const float Scale=FMath::Min(W/Texture->GetSizeX(),H/Texture->GetSizeY());const float TW=Texture->GetSizeX()*Scale,TH=Texture->GetSizeY()*Scale;
         DrawTexture(Texture,X+(W-TW)*.5f,Y+(H-TH)*.5f,TW,TH,0,0,1,1,FLinearColor::White,BLEND_Opaque);
     };
-    if (Inspector && PC->ViewSlot>=0 && !PC->bReconstructedViews) {
-        auto* Video=PC->GetQuestVideoTexture(PC->ViewSlot);
-        DrawVideo(Video,0,0,Canvas->SizeX,Canvas->SizeY);
-        if (!Video) DrawText(PC->GetQuestVideoStatus(PC->ViewSlot),FLinearColor(.7f,.8f,.85f),32,Canvas->SizeY*.45f);
+    if(Inspector&&PC->ViewSlot>=0&&!PC->bReconstructedViews) { auto* Frame=PC->GetQuestVideoTexture(PC->ViewSlot);Video(Frame,0,0,Canvas->SizeX,Canvas->SizeY);if(!Frame) Text(TEXT("映像を待っています"),32,Canvas->SizeY*.45,18); }
+    DrawRect(FLinearColor(.015,.025,.045,.9),18,18,260,104);
+    const FString RoleLabel=PC->IsAdmin()?TEXT("管理者"):Inspector?TEXT("観戦"):TEXT("プレイ");
+    Text(TEXT("MRFPS  /  ")+RoleLabel,30,26,19,FLinearColor(.5,.8,1));
+    FString Phase=TEXT("準備中");
+    if(GS) Phase=GS->bCombatPaused?TEXT("一時停止"):GS->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):GS->Phase==EMRFPSMatchPhase::Finished?FString::Printf(TEXT("P%d の勝利"),GS->WinnerSlot+1):TEXT("待機中");
+    Text(Phase,30,54,15);
+    for(auto* P:PC->GetPlayers()) {
+        const auto* PS=P->GetPlayerState<AMRFPSPlayerState>();const float X=30+(P->GetSlot()*120);
+        Text(FString::Printf(TEXT("P%d  %d"),P->GetSlot()+1,PS?PS->Kills:0),X,80,12);
+        DrawRect(FLinearColor(.08,.12,.18),X,103,104,5);DrawRect(FLinearColor(.2,.9,.55),X,103,104*FMath::Clamp(P->Health/100,0.f,1.f),5);
+        DrawRect(FLinearColor(.16,.55,1),X,112,104*FMath::Clamp(P->ShieldEnergy/100,0.f,1.f),3);
     }
-    DrawRect(FLinearColor(.008,.016,.03,.9),16,16,620,138);
-    const FString Heading=PC->IsAdmin()?TEXT("MRFPS / ADMIN / F2 CONTROLS"):Inspector?TEXT("MRFPS / INSPECTOR"):
-        FString::Printf(TEXT("MRFPS / ARENA X %.2f x Y %.2f m"),GS?GS->Layout.WidthCm/100:4.5,GS?GS->Layout.LengthCm/100:7.);
-    DrawText(Heading,FLinearColor(.25,.8,1),32,28,nullptr,1.3);
-    FString State=TEXT("Waiting for ready players and ADMIN start");
-    if (GS && GS->Phase==EMRFPSMatchPhase::Playing) State=FString::Printf(TEXT("1 vs 1  |  first to %d eliminations"),GS->ScoreToWin);
-    if (GS && GS->Phase==EMRFPSMatchPhase::Finished) State=FString::Printf(TEXT("P%d wins / ADMIN reset to continue"),GS->WinnerSlot+1);
-    if (GS && GS->bCombatPaused) State=TEXT("COMBAT PAUSED / tracking, video and network live");
-    DrawText(State,FLinearColor::White,32,58);
-    float Y=84;
-    for (auto* P:PC->GetPlayers()) {
-        const auto* PS=P->GetPlayerState<AMRFPSPlayerState>();
-        DrawText(FString::Printf(TEXT("P%d   HP %3.0f   SHIELD %3.0f   %d K / %d D   %s"),P->GetSlot()+1,P->Health,P->ShieldEnergy,
-            PS?PS->Kills:0,PS?PS->Deaths:0,P->bCalibrated?TEXT("READY"):TEXT("ALIGN CENTRE")),
-            P->GetSlot()==0 ? FLinearColor(.2,.7,1) : FLinearColor(1,.5,.1),32,Y); Y+=24;
+    if(Inspector&&PC->bMultiView&&!PC->IsAdminWallPlacement()) for(int32 I=0;I<2;++I) {
+        const float W=FMath::Min(320.f,(Canvas->SizeX-64)/2),H=W*9/16,X=24+I*(W+16),Y=Canvas->SizeY-H-80;
+        DrawRect(FLinearColor(.025,.045,.08,.95),X-3,Y-26,W+6,H+29);
+        Text(FString::Printf(TEXT("P%d  %s"),I+1,PC->bReconstructedViews?TEXT("立体視点"):TEXT("映像")),X+8,Y-23,13,FLinearColor(.5,.8,1));
+        if(PC->bReconstructedViews) { if(PC->ViewTextures.IsValidIndex(I)) DrawTexture(PC->ViewTextures[I],X,Y,W,H,0,0,1,1,FLinearColor::White,BLEND_Opaque); }
+        else { auto* Frame=PC->GetQuestVideoTexture(I);Video(Frame,X,Y,W,H);if(!Frame) Text(TEXT("共有待ち"),X+12,Y+H*.45,14); }
     }
-    DrawRect(FLinearColor(.008,.016,.03,.88),16,Canvas->SizeY-66,Canvas->SizeX-32,48);
-    if (Inspector) {
-        if (GS) DrawText(FString::Printf(TEXT("Floor %s / epoch %u%s"),GS->bNominalDesktopSession?TEXT("DESKTOP NOMINAL"):
-            GS->Layout.bCalibrated&&GS->bSharedFloorConfirmed?TEXT("CALIBRATED"):TEXT("UNAVAILABLE"),GS->Layout.Revision,
-            PC->IsAdminWallPlacement()?TEXT(" / CLICK 3D FLOOR TO PLACE WALL / Esc cancels"):TEXT("")),FLinearColor(.6,.8,.95),32,159);
-        if (PC->IsAdmin()) DrawText(PC->AdminStatus,FLinearColor(.8,.9,1),32,182);
-        if (const auto* Geometry=GetWorld()->GetSubsystem<UMRFPSGeometryWorld>())
-            DrawText(Geometry->GetSafeStatus(),FLinearColor(.4,.9,1),650,32);
-        const FString Mode=PC->bReconstructedViews ? TEXT("3D RECONSTRUCTION") : TEXT("PLAYER POV");
-        DrawText(FString::Printf(TEXT("%s | %s | %s | WASD/R/F: fly  1/2: player  Tab: free  M: panels  V: POV/3D"),
-            PC->ViewSlot<0 ? TEXT("FREE CAMERA") : *FString::Printf(TEXT("P%d"),PC->ViewSlot+1),*Mode,
-            PC->IsInspectorMouseReleased()?TEXT("Click viewport to control"):TEXT("Esc: release mouse")),FLinearColor::White,28,Canvas->SizeY-50);
-        if (PC->bMultiView) for (int32 I=0; I<2; ++I) {
-            const float W=FMath::Min(340.f,(Canvas->SizeX-64.f)/2); const float H=W*9/16;
-            const float X=24+I*(W+16); const float Top=Canvas->SizeY-H-100;
-            DrawRect(FLinearColor(.03,.09,.13,.95),X-3,Top-25,W+6,H+28);
-            DrawText(FString::Printf(TEXT("P%d / %s"),I+1,PC->bReconstructedViews ? TEXT("3D RECONSTRUCTION") : TEXT("PLAYER POV")),FLinearColor(.4,.9,1),X+6,Top-22);
-            if (PC->bReconstructedViews) {
-                if (PC->ViewTextures.IsValidIndex(I)) DrawTexture(PC->ViewTextures[I],X,Top,W,H,0,0,1,1,FLinearColor::White,BLEND_Opaque);
-            } else {
-                auto* Video=PC->GetQuestVideoTexture(I); DrawVideo(Video,X,Top,W,H);
-                if (!Video) DrawText(PC->GetQuestVideoStatus(I),FLinearColor(.7f,.8f,.85f),X+10,Top+H*.45f);
-            }
+    if(PC->IsAdminWallPlacement()) {
+        const float Left=Canvas->SizeX*.5f-158,Top=Canvas->SizeY-112;
+        for(int32 I=0;I<4;++I) {
+            const float X=Left+I*80;const bool Selected=int32(PC->AdminBuildKind)==I;
+            DrawRect(Selected?FLinearColor(.04,.38,.8,.95):FLinearColor(.025,.045,.08,.95),X,Top,74,63);
+            Text(FString::FromInt(I+1),X+7,Top+4,11,FLinearColor(.6,.8,1));Text(MRFPSBuild::Label(EMRFPSBuildKind(I)),X+13,Top+27,19);
         }
-    } else {
-        DrawText(TEXT("C/Y: align   X: share/stop player view   Fire: trigger   Left palm: shield   Raise left hand: wall"),FLinearColor::White,28,Canvas->SizeY-52);
-        if (auto* P=PC->GetPawn<AMRFPSPawn>()) {
-            DrawText(P->TrackingDescription+TEXT(" | MoBits: ")+P->Haptics->GetStatus(),FLinearColor(.7,.85,.9),28,Canvas->SizeY-30);
-#if !UE_SERVER
-            if (const auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>())
-                DrawText(Capture->GetSafeStatus(),FLinearColor(.7f,.85f,.9f),28,Canvas->SizeY-86);
-            if (const auto* Geometry=GetGameInstance()->GetSubsystem<UMRFPSGeometryCaptureSubsystem>())
-                DrawText(Geometry->GetSafeStatus(),FLinearColor(.5f,.9f,.9f),28,Canvas->SizeY-104);
-#endif
-            if (!P->bCalibrated) DrawText(TEXT("Stand at physical arena centre, face agreed +X, then calibrate"),FLinearColor(1,.8,.3),32,170,nullptr,1.1);
-        }
-    }
-    if (!PC->ConnectionError.IsEmpty()) DrawText(PC->ConnectionError,FLinearColor(1,.4,.3),32,210);
+        Text(TEXT("クリック 設置   R 回転   Del 削除   右クリック 終了"),Left-30,Top+72,13);
+    } else if(Inspector) Text(PC->IsAdmin()?TEXT("B 建築   F2 管理   F1 メニュー"):TEXT("1 / 2 視点   Tab 自由   F1 メニュー"),24,Canvas->SizeY-35,13,FLinearColor(.65,.78,.9));
+    else if(auto* Pawn=PC->GetPawn<AMRFPSPawn>();Pawn&&!Pawn->bCalibrated) Text(TEXT("C / Y で位置調整"),30,133,16);
+    if(PC->IsAdmin()) Text(PC->AdminFeedback(),30,138,15,FLinearColor(.7,.95,.85));
+    if(!PC->ConnectionError.IsEmpty()) Text(TEXT("接続を確認してください"),30,165,15,FLinearColor(1,.4,.4));
 }
 
 AMRFPSGameMode::AMRFPSGameMode()
@@ -1139,7 +1144,7 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(4);
+    FNetworkVersion::SetGameNetworkProtocolVersion(5);
     Super::Init(); if (GEngine) GEngine->OnNetworkFailure().AddUObject(this,&UMRFPSGameInstance::NetworkFailure);
 }
 void UMRFPSGameInstance::OnStart()
@@ -1238,13 +1243,13 @@ void AMRFPSPawn::UpdateVisuals()
     } else LeftVisual->SetWorldLocation(Pose.Left);
     const bool CustomGun=GunVisual->GetStaticMesh() && GunVisual->GetStaticMesh()->GetName()==TEXT("SM_MRPistol");
     GunVisual->SetWorldLocationAndRotation(FVector(Pose.Right)+Pose.RightRotation.Vector()*(CustomGun ? 0 : 8),Pose.RightRotation);
-    HeadVisual->SetVisibility(Alive && Pose.bHeadTracked); BodyVisual->SetVisibility(Alive && Pose.bHeadTracked);
-    LeftVisual->SetVisibility(Alive && Pose.bLeftTracked); GunVisual->SetVisibility(Alive && Pose.bRightTracked);
+    const bool Manny=Avatar && Avatar->IsAvatarReady();
+    HeadVisual->SetVisibility(!Manny && Alive && Pose.bHeadTracked); BodyVisual->SetVisibility(!Manny && Alive && Pose.bHeadTracked);
+    LeftVisual->SetVisibility(!Manny && Alive && Pose.bLeftTracked); GunVisual->SetVisibility(Alive && Pose.bRightTracked);
     ShieldVisual->SetVisibility(Alive && bShieldActive);
     Label->SetWorldLocation(FVector(Pose.Head)+FVector(0,0,35));
-    const auto* PS=GetPlayerState<AMRFPSPlayerState>();
-    Label->SetText(FText::FromString(FString::Printf(TEXT("P%d | HP %.0f | shield %.0f\n%d K / %d D | %s"),GetSlot()+1,Health,ShieldEnergy,
-        PS ? PS->Kills : 0, PS ? PS->Deaths : 0,bCalibrated ? TEXT("READY") : TEXT("ALIGN CENTRE"))));
+    Label->SetText(FText::FromString(FString::Printf(TEXT("P%d"),GetSlot()+1)));
+    Label->SetVisibility(Alive && Pose.bHeadTracked && GetSlot()>=0);
 }
 void AMRFPSPawn::Tick(float Dt)
 {
@@ -1261,6 +1266,10 @@ void AMRFPSPawn::Tick(float Dt)
         if (Health<=0 && Now>=RespawnAt) if (auto* GS=GetWorld()->GetGameState<AMRFPSGameState>(); GS && GS->Phase==EMRFPSMatchPhase::Playing) Respawn();
     }
     UpdateVisuals();
+    if(Avatar && Avatar->IsAvatarReady()) {
+        Avatar->UpdateTracking(Pose,MRFPS::Layout(GetWorld()),GeometryCalibrationGeneration,Dt,IsLocallyControlled());
+        if(Health<=0) Avatar->SetVisibility(false);
+    }
     if (APlayerController* PC=GetWorld()->GetFirstPlayerController(); PC && PC->PlayerCameraManager) {
         Label->SetWorldRotation((PC->PlayerCameraManager->GetCameraLocation()-Label->GetComponentLocation()).Rotation());
     }
