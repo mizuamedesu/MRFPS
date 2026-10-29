@@ -1,6 +1,7 @@
 #include "MRFPSGame.h"
 #include "../MRFPSHandPose.h"
 #include "../MRFPSGloveInput.h"
+#include "../MRFPSDeviceAuthUrl.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -522,6 +523,21 @@ bool FMRFPSReconnectOriginTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("A cancelled device login does not misclassify a later file connection"),Cancelled->IsAutoReconnectPending());
     auto* NoAttempt=NewObject<UMRFPSGameInstance>(); NoAttempt->PrepareForNetworkFailure(true);
     TestTrue(TEXT("A file without a prior destination still requests login"),NoAttempt->IsLoginScreenRequested());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSDeviceAuthTestUrlTest,"MRFPS.Auth.DeviceAuthTestUrl",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMRFPSDeviceAuthTestUrlTest::RunTest(const FString& Parameters)
+{
+    using MRFPSDeviceAuthUrl::IsSafeTestUrl;
+    TestTrue(TEXT("Explicit numeric loopback and valid port are accepted"),IsSafeTestUrl(TEXT("http://127.0.0.1:18787/api/device/exchange")));
+    TestTrue(TEXT("Localhost with no path is accepted"),IsSafeTestUrl(TEXT("http://localhost:1")));
+    TestFalse(TEXT("Userinfo cannot redirect the request to another host"),IsSafeTestUrl(TEXT("http://127.0.0.1:1234@outside.test/api")));
+    TestFalse(TEXT("A hostname suffix is not loopback"),IsSafeTestUrl(TEXT("http://localhost.evil.test:1234/api")));
+    TestFalse(TEXT("Encoded authority cannot redirect the request"),IsSafeTestUrl(TEXT("http://localhost:1234%40outside.test/api")));
+    TestFalse(TEXT("A port is required and bounded"),IsSafeTestUrl(TEXT("http://127.0.0.1:0/api")) || IsSafeTestUrl(TEXT("http://localhost:65536/api")) || IsSafeTestUrl(TEXT("http://localhost:abc/api")));
+    TestFalse(TEXT("Queries, fragments and backslashes are forbidden"),IsSafeTestUrl(TEXT("http://localhost:99/a?x=y")) || IsSafeTestUrl(TEXT("http://localhost:99/a#x")) || IsSafeTestUrl(TEXT("http://localhost:99/a\\b")));
     return true;
 }
 

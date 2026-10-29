@@ -27,6 +27,12 @@ class DeviceLoginControlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     module.read_code(path)
 
+    def test_debug_auth_url_cannot_escape_loopback(self):
+        self.assertTrue(module.test_auth_url("http://127.0.0.1:18787/api/device/exchange"))
+        self.assertTrue(module.test_auth_url("http://localhost:80"))
+        for invalid in ("http://127.0.0.1:1234@evil.test/api", "http://localhost.evil.test:80/", "http://localhost:0/", "http://localhost:65536/", "http://localhost:99/?x=1"):
+            self.assertFalse(module.test_auth_url(invalid))
+
     def test_quest_repeated_configuration_does_not_restart_or_redeem_again(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

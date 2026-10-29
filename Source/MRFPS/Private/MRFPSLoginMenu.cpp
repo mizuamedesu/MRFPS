@@ -1,4 +1,5 @@
 #include "MRFPSLoginMenu.h"
+#include "MRFPSDeviceAuthUrl.h"
 
 #include "MRFPSGame.h"
 #include "MRFPSAuthClientSubsystem.h"
@@ -351,16 +352,21 @@ void UMRFPSLoginMenu::Exchange()
     if (bExchanging || !bLoginPage || !CodeBox) return;
     FString Code=CodeBox->GetText().ToString().TrimStartAndEnd();
     if (Code.Len()!=6 || !Code.IsNumeric()) { SetStatus(TEXT("6桁の数字を入力してください"),true); return; }
+    FString URL=AuthUrl;
+#if !UE_BUILD_SHIPPING
+    FString TestURL;
+    if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSDeviceAuthTestUrl="),TestURL)) {
+        if (!MRFPSDeviceAuthUrl::IsSafeTestUrl(TestURL)) {
+            UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=TEST_URL"));
+            SetStatus(TEXT("テスト用認証先が無効です"),true); return;
+        }
+        URL=TestURL;
+    }
+#endif
     auto Json=MakeShared<FJsonObject>(); Json->SetStringField(TEXT("role"),Role); Json->SetStringField(TEXT("code"),Code);
     FString Body; const auto Writer=TJsonWriterFactory<>::Create(&Body); FJsonSerializer::Serialize(Json,Writer);
     CodeBox->SetText(FText::GetEmpty()); Code.Empty();
     auto Request=FHttpModule::Get().CreateRequest(); PendingRequest=Request;
-    FString URL=AuthUrl;
-#if !UE_BUILD_SHIPPING
-    FString TestURL;
-    if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSDeviceAuthTestUrl="),TestURL) &&
-        (TestURL.StartsWith(TEXT("http://127.0.0.1:")) || TestURL.StartsWith(TEXT("http://localhost:")))) URL=TestURL;
-#endif
     Request->SetURL(URL); Request->SetVerb(TEXT("POST")); Request->SetHeader(TEXT("Content-Type"),TEXT("application/json"));
     Request->SetTimeout(12.f); Request->SetContentAsString(Body); Body.Empty();
     const TWeakObjectPtr<UMRFPSLoginMenu> Weak(this);

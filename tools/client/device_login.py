@@ -36,6 +36,11 @@ def endpoint(value: str) -> str:
     return value
 
 
+def test_auth_url(value: str) -> bool:
+    match=re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):([0-9]{1,5})(?:/[A-Za-z0-9_./-]*)?",value)
+    return bool(match and 1<=int(match.group(1))<=65535)
+
+
 def read_code(path: Path) -> bytes:
     data = path.read_bytes().strip()
     if not re.fullmatch(rb"[0-9]{6}", data):
@@ -208,7 +213,7 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     import ctypes
     from ctypes import wintypes
     address = endpoint(args.server)
-    if args.auth_test_url and not re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}/[A-Za-z0-9_./-]*", args.auth_test_url):
+    if args.auth_test_url and not test_auth_url(args.auth_test_url):
         raise ValueError("test auth URL must be a localhost HTTP URL")
     binary = args.executable.resolve(strict=True)
     wanted = {"server": address, "role": args.role, "name": args.name, "auth_test_url": args.auth_test_url or "",
