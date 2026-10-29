@@ -11,29 +11,30 @@ Quest は起動するとサーバー設定、デバイスログインの順に�
 `tools/client/device_login.py` は、接続先・役割・入力コードを指定して同じ処理を起動します。コードは**6桁の ASCII テキストファイル**で渡し、コマンドラインや表示・ログには値を出しません。Quest の転送は adb 標準入力とアプリ private storage を使うため、`run-as` に対応した開発 APK が必要です。Windows の制御ファイルは ACL を制限した `%LOCALAPPDATA%\MRFPS\DeviceLogin\controls` に置き、ゲーム側が読み取った直後に削除します。GUI のコード交換処理と同じ HTTPS API とクライアント側の署名検証を使います。
 
 ```powershell
+$mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
 # 先に起動してログイン画面を表示（--editor を省くとパッケージ版）
-python tools/client/device_login.py windows --editor `
+& $mrfpsPython tools/client/device_login.py windows --editor `
   --executable C:\UnrealEngine\UE5.8\Engine\Binaries\Win64\UnrealEditor.exe `
   --name MRFPS-Inspector-1 --role inspector
 
 # 表示後に発行したコードを、起動済みの同じ画面に投入
-python tools/client/device_login.py windows --editor `
+& $mrfpsPython tools/client/device_login.py windows --editor `
   --executable C:\UnrealEngine\UE5.8\Engine\Binaries\Win64\UnrealEditor.exe `
   --name MRFPS-Inspector-1 --role inspector --code-file .local\device-code.txt
 
 # ガード状態と秘密を除いた認証イベントを確認
-python tools/client/device_login.py status --name MRFPS-Inspector-1
+& $mrfpsPython tools/client/device_login.py status --name MRFPS-Inspector-1
 
 # ガードに属する対象ウィンドウだけを通常終了（繰り返し実行可）
-python tools/client/device_login.py stop-windows --name MRFPS-Inspector-1
+& $mrfpsPython tools/client/device_login.py stop-windows --name MRFPS-Inspector-1
 
 # Quest（こちらも最初は --code-file を省いて起動できる）
-python tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
+& $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
   --serial QUEST_SERIAL --role player --code-file .local\device-code.txt
 
 # 意図した鍵変更を確認してから実施。何度実行しても同じ状態になります。
-python tools/client/device_login.py reset-trust quest --adb .local\android\platform-tools\adb.exe --serial QUEST_SERIAL
-python tools/client/device_login.py reset-trust windows
+& $mrfpsPython tools/client/device_login.py reset-trust quest --adb .local\android\platform-tools\adb.exe --serial QUEST_SERIAL
+& $mrfpsPython tools/client/device_login.py reset-trust windows
 ```
 
 同じコードファイルの同じ更新時刻、接続先、役割、プロセスの組み合わせを再実行すると、既存のプロセスを維持して終了します。同じログイン画面に新しい接続先・役割・コードを渡すと再起動せずに入力できます。`--replace` は、このコマンドが起動した Windows クライアント、または対象 Quest の MRFPS アプリだけを再起動します。別の Windows インスペクターはそれぞれ別の `--name` とコードを使って起動できます。6桁コードの交換自体は意図的に一回限りで、冪等な再発行や同じコードの再利用はできません。`login_queued`／`settings_queued` はファイル投入の完了を示し、画面が開いて処理するまで待ちます。認証や参加の成功を保証しません。信頼解除コマンドは固定された公開鍵と旧アクセス資格情報のみを削除し、稼働中プロセスのメモリ上の鍵には影響しません。稼働中なら対象アプリを再起動してください。
