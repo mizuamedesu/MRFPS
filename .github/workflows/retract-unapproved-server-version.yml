@@ -45,7 +45,7 @@ jobs:
               hdr.update(headers or {})
               try:
                   with urllib.request.urlopen(urllib.request.Request(url, headers=hdr, method=method), timeout=15) as response:
-                      return response.status, response.read(1 if one_byte else 2 * 1024 * 1024), dict(response.headers)
+                      return response.status, response.read(1 if one_byte else 2 * 1024 * 1024), {key.lower(): value for key, value in response.headers.items()}
               except urllib.error.HTTPError as error:
                   return error.code, b'', {}
 
@@ -86,7 +86,9 @@ jobs:
           # tokens are saved. Read at most one byte from the largest layer.
           old_token, token_status = anonymous_token()
           manifest_status, raw_manifest, manifest_headers = request(REGISTRY + '/manifests/' + TAG, old_token, headers={'Accept': ACCEPT})
-          if token_status != 200 or manifest_status != 200 or manifest_headers.get('Docker-Content-Digest') != DIGEST:
+          print(json.dumps({'phase': 'anonymous-manifest-check', 'token_status': token_status,
+                            'manifest_status': manifest_status, 'digest_matches': manifest_headers.get('docker-content-digest') == DIGEST}))
+          if token_status != 200 or manifest_status != 200 or manifest_headers.get('docker-content-digest') != DIGEST:
               raise SystemExit('ANONYMOUS_EXACT_MANIFEST_PRECONDITION_FAILED')
           manifest = json.loads(raw_manifest)
           layers = manifest.get('layers', [])
