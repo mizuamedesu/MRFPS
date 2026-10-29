@@ -8,6 +8,7 @@
 #include "InputCoreTypes.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
+#include "Rendering/DrawElements.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBorder.h"
@@ -18,6 +19,29 @@
 
 namespace
 {
+// Scene-capture render targets can contain an undefined/inverted alpha
+// channel. Treat the inspector's video as an opaque image, like a viewport.
+class SMRFPSOpaqueCapture : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SMRFPSOpaqueCapture) {} SLATE_END_ARGS()
+    void Construct(const FArguments&,const FSlateBrush* InBrush) { Brush=InBrush; }
+    virtual FVector2D ComputeDesiredSize(float) const override { return Brush ? Brush->ImageSize : FVector2D::ZeroVector; }
+    virtual int32 OnPaint(const FPaintArgs&,const FGeometry& Geometry,const FSlateRect&,FSlateWindowElementList& Elements,
+                          int32 Layer,const FWidgetStyle& Style,bool bParentEnabled) const override
+    {
+        if (Brush && Brush->DrawAs!=ESlateBrushDrawType::NoDrawType) {
+            const ESlateDrawEffect Effects=ESlateDrawEffect::IgnoreTextureAlpha |
+                (ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect);
+            FSlateDrawElement::MakeBox(Elements,Layer,Geometry.ToPaintGeometry(),Brush,Effects,
+                Style.GetColorAndOpacityTint()*Brush->GetTint(Style));
+        }
+        return Layer;
+    }
+private:
+    const FSlateBrush* Brush=nullptr;
+};
+
 class SMRFPSPlayerVideo : public SCompoundWidget
 {
 public:
@@ -74,7 +98,7 @@ public:
         Brush.DrawAs=ESlateBrushDrawType::Image;
         Brush.ImageSize=FVector2D(960,540);
         if (auto* PC=Owner.Get()) Brush.SetResourceObject(PC->GetInspectorWindowTarget());
-        ChildSlot [ SNew(SScaleBox).Stretch(EStretch::ScaleToFit) [ SNew(SImage).Image(&Brush) ] ];
+        ChildSlot [ SNew(SScaleBox).Stretch(EStretch::ScaleToFit) [ SNew(SMRFPSOpaqueCapture,&Brush) ] ];
     }
     virtual bool SupportsKeyboardFocus() const override { return true; }
     virtual FReply OnMouseButtonDown(const FGeometry&,const FPointerEvent& Event) override
