@@ -4,8 +4,11 @@ Server publication is restricted to the dedicated **private** repository
 [`mizuamedesu/MRFPS-Server-Registry`](https://github.com/mizuamedesu/MRFPS-Server-Registry)
 and the separate package `ghcr.io/mizuamedesu/mrfps-server-private`.
 The public repository's publisher is disabled and also refuses public-repository
-execution before artifact or registry access. Final game-binary publication is
-on hold until the updated game rules have a newly approved Linux build.
+execution before artifact or registry access. A protocol-14 server image built
+from source commit `73754b10926c751cc1e2e362d496db12f89dc44f` is published at
+`ghcr.io/mizuamedesu/mrfps-server-private@sha256:3baa4f1e1c0bc4c1313eeab85bc875c840e4d3685667515b56701d23b0c0a888`.
+It includes the three-round rules and solo Bot. Later client UI and automation
+changes are not part of that image's build provenance.
 
 GitHub workflow-created packages inherit the publishing repository's visibility.
 The first public-repository attempt consequently exposed the server image; the
@@ -69,15 +72,18 @@ verified using an innocuous fixture before a game binary is sent. OCI source
 linkage points at the private publisher; a separate label records the public
 source repository and its reviewed commit. Visibility is never broadened.
 
-The harmless fixture has been pushed and pulled with the private publisher's
-job token. Its package metadata is private but does not currently expose a
-repository link. That is not accepted as a match on its own: deployment is held
-until the package's immutable ID/creation time are pinned to the initial
-creation-before-404 evidence and original fixture digest. Every later check
-also verifies the authenticated image config's private source label and denies
-anonymous access to both manifests and its largest layer. A conflicting
-repository link or changed ID fails. `-Operation Inspect` performs only the
-scoped metadata/version inspection and does not start a BuildKit builder.
+The private package is pinned to immutable ID `16392074`. The harmless
+[Probe run 40953878450](https://github.com/mizuamedesu/MRFPS-Server-Registry/actions/runs/40953878450)
+verified that identity, a scoped authenticated pull and anonymous denial. The
+[Publish run 40954210256](https://github.com/mizuamedesu/MRFPS-Server-Registry/actions/runs/40954210256)
+pulled the real published image and verified the server ELF SHA-256
+`4598e7965dcae2b970b1ad2d4ab6c3963bf23ad5c826e8a9aaa287869c070314`;
+anonymous tag, digest and largest-layer requests were denied. The runner and
+its owned temporary artifacts were removed afterward. These workflow checks
+used its scoped job token; the local host's credential could not inspect package
+metadata independently. A conflicting repository link or changed ID fails.
+`-Operation Inspect` performs only the scoped metadata/version inspection and
+does not start a BuildKit builder.
 
 GitHub-hosted private Actions were blocked by the account's payment/spending
 setting. The scripts do not change billing. A task-specific ephemeral Linux
