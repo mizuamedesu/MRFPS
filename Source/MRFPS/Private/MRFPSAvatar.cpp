@@ -24,8 +24,10 @@ struct FMRFPSAvatarRig
     int32 Effector[5]={INDEX_NONE,INDEX_NONE,INDEX_NONE,INDEX_NONE,INDEX_NONE};
     FQuat TrackingToBone[3];
     FVector Feet[2]={FVector::ZeroVector,FVector::ZeroVector};
+    FVector FootGoals[2]={FVector::ZeroVector,FVector::ZeroVector};
     float FootYaw[2]={0,0};
     bool Planted[2]={false,false};
+    bool FootGoalValid[2]={false,false};
     FVector PreviousHead=FVector::ZeroVector;
     FVector SmoothHead=FVector::ZeroVector;
     FVector Velocity=FVector::ZeroVector;
@@ -140,7 +142,7 @@ void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSAr
         R.Initialized=true;R.Calibration=Calibration;R.LayoutRevision=Layout.Revision;R.PreviousHead=R.SmoothHead=RawHead;
         R.Velocity=FVector::ZeroVector;R.BodyYaw=Pose.HeadRotation.Yaw;R.Phase=0;
         for(int32 I=0;I<3;++I) R.SmoothRotations[I]=Rotations[I];
-        for(int32 I=0;I<2;++I) { R.SmoothHands[I]=Hands[I];R.Planted[I]=false; }
+        for(int32 I=0;I<2;++I) { R.SmoothHands[I]=Hands[I];R.Planted[I]=false;R.FootGoalValid[I]=false; }
         // Standing height is fixed for this calibration. Crouching changes the
         // pelvis/leg solution, never the model scale or physical world scale.
         if(HeightCalibration) { BodyScale=FMath::Clamp(float((RawHead.Z-Layout.Center.Z)/R.RefEyeHeight),.75f,1.25f);R.HeightCalibrated=true; }
@@ -235,7 +237,12 @@ void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSAr
             if(!R.Planted[Foot]) { R.Feet[Foot]=Target;R.Feet[Foot].Z=Ground+Sole;R.FootYaw[Foot]=R.BodyYaw; }
             Target=R.Feet[Foot];R.Planted[Foot]=true;
         } else { R.Planted[Foot]=false;Target.Z=FMath::Max(Target.Z,double(Ground)+Sole); }
-        Goals[Foot+3]=FTransform(R.Global[Index].GetRotation(),BodyTransform.InverseTransformPosition(Target));
+        // Releasing a planted foot can move its animation target tens of cm in
+        // one frame. Follow that target at a bounded speed instead of snapping;
+        // the world-space anchor itself remains fixed while in stance.
+        if(!R.FootGoalValid[Foot]) { R.FootGoals[Foot]=Target;R.FootGoalValid[Foot]=true; }
+        else R.FootGoals[Foot]+=(Target-R.FootGoals[Foot]).GetClampedToMaxSize(350*BodyScale*Dt);
+        Goals[Foot+3]=FTransform(R.Global[Index].GetRotation(),BodyTransform.InverseTransformPosition(R.FootGoals[Foot]));
     }
     for(int32 I=0;I<5;++I) {
         PBIK::FEffectorSettings Settings;Settings.ChainDepth=I==0?6:3;Settings.RotationAlpha=I<3?1.f:.6f;

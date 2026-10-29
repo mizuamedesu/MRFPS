@@ -1,6 +1,8 @@
 #include "MRFPSGame.h"
+#include "../MRFPSHandPose.h"
 
 #include "Components/BoxComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -83,6 +85,38 @@ bool FMRFPSPoseValidationTest::RunTest(const FString& Parameters)
     Pose = Valid;
     Pose.LeftRotation.Yaw = std::numeric_limits<double>::quiet_NaN();
     TestFalse(TEXT("Non-finite hand orientation is rejected"), Pose.IsSane());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSHandWeaponAimTest, "MRFPS.Core.HandWeaponAim",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMRFPSHandWeaponAimTest::RunTest(const FString& Parameters)
+{
+    FXRHandTrackingState Hand;
+    Hand.bValid=true; Hand.TrackingStatus=ETrackingStatus::Tracked;
+    Hand.HandKeyLocations.SetNum(EHandKeypointCount);
+    Hand.HandKeyRotations.SetNum(EHandKeypointCount);
+    const int32 Palm=static_cast<int32>(EHandKeypoint::Palm);
+    const int32 IndexTip=static_cast<int32>(EHandKeypoint::IndexTip);
+    Hand.HandKeyLocations[Palm]=FVector(100,20,130);
+    Hand.HandKeyRotations[Palm]=FRotationMatrix::MakeFromXZ(FVector::RightVector,FVector::ForwardVector).ToQuat();
+    const FTransform EngineToTracking(FRotator(0,-25,0),FVector(5,10,0));
+    const FTransform TrackingToArena(FRotator(0,55,0),FVector(-15,8,0));
+    FVector Position; FRotator Rotation;
+    TestTrue(TEXT("A tracked palm yields a weapon pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
+    const FQuat Expected=TrackingToArena.TransformRotation(EngineToTracking.TransformRotation(Hand.HandKeyRotations[Palm])).GetNormalized();
+    TestTrue(TEXT("Weapon forward follows the hand rather than its back"),FVector::DotProduct(Rotation.Vector(),Expected.GetAxisX())>.9999 &&
+        FMath::Abs(FVector::DotProduct(Rotation.Vector(),Expected.GetAxisZ()))<.001);
+    TestTrue(TEXT("Palm position is transformed into the calibrated arena once"),FVector::Dist(Position,
+        TrackingToArena.TransformPosition(EngineToTracking.TransformPosition(Hand.HandKeyLocations[Palm])))<.001);
+    Hand.HandKeyLocations[IndexTip]=FVector(-100,-200,-300);
+    FVector CurledPosition; FRotator CurledRotation;
+    TestTrue(TEXT("A curled finger retains a valid palm pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,CurledPosition,CurledRotation));
+    TestTrue(TEXT("Curling the trigger finger does not turn the gun"),FVector::DotProduct(Rotation.Vector(),CurledRotation.Vector())>.9999);
+    Hand.TrackingStatus=ETrackingStatus::NotTracked;
+    TestFalse(TEXT("Lost hand tracking cannot override a controller pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
+    Hand.TrackingStatus=ETrackingStatus::Tracked; Hand.HandKeyRotations[Palm]=FQuat(0,0,0,0);
+    TestFalse(TEXT("An invalid palm rotation cannot produce a weapon pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
     return true;
 }
 
@@ -170,6 +204,8 @@ public:
         case 0:
             Test->TestTrue(TEXT("Combat fixture is authoritative"), Shooter->HasAuthority() && Target->HasAuthority());
             Test->TestTrue(TEXT("Both registered aligned fighters can act"), Shooter->CanAct() && Target->CanAct());
+            Test->TestTrue(TEXT("The visible gun points along its server muzzle trace"),FVector::DotProduct(
+                Shooter->GunVisual->GetForwardVector(),(Shooter->Muzzle()-FVector(Shooter->Pose.Right)).GetSafeNormal())>.999);
             Shooter->ServerFire();
             Test->TestEqual(TEXT("A real weapon trace damages the opposing body"), Target->Health, 80.f);
             Shooter->ServerFire();

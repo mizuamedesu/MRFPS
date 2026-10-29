@@ -1,5 +1,6 @@
 #include "MRFPSGame.h"
 #include "MRFPSAvatar.h"
+#include "MRFPSHandPose.h"
 #include "Misc/Paths.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
@@ -428,14 +429,17 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             if (Tracked) { P=T.TransformPosition(M.ControllerLocation); R=T.TransformRotation(M.ControllerRotation).Rotator(); }
             FXRHandTrackingState H;
             UHeadMountedDisplayFunctionLibrary::GetHandTrackingState(this,EXRSpaceType::UnrealWorldSpace,Side,H);
-            if (!Tracked && H.bValid && H.TrackingStatus==ETrackingStatus::Tracked && H.HandKeyLocations.Num()>=26 && H.HandKeyRotations.Num()>=26) {
+            if ((!Tracked || Side==EControllerHand::Right) && H.bValid && H.TrackingStatus==ETrackingStatus::Tracked && H.HandKeyLocations.Num()>=26 && H.HandKeyRotations.Num()>=26) {
                 const FTransform EngineToTracking=UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(this).Inverse();
-                Tracked=true; P=T.TransformPosition(EngineToTracking.TransformPosition(H.HandKeyLocations[0]));
-                const FQuat Palm=T.TransformRotation(EngineToTracking.TransformRotation(H.HandKeyRotations[0]));
-                if (Side==EControllerHand::Left) R=FRotationMatrix::MakeFromXZ(-Palm.GetAxisZ(),Palm.GetAxisX()).Rotator();
-                else {
-                    const FVector IndexDirection=T.TransformVectorNoScale(EngineToTracking.TransformVectorNoScale(H.HandKeyLocations[10]-H.HandKeyLocations[7]));
-                    R=FRotationMatrix::MakeFromXZ(IndexDirection,Palm.GetAxisZ()).Rotator();
+                if (Side==EControllerHand::Right) {
+                    FVector HandPosition; FRotator HandRotation;
+                    if (MRFPSHandPose::RightPalmWeaponPose(H,EngineToTracking,T,HandPosition,HandRotation)) {
+                        Tracked=true; P=HandPosition; R=HandRotation;
+                    }
+                } else {
+                    const FQuat Palm=T.TransformRotation(EngineToTracking.TransformRotation(H.HandKeyRotations[0]));
+                    Tracked=true; P=T.TransformPosition(EngineToTracking.TransformPosition(H.HandKeyLocations[0]));
+                    R=FRotationMatrix::MakeFromXZ(-Palm.GetAxisZ(),Palm.GetAxisX()).Rotator();
                 }
             }
             if (Side==EControllerHand::Left) Next.LeftOpenness=0;

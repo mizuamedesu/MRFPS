@@ -6,6 +6,8 @@ MRFPSGloves は DivingStation が出力する実際の OSC 入力を受ける UE
 
 CG2 の[専用ドングルの公式仕様](https://store.melt-interface-technologies.com/products/usb-dongle)は「2.4GHz独自通信」です。[公開された DivingStationProtocol v1](https://docs.melt-interface-technologies.com/contact-glove-2-dev/cg2_protocolv1) は DivingStation とアプリ間の OSC であり、グローブと Quest の Bluetooth/GATT 仕様ではありません。Magnetra 2 はグローブに接続するアクセサリーです。公開資料から CG2/Magnetra 2 の Quest 内蔵 Bluetooth 用モードは確認できておらず、このプロジェクトも直接接続には対応していません。対応にはメーカーによる BLE 対応の有無と、その firmware・GATT 仕様、または Android 向け SDK の確認が必要です。
 
+CG2単体は空間内の手の位置を計測できません。[メーカーのQuest用アダプター](https://store.melt-interface-technologies.com/en/products/quest-3-3s-pro-adapter-for-cg2-3)はQuest 3 / 3s / Proのコントローラーをグローブへ取り付ける構成です。コントローラー側の位置追跡とグローブ側の指入力は別々のデータであり、アダプターだけでグローブの指データがQuestへBluetooth直結されるわけではありません。取付位置と手の位置の差は実機で校正する必要があります。
+
 2026-10-29 の PC 上の 5 秒実測では、専用ドングルと DivingStation の OSC は稼働していましたが、左右のグローブはどちらも未接続と報告されました。これはその時点の状態で、電源投入・ペアリング後の動作を否定するものではありません。
 
 ## 確認した公式仕様
