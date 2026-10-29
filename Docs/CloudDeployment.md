@@ -4,11 +4,11 @@ Server publication is restricted to the dedicated **private** repository
 [`mizuamedesu/MRFPS-Server-Registry`](https://github.com/mizuamedesu/MRFPS-Server-Registry)
 and the separate package `ghcr.io/mizuamedesu/mrfps-server-private`.
 The public repository's publisher is disabled and also refuses public-repository
-execution before artifact or registry access. A protocol-14 server image built
-from source commit `73754b10926c751cc1e2e362d496db12f89dc44f` is published at
-`ghcr.io/mizuamedesu/mrfps-server-private@sha256:3baa4f1e1c0bc4c1313eeab85bc875c840e4d3685667515b56701d23b0c0a888`.
-It includes the three-round rules and solo Bot. Later client UI and automation
-changes are not part of that image's build provenance.
+execution before artifact or registry access. The latest published protocol-14
+server image was built from source commit `bc0a8d683a2b7ece5c0ff933be6de1e90afef1fc`:
+`ghcr.io/mizuamedesu/mrfps-server-private@sha256:9a04ded4dabdba0e45b16176d1c91b54900c18e2df053aa71e93fefcd027b4ab`.
+It includes the three-round rules and solo Bot. Later changes are not part of
+that image's build provenance. Publishing it is not a Flash deployment.
 
 GitHub workflow-created packages inherit the publishing repository's visibility.
 The first public-repository attempt consequently exposed the server image; the
@@ -84,6 +84,13 @@ used its scoped job token; the local host's credential could not inspect package
 metadata independently. A conflicting repository link or changed ID fails.
 `-Operation Inspect` performs only the scoped metadata/version inspection and
 does not start a BuildKit builder.
+
+The later [Publish run 40956828932](https://github.com/mizuamedesu/MRFPS-Server-Registry/actions/runs/40956828932)
+published the `bc0a8d6` image above and verified the actual pulled ELF SHA-256
+`52e48e2c598f2dca8d2a3e6686b86e4ac35ddb8f790adf9293c7ff36527a8db9`.
+Its scoped job token performed the authenticated pull; anonymous manifest and
+layer requests were denied. The separate local Quest test container was not
+replaced by this publish and is not evidence of this digest running in Flash.
 
 GitHub-hosted private Actions were blocked by the account's payment/spending
 setting. The scripts do not change billing. A task-specific ephemeral Linux

@@ -1,5 +1,15 @@
 # 開発の引き継ぎ
 
+## 現在の状態（protocol 14、2026-10-30）
+
+- 1ラウンド180秒、最大3ラウンド、先に2勝した側が勝利します。1人の場合は本人の校正と追跡が有効になると Bot が入り、管理者操作を待たずに開始します。操作と停止条件は [Rounds.md](Rounds.md) を参照してください。
+- 実 Linux コンテナと Windows 配布版の1人用テストでは、2ラウンドがそれぞれ180.026秒・180.007秒で終了し、Bot の2勝で試合が終了しました。実 Quest の姿勢・校正・障害物スキャンの確認には代わりません。証拠はローカルの `Saved/Validation/RoundBot-p14/packaged-player-qa-report.json` と `qa-server/observations.log` です。
+- 観戦メイン画面と独立観戦窓に、ラウンドと勝数を中央上へ表示します。Windows 配布版で画面を確認済みです。UE Automation は55件成功（警告4件、失敗0件）しました。
+- 管理 Worker `mrfps-admin.mizuame.app` を更新済みです。最新 Quest APK を実機へ導入し、発行されたプレイヤー資格情報と一致するサーバー参加を確認しました。**現時点の映像は Quest の OS 共有許可待ち**で、新しい protocol 14 の実映像や装着時の追跡は未確認です。旧 protocol の映像結果を新しい結果として扱いません。
+- 新しい専用サーバーを private GHCR に公開しました。source commit と digest、公開境界、HeteroCloud の残る要件は [CloudDeployment.md](CloudDeployment.md) を参照してください。HeteroCloud CLI は未ログインで、Flash への実デプロイと `mrfps.mizuame.app:7777` の到達性は未確認です。
+- ContactGlove の PC 中継と、Quest からの送信元 IPv4 固定起動を用意しています。現在の DivingStation は左右とも未接続と報告しており、実機の指・射撃・盾・壁操作は未確認です。[DeviceLogin.md](DeviceLogin.md) と [ContactGlove.md](ContactGlove.md) を参照してください。
+- Mac の実機ビルド・描画・接続、2台の物理共有原点、実障害物による弾の遮蔽、MoBits の実出力も未確認です。ローカル画像・資格情報は Git に含めません。
+
 ## 以前の武器・グローブ・壁編集（protocol 12）
 
 以下は protocol 12 の履歴です。現在のソースは protocol 14 で、protocol 13 以前の配布物とは互換性がありません。全対象の再ビルドと更新が必要です。
