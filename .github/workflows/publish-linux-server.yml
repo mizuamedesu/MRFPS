@@ -30,11 +30,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
+      PUBLISHER_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
       SERVER_SHA256: ${{ inputs.server_sha256 }}
     steps:
+      - name: Refuse public-repository publication before any artifact or registry access
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISHER_REPOSITORY_PRIVATE" != true ]]; then
+            echo '::error::PRIVATE_PUBLISHER_REQUIRED: use the dedicated private MRFPS-Server-Registry publisher; public-repository GHCR creation is prohibited.'
+            exit 1
+          fi
       - name: Validate immutable input identifiers
         shell: bash
         run: |
