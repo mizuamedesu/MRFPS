@@ -7,13 +7,13 @@
 | Manny・全身IK・ロコモーション | protocol5で実装。実測するのは頭・両手、腰・足は推定。UEテストで立位最大0.942cm、しゃがみ1.089cm、骨の長さの偏差0.000cm。実機での見た目と遅延は確認中 |
 | 建築・日本語UI | 壁・床・階段・箱、プレビュー、50cmグリッド、90度回転、連続設置、削除。権限・範囲・段の弾判定などの自動試験が合格。新UIの配布版実画面を確認中 |
 | UE Automation | protocol5、33件合格。`MannyBuild-20261028-1745/Automation-20261028-175401/report.json` |
-| Linux Docker・認証 | protocol4のproduction containerがhealthy。RAM1GiB/swap0/CPU2、公開鍵のみのenv、runtime/negative各8件、4230ファイルの公開鍵・ELF監査が合格。Windows配布版から認証33件合格。protocol5へ更新準備中 |
-| Windows配布版 | protocol4で実ゲーム画面の送信と観戦アプリ内表示を目視確認。直結とLAN中継で約23〜24fps。protocol5の配布版をビルド中 |
+| Linux Docker・認証 | protocol5のproduction containerがhealthy。RAM1GiB/swap0/CPU2、公開鍵のみのenv、runtime/negative各8件、4231ファイルの公開鍵・ELF監査が合格。後続ソース更新の配布版は未検証 |
+| Windows配布版 | protocol5の日本語管理画面とnative DTLS接続を確認。Quest実映像をアプリ内で目視。後続ソース更新の配布版は未検証 |
 | 複数クライアント | protocol4の2対戦者＋3観戦者、27項目と300秒継続試験が合格。別QAコンテナのscore1・自動開始で検証。物理MRや管理者進行UIの完全な通し試験とは別 |
-| Questの実映像 | 旧Editor実行で実写パススルー＋仮想物を603枚受信表示して目視確認。その後停止。protocol3では取得約18fps・受信2〜5fps。protocol4 APKは更新済みだがQuestがAsleepでアプリ起動未完了。最新経路の安定性は未確認 |
+| Questの実映像 | protocol5の実Quest→Linux→Windows配布版で実写パススルーを目視。UDP送信バッファ1MiBの一時設定で52.30秒平均22.92fps、約27〜30fpsの受信区間もあり、別区間では取得・受信とも約18fps。装着時や長時間の安定性、設定を組み込んだ再ビルド版は未確認 |
 | 固定床・管理 | 既定X4.5m/Y7m。明示校正時だけ二人のXY中点・方向を反映し、床高さ・サイズ・追跡縮尺を維持。protocol4の実UIで壁の配置・他クライアント反映、幅変更と復元、Esc解放を確認 |
 | 実測ジオメトリ | 動的な表面送受信、鮮度・校正世代管理、サーバーの三角形弾遮蔽を実装。クライアントの足接地問い合わせも追加。8自動試験が合格。実障害物を使う確認は未完了 |
-| Mac | OpenXR依存の分離、共通映像・認証経路、ビルド・起動スクリプト、メモリ監視を追加。Bash構文・接続先文字種とメモリ計測の3Pythonテスト合格。Mac実機でのビルド・表示は未確認 |
+| Mac | OpenXR依存の分離、MacのEnhancedInput依存、共通映像・認証経路、ビルド・起動スクリプトとメモリ監視を追加。Bash構文と軽量テスト10件合格。Mac実機でのビルド・表示は未確認 |
 | ContactGlove | USBドングルとDivingStationのOSC通信を確認。両手disconnected、実ジェスチャーは未確認 |
 | MoBits | 実GUI SDK通信、Rust SDKとUEの障害復旧結合試験が合格。GUI検出devices0/ARM0/PLAY0、Bluetooth/ドングル利用不可。実出力は未確認 |
 

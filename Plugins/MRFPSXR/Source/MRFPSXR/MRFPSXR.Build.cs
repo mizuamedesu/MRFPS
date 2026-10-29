@@ -6,6 +6,8 @@ public class MRFPSXR : ModuleRules
     public MRFPSXR(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+        // JNI callbacks for geometry and video keep independent mailboxes.
+        bUseUnity = false;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine" });
         PrivateDependencyModuleNames.AddRange(new[] { "HeadMountedDisplay", "XRBase", "AugmentedReality", "RenderCore", "RHI" });
         if (Target.Platform != UnrealTargetPlatform.Mac) PrivateDependencyModuleNames.AddRange(new[] { "OpenXRHMD", "OpenXR" });

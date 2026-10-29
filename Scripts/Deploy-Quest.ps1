@@ -81,6 +81,19 @@ function Write-QuestPrivateFile([string]$Source, [string]$RelativePath) {
     }
 }
 
+function Get-QuestRunningPid {
+    $prior = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $adb @prefix shell pidof $Package 2>&1 | ForEach-Object { $_.ToString() })
+        $exitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $prior }
+    $value = ($output -join ' ').Trim()
+    if ($exitCode -eq 1 -and -not $value) { return '' }
+    if ($exitCode -eq 0 -and $value -cmatch '^\d+(?:\s+\d+)*$') { return $value }
+    throw 'Cannot reliably inspect the Quest app process; no dialog was closed.'
+}
+
 if (-not $SkipInstall) {
     if (-not $Apk) {
         $apks = @(Get-ChildItem -LiteralPath (Join-Path $root 'Artifacts\Packages') -Filter '*.apk' -File -Recurse | Where-Object Name -NotMatch '(?i)universal.*unsigned|unaligned')
@@ -95,6 +108,35 @@ $validation = Join-Path $root "Saved\Validation\Quest-$stamp"
 New-Item -ItemType Directory -Force -Path $validation | Out-Null
 if ($Server -notmatch '^[a-zA-Z0-9.:-]+$') { throw 'Server must be an IP address or hostname without URL/shell characters.' }
 Invoke-MRFPSCommand $adb ($prefix + @('shell','am','force-stop',$Package)) -DryRun:$DryRun
+if (-not $DryRun) {
+    # Horizon OS can retain a screen-sharing dialog after the requesting game
+    # activity has died, blocking the next launch. Close only the proven orphan
+    # of this package; this does not grant the new session's permission.
+    $remainingPid = ''
+    for ($attempt=0; $attempt -lt 8; $attempt++) {
+        $remainingPid = Get-QuestRunningPid
+        if (-not $remainingPid) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($remainingPid) { throw 'Quest app still has a process after force-stop; no dialog was closed.' }
+    $activityDump = (& $adb @prefix shell dumpsys activity activities | Out-String -Width 8192)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Quest activities after force-stop.' }
+    $orphans = @(Find-MRFPSOrphanedQuestShareTask -ActivityDump $activityDump -Package $Package)
+    if ($orphans.Count -gt 1) { throw 'Multiple orphaned MRFPS share tasks found; refusing to select one.' }
+    if ($orphans.Count -eq 1) {
+        $remainingPid = Get-QuestRunningPid
+        if ($remainingPid) { throw 'Quest app restarted; no dialog was closed.' }
+        $freshDump = (& $adb @prefix shell dumpsys activity activities | Out-String -Width 8192)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot recheck Quest activities before orphan cleanup.' }
+        $freshOrphans = @(Find-MRFPSOrphanedQuestShareTask -ActivityDump $freshDump -Package $Package)
+        if ($freshOrphans.Count -ne 1 -or $freshOrphans[0] -ne $orphans[0]) { throw 'Quest share task changed; no dialog was closed.' }
+        Invoke-MRFPSCommand $adb ($prefix + @('shell','am','stack','remove',"$($orphans[0])"))
+        $activityDump = (& $adb @prefix shell dumpsys activity activities | Out-String -Width 8192)
+        if ($LASTEXITCODE -ne 0 -or @(Find-MRFPSOrphanedQuestShareTask -ActivityDump $activityDump -Package $Package).Count) {
+            throw 'The orphaned MRFPS share task could not be cleared.'
+        }
+    }
+}
 $appDataRoot = "/data/user/0/$Package"
 if (-not $DryRun) {
     $appDataRoot = (& $adb @prefix shell run-as $Package pwd | Out-String).Trim()
@@ -121,11 +163,17 @@ $commandLine += " -MRFPSAuthTokenFile=$remoteToken -MRFPSAuthPublicKeyFile=$remo
 # UE5.8 LaunchAndroid.cpp reads the cmdline intent extra before its embedded command line.
 # adb joins its shell arguments for Android's shell. Preserve the complete intent
 # value there; Windows native argument quoting alone does not protect its spaces.
-Invoke-MRFPSCommand $adb ($prefix + @('shell','input','keyevent','KEYCODE_WAKEUP')) -DryRun:$DryRun
+$wakeKey = 'KEYCODE_WAKEUP'
+if (-not $DryRun) {
+    $powerState = (& $adb @prefix shell dumpsys power | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Quest power state before launch.' }
+    if ($powerState -match 'mWakefulness=Asleep') { $wakeKey = 'KEYCODE_POWER' }
+}
+Invoke-MRFPSCommand $adb ($prefix + @('shell','input','keyevent',$wakeKey)) -DryRun:$DryRun
 # Do not wait indefinitely for a resumed Activity while an unworn headset or
 # system dialog defers launch. The bounded observation below checks the actual
 # process and preserves activity/log evidence even when launch remains pending.
-Invoke-MRFPSCommand $adb ($prefix + @('shell','am','start','-n',"$Package/com.epicgames.unreal.GameActivity",'--es','cmdline',("'" + $commandLine + "'"))) -DryRun:$DryRun
+Invoke-MRFPSCommand $adb ($prefix + @('shell','am','start','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-n',"$Package/com.epicgames.unreal.GameActivity",'--es','cmdline',("'" + $commandLine + "'"))) -DryRun:$DryRun
 if ($DryRun) { return }
 Start-Sleep -Seconds ([Math]::Min($CaptureSeconds, 60))
 if ($CaptureSeconds -gt 60) { Start-Sleep -Seconds ($CaptureSeconds - 60) }

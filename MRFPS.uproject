@@ -26,6 +26,7 @@
     { "Name": "MRFPSAuth", "Enabled": true },
     { "Name": "MRFPSTransport", "Enabled": true },
     { "Name": "DTLSHandlerComponent", "Enabled": true },
+    { "Name": "OnlineSubsystemUtils", "Enabled": true },
     { "Name": "OnlineSubsystemNull", "Enabled": true }
   ]
 }

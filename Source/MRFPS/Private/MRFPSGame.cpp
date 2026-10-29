@@ -817,6 +817,10 @@ void AMRFPSPlayerController::MRFPSConnect(const FString& Address, bool Inspector
 { ConnectWithRole(Address,Inspector?TEXT("inspector"):TEXT("player")); }
 void AMRFPSPlayerController::MRFPSConnectAdmin(const FString& Address)
 { ConnectWithRole(Address,TEXT("admin")); }
+void AMRFPSPlayerController::MRFPSReconnect()
+{
+    if (IsLocalController()) if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->ReconnectWithFreshToken();
+}
 void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FString& RequestedRole)
 {
     // Address may belong to the executing timer's lambda. Clearing that timer
@@ -829,7 +833,11 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
         ConnectionError=TEXT("Enter a hostname or IP address, with optional :port"); return;
     }
     auto* Credentials=GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>();
-    if (!Credentials || !Credentials->ValidateForRole(ExpectedRole,ConnectionError)) {
+    bool Ready=Credentials && Credentials->ValidateForNewConnection(ExpectedRole,ConnectionError);
+    // Explicit connect also picks up a newly provisioned file. A reload of the
+    // old bearer cannot clear its attempted-jti history.
+    if (!Ready && Credentials) Ready=Credentials->ReloadTokenFile(ConnectionError) && Credentials->ValidateForNewConnection(ExpectedRole,ConnectionError);
+    if (!Ready) {
         if (ConnectionError.IsEmpty()) ConnectionError=TEXT("AUTH_MISSING");
         UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_CLIENT_REJECT code=%s role=%s"),*ConnectionError,*ExpectedRole); return;
     }
@@ -846,6 +854,11 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
         return;
     }
     ConnectionError.Empty();
+    if (!Credentials->BeginConnectionAttempt(ExpectedRole,ConnectionError)) {
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_CLIENT_REJECT code=%s role=%s"),*ConnectionError,*ExpectedRole); return;
+    }
+    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->RememberConnectionAttempt(Destination,ExpectedRole);
+    HandleSessionDisconnected();
     const FString RoleOptions=ExpectedRole==TEXT("admin")?TEXT("?Admin=1?Inspector=1"):ExpectedRole==TEXT("inspector")?TEXT("?Inspector=1"):TEXT("");
     ClientTravel(Destination+RoleOptions+TEXT("?EncryptionToken=")+FMRFPSTransportModule::GetHelloMarker(),TRAVEL_Absolute);
 }
@@ -918,6 +931,8 @@ void AMRFPSHUD::DrawHUD()
     const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();const bool Inspector=PC->IsInspector();
     const auto Text=[this](const FString& Value,float X,float Y,int32 Size=16,FLinearColor Color=FLinearColor::White) {
         FCanvasTextItem Item(FVector2D(X,Y),FText::FromString(Value),FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size),Color);
+        // Canvas checks UFont even when SlateFontInfo supplies the actual face.
+        Item.Font=GEngine?GEngine->GetSmallFont():nullptr;
         Item.EnableShadow(FLinearColor(0,0,0,.6));Canvas->DrawItem(Item);
     };
     const auto Video=[this](UTexture2D* Texture,float X,float Y,float W,float H) {
@@ -1144,7 +1159,7 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(5);
+    FNetworkVersion::SetGameNetworkProtocolVersion(6);
     Super::Init(); if (GEngine) GEngine->OnNetworkFailure().AddUObject(this,&UMRFPSGameInstance::NetworkFailure);
 }
 void UMRFPSGameInstance::OnStart()
@@ -1162,13 +1177,35 @@ void UMRFPSGameInstance::OnStart()
 }
 void UMRFPSGameInstance::NetworkFailure(UWorld* World,UNetDriver* Driver,ENetworkFailure::Type Type,const FString& Error)
 {
+    if (World && World->GetGameInstance()!=this) return;
+    if (!World && Driver && Driver->GetWorld() && Driver->GetWorld()->GetGameInstance()!=this) return;
     if (auto* Receiver=GetSubsystem<UMRFPSVideoReceiver>()) Receiver->ResetAll();
 #if !UE_SERVER
     if (auto* Capture=GetSubsystem<UMRFPSViewCaptureSubsystem>()) Capture->StopCapture();
     if (auto* Geometry=GetSubsystem<UMRFPSGeometryCaptureSubsystem>()) Geometry->StopCapture();
 #endif
     UE_LOG(LogMRFPS,Error,TEXT("MRFPS_NETWORK_FAILURE %s"),*Error);
-    if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) PC->ConnectionError=Error;
+    if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) {
+        PC->HandleSessionDisconnected();
+        PC->ConnectionError=TEXT("接続が切れました。新しい認証情報で再接続してください");
+    }
+}
+void UMRFPSGameInstance::RememberConnectionAttempt(const FString& Address,const FString& Role)
+{
+    LastServerAddress=Address; LastServerRole=Role;
+}
+void UMRFPSGameInstance::ReconnectWithFreshToken()
+{
+    auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController());
+    if (!PC) return;
+    if (LastServerAddress.IsEmpty() || LastServerRole.IsEmpty()) { PC->ConnectionError=TEXT("接続先を指定してください"); return; }
+    auto* Credentials=GetSubsystem<UMRFPSAuthClientSubsystem>(); FString Error;
+    if (!Credentials || !Credentials->ReloadTokenFile(Error) || !Credentials->ValidateForNewConnection(LastServerRole,Error)) {
+        PC->ConnectionError=Error.IsEmpty()?TEXT("AUTH_FRESH_TOKEN_REQUIRED"):Error;
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_RECONNECT_WAIT code=%s"),*PC->ConnectionError); return;
+    }
+    if (LastServerRole==TEXT("admin")) PC->MRFPSConnectAdmin(LastServerAddress);
+    else PC->MRFPSConnect(LastServerAddress,LastServerRole==TEXT("inspector"));
 }
 void UMRFPSGameInstance::ReceivedNetworkEncryptionToken(const FString& Token,const FOnEncryptionKeyResponse& Delegate)
 {

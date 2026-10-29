@@ -1,5 +1,6 @@
 #include "MRFPSGame.h"
 #include "MRFPSVideoReceiver.h"
+#include "MRFPSIpConnection.h"
 #include "Engine/NetConnection.h"
 #include "Engine/Texture2D.h"
 #include "EngineUtils.h"
@@ -30,14 +31,91 @@ void AMRFPSPlayerController::MRFPSShareView()
     if (auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>()) {
         const bool StopFreshCapture=Capture->IsCapturing();
         // Repeated input must not dismiss/reopen an outstanding OS consent UI.
-        if (!StopFreshCapture && Capture->IsCaptureRequestPending()) return;
+        if (!StopFreshCapture && (Capture->IsCaptureRequestPending() || VideoConsentFlow.IsBusy())) return;
         const bool RetirePrevious=StopFreshCapture || bViewSharingRequested || bHadCaptureFrames;
         Capture->StopCapture(); bViewSharingRequested=false; bHadCaptureFrames=false;
         VideoPublisherQueue.Reset();
         if (RetirePrevious) ServerStopQuestVideo(VideoPublishSequence);
         // A stale/revoked session is replaced by this same explicit action;
         // only a fresh active capture treats the action as a stop toggle.
-        if (!StopFreshCapture) { Capture->RequestCapture(); bViewSharingRequested=true; }
+        if (!StopFreshCapture) {
+#if PLATFORM_ANDROID
+            if (VideoConsentFlow.Begin(FPlatformTime::Seconds())) {
+                // Open no OS activity until the authenticated server has ACKed
+                // its bounded pause. Otherwise the queued RPC could be paused too.
+                ServerRequestVideoConsentPause(VideoConsentFlow.GetRequest());
+            }
+#else
+            Capture->RequestCapture(); bViewSharingRequested=true;
+#endif
+        }
+    }
+#endif
+}
+
+void AMRFPSPlayerController::HandleSessionDisconnected()
+{
+    GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
+    VideoConsentFlow.Abort();
+    if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
+    VideoPublisherQueue.Reset(); bViewSharingRequested=false; bHadCaptureFrames=false; bHadVideoPublisherSession=false;
+#if !UE_SERVER
+    if (auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>()) Capture->StopCapture();
+#endif
+}
+
+void AMRFPSPlayerController::ServerRequestVideoConsentPause_Implementation(uint32 Request)
+{
+    if (!IsVideoSessionValid(true) || Request==0) return;
+    auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection());
+    if (!Connection || Request<=VideoConsentServerRequest) { ClientVideoConsentPause(Request,0); return; }
+    const auto* PS=GetPlayerState<AMRFPSPlayerState>();
+    const double Allowed=MRFPSConsent::AllowedPauseSeconds(FDateTime::UtcNow().ToUnixTimestamp(),PS->AuthExpiresAt);
+    const double Granted=Connection->BeginCaptureConsentPause(Allowed);
+    if (Granted<=0) { ClientVideoConsentPause(Request,0); return; }
+    VideoConsentServerRequest=Request;
+    ClientVideoConsentPause(Request,static_cast<float>(Granted));
+    UE_LOG(LogMRFPSVideo,Display,TEXT("MRFPS_CONSENT_PAUSE_GRANTED seconds=%.1f"),Granted);
+}
+
+void AMRFPSPlayerController::ServerFinishVideoConsentPause_Implementation(uint32 Request)
+{
+    if (!IsVideoSessionValid(true) || Request==0 || Request!=VideoConsentServerRequest) return;
+    if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
+    // This real packet refreshed the server's receive clock. The reply similarly
+    // refreshes the client before it returns to ordinary timeout/publication.
+    ClientVideoConsentPause(Request,0);
+}
+
+void AMRFPSPlayerController::ClientVideoConsentPause_Implementation(uint32 Request,float Seconds)
+{
+#if !UE_SERVER
+    if (!IsLocalController() || !IsVideoSessionValid(true) || Request!=VideoConsentFlow.GetRequest() || !FMath::IsFinite(Seconds) || Seconds<0) return;
+    auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection());
+    auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>();
+    const auto AbortConsent=[&]() {
+        if (Capture) Capture->StopCapture();
+        if (Connection) Connection->EndCaptureConsentPause();
+        bViewSharingRequested=false; VideoConsentFlow.Abort();
+        ServerFinishVideoConsentPause(Request);
+    };
+    if (!Connection || !Capture) { AbortConsent(); return; }
+    if (Seconds>0) {
+        // A duplicated/old grant must never cancel or renew a current dialog.
+        if (VideoConsentFlow.GetPhase()!=MRFPSConsent::EPhase::AwaitingGrant) return;
+        const double Allowed=MRFPSConsent::AllowedPauseSeconds(FDateTime::UtcNow().ToUnixTimestamp(),GetPlayerState<AMRFPSPlayerState>()->AuthExpiresAt);
+        if (!VideoConsentFlow.Grant(Request,double(Seconds),FPlatformTime::Seconds(),Allowed) ||
+            Connection->BeginCaptureConsentPauseUntil(VideoConsentFlow.GetHardDeadline())<=0) {
+            AbortConsent(); ConnectionError=TEXT("認証の残り時間が不足しています。再接続してください"); return;
+        }
+        Capture->RequestCapture(); bViewSharingRequested=true;
+    } else if (VideoConsentFlow.Resume(Request,FPlatformTime::Seconds())) {
+        Connection->EndCaptureConsentPause();
+        bViewSharingRequested=Capture->IsCapturing();
+    } else if (VideoConsentFlow.GetPhase()==MRFPSConsent::EPhase::AwaitingGrant) {
+        AbortConsent(); ConnectionError=TEXT("共有を開始できません。接続を確認してください");
+    } else if (VideoConsentFlow.IsExpired(FPlatformTime::Seconds())) {
+        AbortConsent(); ConnectionError=TEXT("共有の接続確認がタイムアウトしました");
     }
 #endif
 }
@@ -80,22 +158,45 @@ void AMRFPSPlayerController::TickQuestVideo()
     bHadVideoInspectorSession=Inspector;
 #if !UE_SERVER
     auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>();
-    if (!Publisher && bHadVideoPublisherSession && Capture) { Capture->StopCapture(); bViewSharingRequested=false; }
+    if (!Publisher && bHadVideoPublisherSession && Capture) {
+        Capture->StopCapture(); bViewSharingRequested=false; VideoConsentFlow.Abort();
+        if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
+    }
     if (Publisher && !bHadVideoPublisherSession && Capture &&
         (FParse::Param(FCommandLine::Get(),TEXT("MRFPSVideoFromAdb")) || FParse::Param(FCommandLine::Get(),TEXT("MRFPSRequestCapture")) ||
          FParse::Param(FCommandLine::Get(),TEXT("MRFPSCaptureDesktopView")))) {
-        Capture->RequestCapture(); bViewSharingRequested=true;
+        MRFPSShareView();
+    }
+    if (Publisher && Capture && VideoConsentFlow.IsBusy()) {
+        if (VideoConsentFlow.GetPhase()==MRFPSConsent::EPhase::AwaitingConsent &&
+            (!Capture->IsCaptureRequestPending() || VideoConsentFlow.IsExpired(Now))) {
+            if (VideoConsentFlow.IsExpired(Now)) { Capture->StopCapture(); bViewSharingRequested=false; }
+            // Even a late OS result releases the server lease, but cannot create
+            // a new ACK deadline beyond the original conservative hard limit.
+            const bool AwaitingAck=VideoConsentFlow.Finish(Now);
+            ServerFinishVideoConsentPause(VideoConsentFlow.GetRequest());
+            if (!AwaitingAck) {
+                Capture->StopCapture(); bViewSharingRequested=false; VideoConsentFlow.Abort();
+                if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
+                ConnectionError=TEXT("共有の待機時間が過ぎました。再接続してください");
+            }
+        } else if (VideoConsentFlow.IsExpired(Now)) {
+            ServerFinishVideoConsentPause(VideoConsentFlow.GetRequest());
+            Capture->StopCapture(); bViewSharingRequested=false; VideoConsentFlow.Abort();
+            if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
+            ConnectionError=TEXT("共有の接続確認がタイムアウトしました");
+        }
     }
     if (Publisher && Capture) {
         TArray<uint8> Jpeg; int32 Width=0,Height=0;
-        if (Capture->DequeueLatestFrame(Jpeg,Width,Height) && Jpeg.Num()>=4 && Jpeg.Num()<=MRFPSVideo::MaxFrameBytes &&
+        if (!VideoConsentFlow.IsBusy() && Capture->DequeueLatestFrame(Jpeg,Width,Height) && Jpeg.Num()>=4 && Jpeg.Num()<=MRFPSVideo::MaxFrameBytes &&
             Width>0 && Width<=MRFPSVideo::MaxWidth && Height>0 && Height<=MRFPSVideo::MaxHeight && VideoPublishSequence<MAX_uint32) {
             FMRFPSVideoChunk Header; Header.Slot=static_cast<uint8>(GetPlayerState<AMRFPSPlayerState>()->Slot);
             Header.StreamId=1; Header.Sequence=++VideoPublishSequence;
             Header.Width=Width; Header.Height=Height; Header.TotalBytes=Jpeg.Num();
             VideoPublisherQueue.Push(Header,Jpeg,Now);
         }
-        CaptureFresh=Capture->IsCapturing();
+        CaptureFresh=!VideoConsentFlow.IsBusy() && Capture->IsCapturing();
         if (!CaptureFresh && bHadCaptureFrames) { VideoPublisherQueue.Reset(); ServerStopQuestVideo(VideoPublishSequence); }
         bHadCaptureFrames=CaptureFresh;
     }

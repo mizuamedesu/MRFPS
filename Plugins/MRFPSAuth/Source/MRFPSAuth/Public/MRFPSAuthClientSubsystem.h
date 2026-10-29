@@ -2,8 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
+#include "MRFPSAuthClientUsePolicy.h"
 #include "MRFPSAuthVerifier.h"
 #include "MRFPSAuthClientSubsystem.generated.h"
+
+// Generated UObject constructors can instantiate TUniquePtr cleanup; keep the
+// pointee complete in every translation unit that includes this header.
+struct FMRFPSAuthClientUseState { MRFPSAuthClientPolicy::FConnectionUses Uses; };
 
 /** Issuer public key plus transient signed credential. No reflected token data. */
 UCLASS()
@@ -19,6 +24,10 @@ public:
     bool SetAccessToken(const FString& Token, FString& SafeError);
     bool HasAccessToken() const;
     bool ValidateForRole(const FString& ExpectedRole, FString& SafeError);
+    /** A new connection needs a locally unattempted, still-valid signed jti. */
+    bool ValidateForNewConnection(const FString& ExpectedRole, FString& SafeError);
+    /** Conservatively retire the credential when ClientTravel is about to begin. */
+    bool BeginConnectionAttempt(const FString& ExpectedRole, FString& SafeError);
     void ClearAccessToken();
     bool ReloadTokenFile(FString& SafeError);
     FString GetServerFingerprint() const;
@@ -30,6 +39,7 @@ public:
 private:
     bool LoadPublicKey(FString& SafeError);
     TUniquePtr<FMRFPSAuthVerifier> Verifier;
+    TUniquePtr<FMRFPSAuthClientUseState> ConnectionUses;
     FMRFPSAuthClaims CachedClaims;
     FString AccessToken;
     FString Audience;

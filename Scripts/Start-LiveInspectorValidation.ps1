@@ -125,10 +125,18 @@ function Update-LiveEvidence([object]$Instance, [string]$Text) {
     if ($Text -match 'LogD3D12RHI:|LogD3D11RHI:|LogVulkanRHI:') { $Instance.RendererLogObserved=$true }
     if ($Text -match 'Fatal error:|Assertion failed:|Unhandled Exception:|Ensure condition failed:') { $Instance.Failure='RUNTIME_FAILURE' }
     if ($Text -match 'MRFPS_NETWORK_FAILURE') { $Instance.Failure='NETWORK_FAILURE' }
-    if ($Text -match 'MRFPS_AUTH_STARTUP_FAILED|MRFPS_AUTH_CLIENT_REJECT|MRFPS_AUTH_REJECT') {
-        $Instance.Failure='AUTH_REJECTED'
+    $serverOrStartupReject = $Text -match 'MRFPS_AUTH_STARTUP_FAILED|MRFPS_AUTH_REJECT'
+    $localReject = $Text -match 'MRFPS_AUTH_CLIENT_REJECT'
+    if ($serverOrStartupReject -or $localReject) {
         $safe = [regex]::Match($Text,'MRFPS_AUTH_(?:STARTUP_FAILED|CLIENT_REJECT|REJECT)[^\r\n]{0,80}\bcode=(AUTH_[A-Z_]{1,48})\b')
         if ($safe.Success) { $Instance.AuthSafeCode=$safe.Groups[1].Value }
+        # A rejected local menu attempt never travels or disconnects the current
+        # session. Keep an already verified, recently replicating inspector open;
+        # actual server/startup rejection and network failure still stop a run.
+        $snapshotAge = if ($Instance.Snapshot) { ([DateTime]::UtcNow-$Instance.Snapshot.AtUtc).TotalSeconds } else { [double]::PositiveInfinity }
+        $connectedInspector = $Instance.CertificateVerified -and $Instance.HandshakeComplete -and
+            $Instance.Snapshot -and $Instance.Snapshot.Role -eq 'inspector' -and $snapshotAge -ge -1 -and $snapshotAge -le 3
+        if ($serverOrStartupReject -or -not $connectedInspector) { $Instance.Failure='AUTH_REJECTED' }
     }
     $pattern = '(?m)^\[(?<time>\d{4}\.\d{2}\.\d{2}-\d{2}\.\d{2}\.\d{2}:\d{3})\]\[\s*(?<frame>\d+)\]LogMRFPS: Display: MRFPS_SNAPSHOT players=(?<players>[0-2]) role=(?<role>inspector|player)\b'
     foreach ($match in [regex]::Matches($Text,$pattern)) {

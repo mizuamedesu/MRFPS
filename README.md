@@ -1,6 +1,6 @@
 # MRFPS
 
-UE **5.8.1** のC++製、オンライン1対1のMR FPSです。Questをプレイヤー、Windows / Macを観戦・管理クライアントとして使います。Linux Docker専用サーバーが認証、試合、建築、弾・盾・HP・勝敗を管理します。
+UE **5.8.1** のC++製、オンライン1対1のMR FPSです。Questをプレイヤー、Windowsを観戦・管理クライアントとして使います。Mac向け手順も同梱していますが、Mac実機は未検証です。Linux Docker専用サーバーが認証、試合、建築、弾・盾・HP・勝敗を管理します。
 
 床は既定 **X4.5m × Y7m** の固定長方形です。管理者が「床の位置調整」を押した瞬間の二人のXY中点を床の中心、P1→P2を+Y方向として計算します。歩行への追従、二人の間隔による伸縮、頭の高さによる床の上下移動は行いません。
 
@@ -8,11 +8,11 @@ UE **5.8.1** のC++製、オンライン1対1のMR FPSです。Questをプレイ
 
 全クライアントはrole付きEd25519署名JWTと、稼働サーバーのDTLS証明書pinが必要です。発行者の秘密鍵はホストに保持し、コンテナのenvには公開鍵のみを渡します。JWTは1接続で1回使用でき、再接続には新規発行が必要です。鍵・JWT・部屋の映像はGitに含めません。
 
-現在のソースはprotocol5です。**UE Automation33件が合格**し、テスト姿勢で頭・手のIK最大誤差は立位0.94cm、しゃがみ1.09cmでした。新しい配布版のビルド・実画面確認は進行中です。
+実機確認済みの配布版は **protocol5** です。Windows配布版、Linux専用サーバー／Docker image、Quest APKをビルドし、Windowsの日本語UIと管理者接続を確認しています。**UE Automation33件が合格**し、テスト姿勢で頭・手のIK最大誤差は立位0.94cm、しゃがみ1.09cmでした。これは実機の身体追跡精度ではありません。接続復帰を追加した最新ソースは **protocol6** で、全クライアントとサーバーの再ビルド・更新・検証が必要です。protocol5との混在接続はできません。証拠はローカルの `Saved/Validation/MannyBuild-20261028-1745/` にあります。
 
 直前のprotocol4配布版では、実Windowsゲーム画面をWindows観戦アプリ内で約23〜24fps表示し、LAN中継でも確認しました。認証33件、2プレイヤー＋3観戦者の27項目と300秒継続試験も合格しました。これはQuest映像のFPSや物理MRの最終確認とは別です。
 
-Questの実写パススルーと仮想物を含む実映像は旧Editor実行で目視確認しましたが、停止・低FPSの解決はまだ実機で確認できていません。現在のQuestはADB承認済み・スリープ中で、アプリは停止しています。共有にはQuest側の許可が必要です。他のキャストがMediaProjectionを開始すると既存共有が終了するため、MRFPSの1配信をサーバーで観戦者へ分配します。[Metaの仕様](https://developers.meta.com/vr/documentation/native/native-media-projection/)
+protocol5のQuest実機→Linuxコンテナ→Windows配布版で、実写パススルーを含む映像を観戦画面に表示して目視確認しました。QuestのUDP送信バッファを32KiBから1MiBに変えた比較では、Windowsの受信は調整前の約5fpsから、調整後の52秒間平均約23fpsに改善しました。約27〜30fpsの区間もありましたが、Quest側の取得自体が約18fpsに低下する区間もあり、長時間の安定性や装着して動いたときの品質は未確認です。1MiBをソースの既定設定に追加済みですが、既存APKの測定では起動時の一時設定を使っています。共有にはQuest側の許可が必要です。他のキャストがMediaProjectionを開始すると既存共有が終了するため、MRFPSの1配信をサーバーで観戦者へ分配します。[Metaの仕様](https://developers.meta.com/vr/documentation/native/native-media-projection/)
 
 Macのビルド・起動手順とメモリ監視を同梱していますが、**Mac実機でのビルド・描画・接続は未確認**です。[Macで開発する](Docs/Mac.md)。二台の物理共通原点、実障害物での弾遮蔽、ContactGlove実ジェスチャー、MoBits実デバイス出力も未確認です。最新の実測範囲は[引き継ぎ](Docs/Handoff.md)と[完了条件・証拠](Docs/ImplementationStatus.md)に記録します。
 
@@ -59,6 +59,10 @@ foreach ($subject in @('observer-1', 'observer-2', 'observer-3')) {
     --subject $subject --role inspector --audience mrfps --ttl 300 `
     --dtls-fingerprint $dtlsFingerprint --output ".local\access\$subject.jwt"
 }
+& $python tools\auth\mrfps_tokens.py issue `
+  --private-key .local\auth-issuer\issuer-private.pem `
+  --subject operator-1 --role admin --audience mrfps --ttl 300 `
+  --dtls-fingerprint $dtlsFingerprint --output .local\access\operator-1.jwt
 
 # QuestのUSBデバッグを許可してから実行
 .\Scripts\Deploy-Quest.ps1 -Server 192.168.1.10 `
@@ -72,6 +76,18 @@ foreach ($subject in @('observer-1', 'observer-2', 'observer-3')) {
 ```
 
 上記は初回の新規ファイル名の例です。再発行時は新しい出力ファイル名を使います。`Start-Inspector.ps1` はCountと同数の異なる `inspector` tokenを必要とします。Editorで観戦する場合は同じ引数に `-UseEditor` を追加してください。
+
+既定では管理者の「開始」が必要です。署名された `admin` tokenでWindows配布版を開き、F2で管理パネルを表示します。観戦者tokenでは管理者へ昇格できません。
+
+```powershell
+$client = Join-Path $PWD 'Artifacts\Packages\Windows\MRFPS.exe'
+$adminToken = Join-Path $PWD '.local\access\operator-1.jwt'
+$publicKey = Join-Path $PWD '.local\auth-issuer\issuer-public.pem'
+& $client '/Game/Maps/MRFPSArena' -nohmd -MRFPSDesktop -MRFPSAdmin `
+  -MRFPSServer=192.168.1.10:7777 `
+  "-MRFPSAuthTokenFile=$adminToken" "-MRFPSAuthPublicKeyFile=$publicKey" `
+  -MRFPSAuthAudience=mrfps
+```
 
 WindowsからWSL内のサーバーへ接続する際のUDP経路は [Deployment](Docs/Deployment.md) を参照してください。UDP上のUE通信は、署名されたpinに結び付けたnative DTLSを必須にしています。PCのLAN IPとWSLのIPは起動時に確認してください。
 
@@ -91,13 +107,14 @@ $playerToken = Join-Path $PWD '.local\access\player-two.jwt'
 
 ## プレイ
 
-両プレイヤーはそれぞれ実空間のアリーナ中心に立ち、合意した同じ向き（ゲームの+X）を向いて校正します。Quest左Yまたはグローブ左Aで確定し、両者の校正と新鮮な追跡情報がそろうと試合を開始します。共有アンカーの自動解決ではなく、物理マーカーを使う手動原点・向き合わせです。
+両プレイヤーは同じ実床の原点・向き（ゲームの+X）を使い、Quest左Yまたはグローブ左Aで個別に校正します。管理者は双方の基準を確認してF2の「原点登録」、現在の二人の位置を使う「床の位置調整」を行い、準備がそろったら「開始」を押します。共有アンカーの自動解決ではなく、物理マーカーを使う手動原点・向き合わせです。床は明示校正の間は静止し、プレイヤーの実測位置を開始点へ移動・縮尺変更しません。desktopの開始点は床のY両端に置くnominal位置として区別します。
 
 - 右トリガーまたはContactGlove右人差し指の屈曲で発射。サーバーは150 ms以上の射撃間隔を強制します。
 - 左手を0.65秒以内に35 cm以上持ち上げると、前方に壁。再設置4秒、寿命6秒、HP120。
 - 左手を開くと小型盾。保持と被弾でエネルギーを消費し、閉じて回復します。
-- HP100、胴体20／頭30ダメージ、復活3秒。先に10回倒すと勝利し、8秒後に次の試合。
-- 10 m四方の外、追跡消失、未校正、死亡中は攻撃できません。ヘッドセットを外す、再センタリング、追跡原点変更で校正を解除します。
+- HP100、胴体20／頭30ダメージ、復活3秒。既定は先に10回倒すと勝利。次の試合は管理者が「試合リセット」から進めます。
+- 設定された長方形の床の外、追跡消失、未校正、死亡中、戦闘の一時停止中は攻撃できません。ヘッドセットを外す、再センタリング、追跡原点変更で校正を解除します。
+- 管理者の一時停止は戦闘だけを止め、追跡・映像・通信・認証期限の処理は続けます。建築はB、壁・床・階段・箱を1〜4、Rで回転、Delで削除します。
 - MoBitsはアプリ側で装着者の校正を済ませ、右A／グローブ右A／H／メニューで明示的にARMします。右B／グローブ右B／EscapeでSTOPします。
 
 キーボード、観戦カメラ、接続メニューの操作は [Controls](Docs/Controls.md) に記載しています。
@@ -120,7 +137,7 @@ $playerToken = Join-Path $PWD '.local\access\player-two.jwt'
 
 AuthAdmissionとMultiplayerのrunnerは試験専用の一時発行鍵をコンテナ／serverの外で作り、実サーバーのfingerprintを取得してから各クライアントへ異なるtokenを発行します。匿名接続の試験用bypassは使用しません。
 
-`MRFPS.Core.AuthorityCombat` は実authorityワールドと物理トレースで、連射制限、被弾、盾、観戦者の攻撃拒否、復活、壁の被弾・クールダウン・寿命を検証します。10件の単体automation合格は、実プロセスの認証・対戦通信、実ゲームコンテナ、MR表示、身体へのフィードバックまで確認したという意味ではありません。
+`MRFPS.Core.AuthorityCombat` は実authorityワールドと物理トレースで、連射制限、被弾、盾、観戦者の攻撃拒否、復活、壁の被弾・クールダウン・寿命を検証します。最新の33件は管理権限・固定床・建築・Manny IK・形状・映像・認証・DTLSなどのUE Automationです。この合格から、protocol5の実対戦通信、Quest共有映像、身体へのフィードバックまで確認したとは判断しません。
 
 AuthAdmissionでは両roleの実server replay拒否と、署名済みwrong-pin tokenに対するnative DTLS証明書検証失敗も確認しました。欠損・偽造・期限切れ・audience／role違いの10件は正規クライアント側での拒否です。悪意あるクライアントがそれらをserverへ送信したことや、packet captureで資格情報の非露出を確認したことまでは主張しません。詳細と残る範囲は [ImplementationStatus](Docs/ImplementationStatus.md) を参照してください。
 

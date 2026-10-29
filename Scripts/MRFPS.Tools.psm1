@@ -124,6 +124,36 @@ function Test-MRFPSCredentialPrivacy {
     return $true
 }
 
+function Find-MRFPSOrphanedQuestShareTask {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$ActivityDump, [Parameter(Mandatory)][string]$Package)
+    if ($Package -notmatch '^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$') { throw 'Invalid package.' }
+    # Only root tasks with one child and a finishing result target for this
+    # package qualify. Never select a live request or another app's dialog.
+    $roots = [regex]::Matches($ActivityDump,'(?m)^  \* Task\{[^\r\n]*#(?<id>\d+)[^\r\n]*\r?$')
+    $escaped = [regex]::Escape($Package)
+    $tasks = [Collections.Generic.List[int]]::new()
+    for ($i=0; $i -lt $roots.Count; $i++) {
+        $root = $roots[$i]
+        $end = if ($i+1 -lt $roots.Count) { $roots[$i+1].Index } else { $ActivityDump.Length }
+        $block = $ActivityDump.Substring($root.Index, $end-$root.Index)
+        # A root's sz is its child-task count, not its total activity count.
+        # Every task in its subtree must be a single-child chain and that chain
+        # must hold exactly one history record before removing the root task.
+        $subtasks = [regex]::Matches($block,'(?m)^[ \t]+\* Task\{[^\r\n]*\r?$')
+        if (-not $subtasks.Count -or @($subtasks | Where-Object { $_.Value -cnotmatch '\bsz=1\b' }).Count) { continue }
+        $records = [regex]::Matches($block,'(?ms)^[ \t]*\* Hist[ \t]+#\d+:[^\r\n]*\r?\n.*?(?=^[ \t]*\* (?:Hist[ \t]+#\d+:|Task\{)|\z)')
+        if ($records.Count -ne 1) { continue }
+        foreach ($record in $records) {
+            if ($record.Value -cnotmatch '^[ \t]*\* Hist[ \t]+#\d+:[ \t]+ActivityRecord\{[0-9a-f]+[ \t]+u\d+[ \t]+com\.meta\.systemui/\.media\.MediaProjectionPermissionActivity[ \t]+t\d+(?:[ \t}]|$)' -or
+                $record.Value -cnotmatch "(?m)^[ \t]*launchedFromUid=\d+ launchedFromPackage=$escaped(?:\s|$)" -or
+                $record.Value -cnotmatch "(?m)^[ \t]*resultTo=ActivityRecord\{[^\r\n]*\s$escaped/com\.epicgames\.unreal\.GameActivity t-1 f\}\}") { continue }
+            $tasks.Add([int]$root.Groups['id'].Value)
+            break
+        }
+    }
+    return $tasks.ToArray()
+}
+
 function Get-MRFPSDisabledPluginNames {
     param([string]$ProjectRoot = (Get-MRFPSRoot))
     $project = Get-Content -Raw -LiteralPath (Join-Path $ProjectRoot 'MRFPS.uproject') | ConvertFrom-Json
@@ -145,4 +175,4 @@ function Get-MRFPSDisabledPluginNames {
     return $disabled
 }
 
-Export-ModuleMember -Function Get-MRFPSRoot, Resolve-MRFPSEngine, Resolve-MRFPSAndroidSdk, Resolve-MRFPSJava, Invoke-MRFPSCommand, Get-MRFPSQuest, Resolve-MRFPSCredentialFile, New-MRFPSTestAuthKeys, Complete-MRFPSTestAuthTokens, Test-MRFPSCredentialPrivacy, Get-MRFPSDisabledPluginNames
+Export-ModuleMember -Function Get-MRFPSRoot, Resolve-MRFPSEngine, Resolve-MRFPSAndroidSdk, Resolve-MRFPSJava, Invoke-MRFPSCommand, Get-MRFPSQuest, Resolve-MRFPSCredentialFile, New-MRFPSTestAuthKeys, Complete-MRFPSTestAuthTokens, Test-MRFPSCredentialPrivacy, Find-MRFPSOrphanedQuestShareTask, Get-MRFPSDisabledPluginNames

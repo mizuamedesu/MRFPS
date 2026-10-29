@@ -20,9 +20,9 @@ staleness discard pending data. Downstream viewers must also expire their last
 displayed frame when the sender stops or stops delivering frames.
 
 The foreground service requests video only, uses a 640x360 RGBA ImageReader with
-two image slots, and samples at most five frames per second. It reuses its pixel,
-bitmap and capped JPEG output buffers. JPEG qualities 65, 50, 35 and 20 are
-attempted; a frame that still exceeds 60 KiB is dropped. Native code checks the
+two image slots, and targets at most 30 frames per second. It reuses its pixel,
+bitmap and capped JPEG output buffers. JPEG qualities 65, 50, 35, 20, 12 and 8
+are attempted; a frame that still exceeds 40 KiB is dropped. Native code checks the
 byte limit, JPEG SOI/EOI and encoded SOF dimensions before accepting a frame.
 No capture is saved to disk and no audio, microphone or camera permission is
 requested. Server calls return unsupported/false/empty safely.

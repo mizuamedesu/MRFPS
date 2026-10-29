@@ -33,7 +33,7 @@ JWTは反射・UPROPERTY・replication・GameUserSettings・コマンドライ�
 | `iss` | `mrfps-issuer` と一致 |
 | `aud` | 設定された対象と完全一致。先頭alnum、以降 `[A-Za-z0-9._:/-]`、1〜128文字 |
 | `sub` | 先頭alnum、以降 `[A-Za-z0-9._-]`、1〜64文字 |
-| `role` | `player` または `inspector`。要求された参加ロールと一致 |
+| `role` | `player`、`inspector`、`admin` のいずれか。要求された参加ロールと一致 |
 | `iat`, `nbf`, `exp` | 非負の整数UTC秒。`iat <= nbf < exp`、有効期間1〜3600秒 |
 | `jti` | 正規形の小文字UUIDv4。接続ごとに新規発行 |
 | `dtls_fp` | 対象サーバーの稼働中DTLS証明書のSHA256、64桁小文字hex |

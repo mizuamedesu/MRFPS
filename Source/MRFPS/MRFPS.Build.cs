@@ -10,7 +10,7 @@ public class MRFPS : ModuleRules
         PublicDependencyModuleNames.AddRange(new[] {
             "Core", "CoreUObject", "Engine", "InputCore", "NetCore",
             "HeadMountedDisplay", "XRBase", "UMG", "Slate", "SlateCore",
-            "MRFPSGloves", "MRFPSHaptics", "MoBitsSDK", "MRFPSAuth", "MRFPSTransport", "PacketHandler"
+            "MRFPSGloves", "MRFPSHaptics", "MoBitsSDK", "MRFPSAuth", "MRFPSTransport", "PacketHandler", "OnlineSubsystemUtils"
         });
         if (Target.Type != TargetType.Server) {
             PrivateDependencyModuleNames.AddRange(new[] { "ImageCore", "ImageWrapper", "RenderCore", "RHI" });

@@ -6,7 +6,8 @@ param(
     [string]$ArchiveDirectory, [switch]$DryRun, [switch]$SkipSetup,
     [ValidateRange(1,2)][int]$MaxParallelActions = 1,
     [switch]$LowMemoryWindowsLink = $true,
-    [switch]$LinuxPortableSymbols
+    [switch]$LinuxPortableSymbols,
+    [switch]$AndroidFullDebugSymbols
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MRFPS.Tools.psm1') -Force
@@ -116,10 +117,12 @@ try {
                 $nativeLog = $log -replace '\.log$', ('-' + $native.Name + '-native.log')
                 $nativeArguments=@($native.Name,$native.Platform,$native.Config,"-Project=$project",'-WaitMutex','-NoHotReloadFromIDE','-NoUBA',"-MaxParallelActions=$MaxParallelActions")
                 if ($native.Platform -eq 'Android') {
-                    $env:DOTNET_GCHeapHardLimit='0x80000000'
+                    $env:DOTNET_GCHeapHardLimit=$(if($AndroidFullDebugSymbols){'0x80000000'}else{'0x60000000'})
                     # AndroidToolChain concatenates this value directly after
                     # --end-group, so the leading space is intentional.
-                    $nativeArguments+='-LinkerArguments= -Wl,--threads=1,--no-gdb-index'
+                    # The APK is stripped during packaging anyway. Avoid
+                    # materializing multi-GB DWARF output on constrained hosts.
+                    $nativeArguments+=$(if($AndroidFullDebugSymbols){'-LinkerArguments= -Wl,--threads=1,--no-gdb-index'}else{'-LinkerArguments= -Wl,--threads=1,--no-gdb-index,--strip-debug'})
                 }
                 Invoke-MRFPSCommand (Join-Path $engine 'Engine\Build\BatchFiles\Build.bat') $nativeArguments -LogPath $nativeLog -DryRun:$DryRun
             }

@@ -13,6 +13,7 @@
 #include "MRFPSGeometryProtocol.h"
 #include "MRFPSArenaLayout.h"
 #include "MRFPSBuild.h"
+#include "MRFPSConsentPolicy.h"
 #include "MRFPSGame.generated.h"
 
 class UCameraComponent;
@@ -289,6 +290,8 @@ public:
     void SetAdminFeedback(FName Code);
     UFUNCTION(Exec) void MRFPSConnect(const FString& Address, bool Inspector = false);
     UFUNCTION(Exec) void MRFPSConnectAdmin(const FString& Address);
+    UFUNCTION(Exec) void MRFPSReconnect();
+    void HandleSessionDisconnected();
     UFUNCTION(Exec) void MRFPSView(int32 Slot);
     UFUNCTION(Exec) void MRFPSReady();
     UFUNCTION(Exec) void MRFPSShareView();
@@ -343,6 +346,9 @@ private:
     UFUNCTION(Server, Unreliable) void ServerPublishQuestVideo(const FMRFPSVideoChunk& Chunk);
     UFUNCTION(Server, Reliable) void ServerSubscribeQuestVideo(uint8 Mask);
     UFUNCTION(Server, Reliable) void ServerStopQuestVideo(uint32 FinalSequence);
+    UFUNCTION(Server, Reliable) void ServerRequestVideoConsentPause(uint32 Request);
+    UFUNCTION(Server, Reliable) void ServerFinishVideoConsentPause(uint32 Request);
+    UFUNCTION(Client, Reliable) void ClientVideoConsentPause(uint32 Request,float Seconds);
     UFUNCTION(Client, Unreliable) void ClientQuestVideo(const FMRFPSVideoChunk& Chunk);
     UFUNCTION(Client, Reliable) void ClientQuestVideoStopped(uint8 Slot,uint32 StreamId);
     bool IsVideoSessionValid(bool Publisher) const;
@@ -370,6 +376,8 @@ private:
     bool bHadVideoPublisherSession = false;
     bool bViewSharingRequested = false;
     bool bHadCaptureFrames = false;
+    MRFPSConsent::FClientFlow VideoConsentFlow;
+    uint32 VideoConsentServerRequest = 0;
     void FirePressed();
     void FireReleased();
     void WallPressed();
@@ -461,4 +469,9 @@ public:
     virtual void ReceivedNetworkEncryptionAck(const FOnEncryptionKeyResponse& Delegate) override;
     virtual EEncryptionFailureAction ReceivedNetworkEncryptionFailure(UNetConnection* Connection) override;
     void NetworkFailure(UWorld* World, class UNetDriver* Driver, ENetworkFailure::Type Type, const FString& Error);
+    void RememberConnectionAttempt(const FString& Address,const FString& Role);
+    void ReconnectWithFreshToken();
+private:
+    FString LastServerAddress;
+    FString LastServerRole;
 };

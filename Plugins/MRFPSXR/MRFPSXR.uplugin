@@ -9,6 +9,7 @@
   "Modules": [{ "Name": "MRFPSXR", "Type": "Runtime", "LoadingPhase": "PostConfigInit", "PlatformAllowList": ["Win64", "Mac", "Android"], "TargetDenyList": ["Server"] }],
   "Plugins": [
     { "Name": "OpenXR", "Enabled": true, "PlatformAllowList": ["Win64", "Android"] },
+    { "Name": "EnhancedInput", "Enabled": true, "PlatformAllowList": ["Mac"], "TargetDenyList": ["Server"] },
     { "Name": "AndroidPermission", "Enabled": true, "PlatformAllowList": ["Android"], "TargetDenyList": ["Server"] }
   ]
 }

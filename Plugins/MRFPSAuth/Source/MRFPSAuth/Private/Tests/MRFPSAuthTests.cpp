@@ -217,6 +217,16 @@ bool FMRFPSAuthClientCredentialTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("A wrong-audience credential cannot join"), Credentials->ValidateForRole(TEXT("player"), Error));
     TestEqual(TEXT("Joining preserves the actual audience diagnostic"), Error, FString(TEXT("AUTH_AUDIENCE")));
     TestTrue(TEXT("The real token can be loaded again"), Credentials->SetAccessToken(Token, Error));
+    TestTrue(TEXT("A verified unattempted credential is fresh for a connection"),Credentials->ValidateForNewConnection(TEXT("player"),Error));
+    TestTrue(TEXT("An actual connection attempt retires that jti locally"),Credentials->BeginConnectionAttempt(TEXT("player"),Error));
+    TestTrue(TEXT("Retiring an attempt preserves its credential for the encrypted login injector"),Credentials->HasAccessToken());
+    TestFalse(TEXT("A disconnected client cannot automatically replay its old token"),Credentials->ValidateForNewConnection(TEXT("player"),Error));
+    TestEqual(TEXT("Reconnect reports the need for a new signed credential"),Error,FString(TEXT("AUTH_FRESH_TOKEN_REQUIRED")));
+    TestTrue(TEXT("Reloading valid bytes cannot erase connection-attempt history"),Credentials->ReloadTokenFile(Error));
+    TestFalse(TEXT("The same file still cannot authorize a second connection"),Credentials->ValidateForNewConnection(TEXT("player"),Error));
+    TokenSpec Fresh=Spec; Fresh.TokenId="12345678-abcd-4123-8abc-123456789abd";
+    TestTrue(TEXT("A new signed jti is verified normally"),Credentials->SetAccessToken(U(Issuer.Sign(Fresh)),Error));
+    TestTrue(TEXT("A new credential permits explicit reconnect"),Credentials->ValidateForNewConnection(TEXT("player"),Error));
     TokenSpec AdminSpec=Spec; AdminSpec.Role="admin";
     TestTrue(TEXT("The client verifies an exact signed admin credential"),Credentials->SetAccessToken(U(Issuer.Sign(AdminSpec)),Error));
     TestEqual(TEXT("The verified role is exposed without the bearer secret"),Credentials->GetVerifiedRole(),FString(TEXT("admin")));

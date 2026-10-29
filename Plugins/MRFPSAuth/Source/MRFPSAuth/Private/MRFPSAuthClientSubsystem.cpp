@@ -2,6 +2,7 @@
 
 #include "MRFPSAuthCrypto.h"
 #include "MRFPSAuthLogPrivacy.h"
+#include "MRFPSAuthClientUsePolicy.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/DateTime.h"
@@ -30,7 +31,7 @@ bool ReadAsciiFile(const FString& Path, int64 Limit, FString& Out)
 }
 }
 
-UMRFPSAuthClientSubsystem::UMRFPSAuthClientSubsystem() = default;
+UMRFPSAuthClientSubsystem::UMRFPSAuthClientSubsystem() : ConnectionUses(MakeUnique<FMRFPSAuthClientUseState>()) {}
 UMRFPSAuthClientSubsystem::~UMRFPSAuthClientSubsystem() = default;
 
 void UMRFPSAuthClientSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -58,6 +59,7 @@ void UMRFPSAuthClientSubsystem::Deinitialize()
 {
     ClearAccessToken();
     Verifier.Reset();
+    ConnectionUses.Reset();
     Super::Deinitialize();
 }
 
@@ -130,6 +132,26 @@ bool UMRFPSAuthClientSubsystem::ValidateForRole(const FString& ExpectedRole, FSt
     return true;
 }
 
+bool UMRFPSAuthClientSubsystem::ValidateForNewConnection(const FString& ExpectedRole,FString& SafeError)
+{
+    if (!ValidateForRole(ExpectedRole,SafeError)) return false;
+    if (!ConnectionUses) ConnectionUses=MakeUnique<FMRFPSAuthClientUseState>();
+    const auto Result=ConnectionUses->Uses.Check(TCHAR_TO_UTF8(*CachedClaims.TokenId),CachedClaims.ExpiresAt,FDateTime::UtcNow().ToUnixTimestamp());
+    if (Result==MRFPSAuthClientPolicy::EUse::Fresh) return true;
+    SafeError=LastSafeError=Result==MRFPSAuthClientPolicy::EUse::AlreadyAttempted ? TEXT("AUTH_FRESH_TOKEN_REQUIRED") :
+        Result==MRFPSAuthClientPolicy::EUse::Capacity ? TEXT("AUTH_CAPACITY") : TEXT("AUTH_INVALID");
+    return false;
+}
+
+bool UMRFPSAuthClientSubsystem::BeginConnectionAttempt(const FString& ExpectedRole,FString& SafeError)
+{
+    if (!ValidateForNewConnection(ExpectedRole,SafeError)) return false;
+    const auto Result=ConnectionUses->Uses.Begin(TCHAR_TO_UTF8(*CachedClaims.TokenId),CachedClaims.ExpiresAt,FDateTime::UtcNow().ToUnixTimestamp());
+    if (Result==MRFPSAuthClientPolicy::EUse::Fresh) return true;
+    SafeError=LastSafeError=TEXT("AUTH_FRESH_TOKEN_REQUIRED");
+    return false;
+}
+
 bool UMRFPSAuthClientSubsystem::ReloadTokenFile(FString& SafeError)
 {
     FString Token;
@@ -146,7 +168,8 @@ FString UMRFPSAuthClientSubsystem::GetServerFingerprint() const
 
 FString UMRFPSAuthClientSubsystem::GetCredentialStatus() const
 {
-    if (HasAccessToken()) return TEXT("Signed access token ready");
+    if (HasAccessToken()) return ConnectionUses && ConnectionUses->Uses.WasAttempted(TCHAR_TO_UTF8(*CachedClaims.TokenId)) ?
+        TEXT("再接続には新しい認証情報が必要です") : TEXT("認証情報を設定済み");
     if (!AccessToken.IsEmpty()) return TEXT("AUTH_EXPIRED");
     return LastSafeError.IsEmpty() ? TEXT("AUTH_MISSING") : LastSafeError;
 }

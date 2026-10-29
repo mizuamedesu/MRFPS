@@ -39,7 +39,7 @@ UEditableTextBox* Number(UWidgetTree* T,UHorizontalBox* H,const TCHAR* Name,doub
     H->AddChildToHorizontalBox(Text(T,Name))->SetPadding(FMargin(5,8,8,0));auto* W=T->ConstructWidget<UEditableTextBox>();
     W->SetText(FText::FromString(FString::SanitizeFloat(V)));
     auto Field=FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
-    Field.SetFont(JP(16));Field.SetForegroundColor(FSlateColor(FLinearColor(.04,.07,.12)));W->SetWidgetStyle(Field);
+    Field.SetFont(JP(16));Field.SetForegroundColor(FSlateColor(FLinearColor(.9f,.95f,1.f)));W->SetWidgetStyle(Field);
     W->SetMinDesiredWidth(80);W->SetSelectAllTextWhenFocused(true);H->AddChildToHorizontalBox(W)->SetSize(FSlateChildSize(ESlateSizeRule::Fill));return W;
 }
 }

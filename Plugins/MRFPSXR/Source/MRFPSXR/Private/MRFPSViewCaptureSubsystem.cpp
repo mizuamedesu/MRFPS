@@ -343,6 +343,13 @@ bool UMRFPSViewCaptureSubsystem::IsCapturing() const
 bool UMRFPSViewCaptureSubsystem::IsCaptureRequestPending() const
 {
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
+    {
+        // request() posts to Android's UI thread. Until it runs, Java can still
+        // report no dialog; this current native request must retain its lease.
+        using namespace MRFPSViewCapture;
+        FScopeLock Lock(&Mailbox.Mutex);
+        if (CaptureSession!=0 && CaptureSession==Mailbox.Session && Mailbox.bRequested && Mailbox.State==EState::AwaitingConsent) return true;
+    }
     JNIEnv* Env = AndroidJavaEnv::GetJavaEnv();
     if (Env) {
         jclass Class = AndroidJavaEnv::FindJavaClass("com/mrfps/capture/MRFPSViewCapture");

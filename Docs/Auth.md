@@ -1,8 +1,8 @@
 # Signed admission tokens and pinned DTLS
 
-Every player and inspector connection requires an Ed25519-signed JWT. There is no anonymous or development admission bypass. The dedicated server receives the issuer's **public key only**. The signing private key stays on the offline issuer host. Each token authorizes one role and one connection, identified by a random UUIDv4 `jti`; reconnecting requires a newly minted token.
+Every player, inspector and admin connection requires an Ed25519-signed JWT. There is no anonymous or development admission bypass. The dedicated server receives the issuer's **public key only**. The signing private key stays on the offline issuer host. Each token authorizes one role and one connection, identified by a random UUIDv4 `jti`; reconnecting requires a newly minted token.
 
-The signed profile is deliberately narrow: header `alg=EdDSA, typ=JWT`; exactly nine claims `iss`, `aud`, `sub`, `role`, `iat`, `nbf`, `exp`, `jti`, and `dtls_fp`. The issuer is `mrfps-issuer`, the default audience is `mrfps`, and roles are `player` or `inspector`. Numeric dates are integer UTC seconds with at most 3600 seconds of lifetime and 5 seconds of server clock tolerance. `dtls_fp` is the active server's 64-character lowercase SHA256 DTLS-certificate fingerprint. Client connections verify the JWT with the public key before using its transport pin.
+The signed profile is deliberately narrow: header `alg=EdDSA, typ=JWT`; exactly nine claims `iss`, `aud`, `sub`, `role`, `iat`, `nbf`, `exp`, `jti`, and `dtls_fp`. The issuer is `mrfps-issuer`, the default audience is `mrfps`, and roles are `player`, `inspector`, or `admin`. Numeric dates are integer UTC seconds with at most 3600 seconds of lifetime and 5 seconds of server clock tolerance. `dtls_fp` is the active server's 64-character lowercase SHA256 DTLS-certificate fingerprint. Client connections verify the JWT with the public key before using its transport pin.
 
 ## Offline issuer
 
