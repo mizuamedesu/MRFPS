@@ -116,6 +116,15 @@ export class DeviceCodes extends DurableObject {
         key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL)`);
       this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS attempts_window_idx ON attempts(window)');
       this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS issuers (owner TEXT PRIMARY KEY, stopped INTEGER NOT NULL DEFAULT 0)');
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS issuance_receipts (
+        id TEXT PRIMARY KEY, role TEXT NOT NULL, owner TEXT NOT NULL,
+        expires_at INTEGER NOT NULL, request_hash TEXT, state TEXT NOT NULL)`);
+      this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS issuance_receipts_expiry_idx ON issuance_receipts(expires_at)');
+      // Codes created by the previous revision have no request fingerprint.
+      // Preserve their exchange until expiry, but never republish their IDs.
+      this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO issuance_receipts (id,role,owner,expires_at,request_hash,state)
+        SELECT id,role,owner,expires_at,NULL,CASE WHEN consumed=1 THEN 'consumed' ELSE 'legacy' END
+        FROM codes WHERE expires_at>?`, Math.floor(Date.now() / 1000));
     });
   }
   attempt(key, now, max) {
@@ -139,12 +148,50 @@ export class DeviceCodes extends DurableObject {
     return correct;
   }
   async publish(data) {
+    // Hash the entire immutable issuance in the DO, not a client-supplied hash.
+    // Do this before touching storage so all subsequent checks/writes are one
+    // uninterrupted SQLite transaction under the DO input/output gates.
+    const requestHash = await digest(JSON.stringify([data.id,data.role,data.owner,data.code_hash,
+      data.expires_at,data.token,data.public_key,data.token_expires_at,data.takeover === true]));
+    // Read before the synchronous checks/writes. The subsequent setAlarm call
+    // is queued without an intervening await, so it coalesces with the SQL
+    // writes rather than leaving a persisted token with no expiration alarm.
+    const existingAlarm = await this.ctx.storage.getAlarm();
     const sql = this.ctx.storage.sql;
+    const now = Math.floor(Date.now() / 1000);
+    sql.exec('DELETE FROM issuance_receipts WHERE expires_at <= ?',now);
+    if (data.expires_at <= now) return { error:'issuance_expired' };
     const issuer = sql.exec('SELECT stopped FROM issuers WHERE owner=?',data.owner).toArray()[0];
     if (!issuer || issuer.stopped) return { error: 'owner_stopped' };
-    const previous = sql.exec('SELECT owner,expires_at FROM codes WHERE role=?', data.role).toArray()[0];
+    const receipt = sql.exec('SELECT request_hash,state,expires_at FROM issuance_receipts WHERE id=?',data.id).toArray()[0];
+    if (receipt) {
+      if (!receipt.request_hash) return { error: 'legacy_issuance' };
+      if (receipt.request_hash !== requestHash) return { error: 'issuance_id_conflict' };
+      if (receipt.state === 'consumed') return { ok:true, id:data.id, expires_at:receipt.expires_at, reused:true, consumed:true };
+      if (receipt.state !== 'active') return { error: 'issuance_retired' };
+      const current = sql.exec('SELECT id,owner,expires_at,consumed,token FROM codes WHERE role=?',data.role).toArray()[0];
+      if (!current || current.id !== data.id || current.owner !== data.owner || current.expires_at <= now) {
+        sql.exec("UPDATE issuance_receipts SET state='retired' WHERE id=?",data.id);
+        return { error: 'issuance_retired' };
+      }
+      if (current.consumed || !current.token) {
+        sql.exec("UPDATE issuance_receipts SET state='consumed' WHERE id=?",data.id);
+        return { ok:true, id:data.id, expires_at:receipt.expires_at, reused:true, consumed:true };
+      }
+      // If a prior alarm write failed after the row became visible, a retry
+      // repairs the schedule without replacing or resurrecting the bearer.
+      const due=(receipt.expires_at+1)*1000;
+      if (!existingAlarm || existingAlarm > due) await this.ctx.storage.setAlarm(due);
+      return { ok:true, id:data.id, expires_at:receipt.expires_at, reused:true, consumed:false };
+    }
+    const previous = sql.exec('SELECT id,owner,expires_at FROM codes WHERE role=?', data.role).toArray()[0];
+    if (previous && previous.id === data.id) {
+      // Fail closed if a pre-migration code appears without a receipt.
+      sql.exec("INSERT OR IGNORE INTO issuance_receipts (id,role,owner,expires_at,request_hash,state) VALUES (?,?,?,?,NULL,'legacy')",
+        previous.id,data.role,previous.owner,previous.expires_at);
+      return { error:'legacy_issuance' };
+    }
     if (previous && previous.owner !== data.owner) {
-      const now = Math.floor(Date.now() / 1000);
       const live = sql.exec('SELECT COUNT(*) AS count FROM codes WHERE owner=? AND expires_at>?',previous.owner,now).toArray()[0].count;
       if (live && data.takeover !== true) return { error: 'owner_conflict' };
       // A takeover retires the previous issuer completely, so a sleeping tab
@@ -152,17 +199,20 @@ export class DeviceCodes extends DurableObject {
       // Older deployments have codes but no issuer row. A takeover must
       // tombstone those owners too, not let an old tab register afterwards.
       sql.exec('INSERT INTO issuers (owner,stopped) VALUES (?,1) ON CONFLICT(owner) DO UPDATE SET stopped=1',previous.owner);
+      sql.exec("UPDATE issuance_receipts SET state='retired' WHERE owner=? AND state IN ('active','legacy')",previous.owner);
       sql.exec('DELETE FROM codes WHERE owner=?',previous.owner);
     }
+    if (previous) sql.exec("UPDATE issuance_receipts SET state='retired' WHERE id=? AND state IN ('active','legacy')",previous.id);
+    sql.exec("INSERT INTO issuance_receipts (id,role,owner,expires_at,request_hash,state) VALUES (?,?,?,?,?,'active')",
+      data.id,data.role,data.owner,data.expires_at,requestHash);
     sql.exec(`INSERT INTO codes (role,id,owner,expires_at,code_hash,token,public_key,token_expires_at,consumed)
       VALUES (?,?,?,?,?,?,?,?,0) ON CONFLICT(role) DO UPDATE SET id=excluded.id, owner=excluded.owner,
       expires_at=excluded.expires_at, code_hash=excluded.code_hash, token=excluded.token,
       public_key=excluded.public_key, token_expires_at=excluded.token_expires_at, consumed=0`,
       data.role, data.id, data.owner, data.expires_at, data.code_hash, data.token, data.public_key, data.token_expires_at);
     // An alarm removes unused bearer material even if the browser goes away.
-    const alarm = await this.ctx.storage.getAlarm();
     const due = (data.expires_at + 1) * 1000;
-    if (!alarm || alarm > due) await this.ctx.storage.setAlarm(due);
+    if (!existingAlarm || existingAlarm > due) await this.ctx.storage.setAlarm(due);
     return { ok: true, id: data.id, expires_at: data.expires_at };
   }
   start(owner) {
@@ -176,6 +226,7 @@ export class DeviceCodes extends DurableObject {
     const now = Math.floor(Date.now() / 1000);
     const sql=this.ctx.storage.sql;
     sql.exec('UPDATE codes SET token=NULL, public_key=NULL WHERE expires_at <= ?', now);
+    sql.exec('DELETE FROM issuance_receipts WHERE expires_at <= ?',now);
     const result={codes:sql.exec('SELECT role,id,owner,expires_at,consumed FROM codes').toArray()};
     if(owner) {
       const row=sql.exec('SELECT stopped FROM issuers WHERE owner=?',owner).toArray()[0];
@@ -186,6 +237,7 @@ export class DeviceCodes extends DurableObject {
   revoke(owner) {
     const sql=this.ctx.storage.sql;
     sql.exec('INSERT INTO issuers (owner,stopped) VALUES (?,1) ON CONFLICT(owner) DO UPDATE SET stopped=1',owner);
+    sql.exec("UPDATE issuance_receipts SET state='retired' WHERE owner=? AND state IN ('active','legacy')",owner);
     sql.exec('DELETE FROM codes WHERE owner=?', owner);
     return { ok: true };
   }
@@ -195,6 +247,7 @@ export class DeviceCodes extends DurableObject {
     // running tab could register after its old code was removed and revive.
     sql.exec('INSERT OR IGNORE INTO issuers (owner,stopped) SELECT DISTINCT owner,1 FROM codes');
     sql.exec('UPDATE issuers SET stopped=1 WHERE stopped=0');
+    sql.exec("UPDATE issuance_receipts SET state='retired' WHERE state IN ('active','legacy')");
     sql.exec('DELETE FROM codes');
     return {ok:true};
   }
@@ -204,13 +257,14 @@ export class DeviceCodes extends DurableObject {
     const globalState = this.attempt('device:global', now, 30);
     if (!ipState.allowed || !globalState.allowed) return { error: 'rate_limited' };
     const sql = this.ctx.storage.sql;
-    const row = sql.exec('SELECT token,public_key,token_expires_at FROM codes WHERE role=? AND code_hash=? AND expires_at>? AND token IS NOT NULL', role, codeHash, now).toArray()[0];
+    const row = sql.exec('SELECT id,token,public_key,token_expires_at FROM codes WHERE role=? AND code_hash=? AND expires_at>? AND token IS NOT NULL', role, codeHash, now).toArray()[0];
     if (!row) {
       this.fail('device:' + ip, ipState.window);
       this.fail('device:global', globalState.window);
       return { error: 'invalid_code' };
     }
     sql.exec('UPDATE codes SET token=NULL,public_key=NULL,consumed=1 WHERE role=?', role);
+    sql.exec("UPDATE issuance_receipts SET state='consumed' WHERE id=? AND state IN ('active','legacy')",row.id);
     return { token: row.token, public_key: row.public_key, expires_at: row.token_expires_at };
   }
   async alarm() {
@@ -218,6 +272,7 @@ export class DeviceCodes extends DurableObject {
     const sql = this.ctx.storage.sql;
     sql.exec('UPDATE codes SET token=NULL, public_key=NULL WHERE expires_at <= ?', now);
     sql.exec('DELETE FROM attempts WHERE window < ?', Math.floor(now / 60) - 1);
+    sql.exec('DELETE FROM issuance_receipts WHERE expires_at <= ?',now);
     const next = sql.exec('SELECT MIN(expires_at) AS t FROM codes WHERE token IS NOT NULL').toArray()[0]?.t;
     if (next) await this.ctx.storage.setAlarm((next + 1) * 1000);
   }

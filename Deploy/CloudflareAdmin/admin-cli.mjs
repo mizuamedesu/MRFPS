@@ -159,6 +159,9 @@ async function ensureCodes(state, key) {
     if (row && row.owner !== state.owner && row.expires_at > now && opts.takeover !== 'true') {
       const error=Error(`owner_conflict: ${role}; use explicit --takeover true to switch issuers`); error.code='owner_conflict'; throw error;
     }
+    if (row && local && row.owner === state.owner && row.id === local.id && row.expires_at !== local.expires_at) {
+      const error=Error('issuer_state_changed: issuance expiry differs'); error.code='issuer_state_changed'; throw error;
+    }
     if (row && local && row.owner === state.owner && row.id === local.id && !row.consumed && row.expires_at > now + 1) {
       // A lost publish response can leave the original signed request pending.
       // Preserve only its non-token subject for local join correlation.
@@ -169,12 +172,32 @@ async function ensureCodes(state, key) {
     }
     // Persist the prepared issuance before the HTTP request. If a reply is lost,
     // the retry can recover the same code and ID from the durable local state.
-    let entry = local?.pending && local.expires_at > now + 1 ? local.pending : await newCode(role, state.owner, fingerprint, key);
+    if (local?.pending && local.expires_at > now + 1 && row && row.owner === state.owner && row.id !== local.id) {
+      const error=Error('issuer_state_changed: pending issuance was replaced'); error.code='issuer_state_changed'; throw error;
+    }
+    // An already-consumed pending issuance must never be republished. Generate
+    // a new ID instead, even when a prior publish response was lost.
+    let entry = local?.pending && local.expires_at > now + 1 && (!row || row.owner !== state.owner)
+      ? local.pending : await newCode(role, state.owner, fingerprint, key);
     if (opts.takeover === 'true') entry.body.takeover = true;
     state.roles[role] = {code:entry.code,id:entry.body.id,expires_at:entry.body.expires_at,
       subject:issuerSubject(entry,role),pending:entry};
     await saveState(state);
-    await call('/api/admin/publish', entry.body);
+    const published=await call('/api/admin/publish', entry.body);
+    if (!published || published.ok !== true || published.id !== entry.body.id ||
+        published.expires_at !== entry.body.expires_at ||
+        (published.consumed !== undefined && typeof published.consumed !== 'boolean')) {
+      const error=Error('invalid_response: issuance was not confirmed'); error.code='invalid_response'; throw error;
+    }
+    if (published.consumed === true) {
+      // Consumption can race the status request and a retry. Never write or
+      // return a code which the Worker reports was already redeemed.
+      delete state.roles[role].pending;
+      state.roles[role].consumed=true;
+      await saveState(state);
+      await unlink(join(stateDir,role+'.code')).catch(error=>{if(error.code!=='ENOENT') throw error;});
+      const error=Error('issuance_consumed: request a new code'); error.code='issuance_consumed'; throw error;
+    }
     delete state.roles[role].pending;
     await saveState(state);
     await writePrivate(join(stateDir, role + '.code'), entry.code + '\n');

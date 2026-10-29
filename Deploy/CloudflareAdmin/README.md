@@ -77,8 +77,14 @@ CLI のプロセスがロック回収中に強制終了すると `lock.recovery`
 
 `POST /api/device/exchange` は `{"role":"player|inspector|admin","code":"000000"}` を受け付け、成功時に `token`、`public_key`、`expires_at`（JWT の UTC 秒）を返す。コードは文字列。期限切れ・使用済みは 401、失敗回数の制限は 429。管理 API は Basic 認証が必要で、変更リクエストは JSON と同一 Origin に制限する。SQLite Durable Object で交換と無効化を直列化し、IP 単位と全体の失敗回数を制限する。短命 JWT は交換まで一時的に Durable Object に保存し、有効期限後に削除する。秘密鍵と復元パスフレーズは送らない。
 
-ローカル試験は `.dev.vars` にテスト専用 Basic 認証値を設定してから `npm test`、`npm run dev`、別のターミナルで `npm run test:integration`、`npm run test:watch`、`npm run test:panel` を順番に実行する。統合試験は発行と停止を行うため、本番や他の試験と同時に動かさない。開発用設定は本番カスタムドメインを持たず、loopback のみ HTTP を許す。本番は `npx wrangler deploy --dry-run`、`npx wrangler deploy`。`mrfps-admin.mizuame.app` はカスタムドメインとして `wrangler.jsonc` に指定。
+発行 ID ごとの内容と使用状態はコード期限まで保持する。同じ発行を再送しても、交換済みコードの JWT は復元されない。異なる内容で同じ ID を使うと拒否し、別のコードへの置換や発行停止後に古い発行を再送しても元に戻さない。更新前に発行済みだったコードは期限まで交換できるが、内容確認に必要な記録がないため同じ ID での再発行は拒否する。応答が失われた発行がすでに交換済みなら、新しい ID とコードを作成する。状態が別の発行へ変化した場合は上書きせず停止する。
+
+発行停止は未交換のコードを無効にする操作であり、すでに交換された JWT や接続済みセッションを個別に失効させる機能ではない。JWT は最大1時間有効で、サーバーは期限時に接続を終了する。初回のクライアントは HTTPS 認証先から返された公開鍵を保存し、以後の鍵変更を拒否するため、パネルで表示した公開鍵とコンテナに設定した公開鍵を一致させる必要がある。IP ごと・全体の失敗制限に達すると正しいコードや Basic 認証も一時的に拒否される。
+
+ローカル試験は Node.js 24 で `npm test` を実行する。SQLite の in-memory fixture は外部サービスに接続せず、実際の Durable Object メソッドと CLI 復旧処理を検査する。HTTP 統合試験は `.dev.vars` にテスト専用 Basic 認証値を設定してから `npm run dev`、別のターミナルで `npm run test:integration`、`npm run test:watch`、`npm run test:panel` を順番に実行する。統合試験は発行と停止を行うため、本番や他の試験と同時に動かさない。開発用設定は本番カスタムドメインを持たず、loopback のみ HTTP を許す。本番は `npx wrangler deploy --dry-run`、`npx wrangler deploy`。`mrfps-admin.mizuame.app` はカスタムドメインとして `wrangler.jsonc` に指定。
 
 旧 Worker からの移行試験 `npm run test:migration` は旧リビジョンの Git 履歴を必要とし、別の一時 Wrangler とデータストアを使う。`npm run test:locking` は独立した一時ディレクトリと HTTP fixture を使い、クラッシュ後の並列ロック回収を確認する。
+
+今回の発行 receipt を追加する直前の Worker からは、Windows 上で `npm run test:receipt-migration` を実行し、未使用・使用済みコードを含む一時ローカルストアの再起動と移行を確認できる。Git の旧リビジョンを読み、2 回のローカル Wrangler を順番に専用メモリガード下で実行する。本番環境には接続しない。
 
 GitHub Actions は secrets `MRFPS_ADMIN_USERNAME`、`MRFPS_ADMIN_PASSWORD`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN` と repository variable `MRFPS_ADMIN_CI_DEPLOY=true` が必要。現在は前者3つのみ設定し、API token 未設定のまま有効にしない。Cloudflare の [GitHub Actions の手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) に従って対象アカウントとゾーンに限定した `Edit Cloudflare Workers` トークンを作成し、`gh secret set CLOUDFLARE_API_TOKEN` に対話入力後、`gh variable set MRFPS_ADMIN_CI_DEPLOY --body true` で有効化する。現在の Wrangler OAuth はトークン管理 API で 403 のため、自動作成できない。Worker secrets はワークフローが安全な一時ファイルから設定する。

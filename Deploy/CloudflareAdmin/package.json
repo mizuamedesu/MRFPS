@@ -10,6 +10,7 @@
     "test:watch": "node tests/watch-retry.mjs",
     "test:panel": "node tests/panel-control.mjs",
     "test:migration": "node tests/migration.mjs",
+    "test:receipt-migration": "node tests/receipt-migration.mjs",
     "test:locking": "node tests/locking.mjs"
   },
   "devDependencies": {

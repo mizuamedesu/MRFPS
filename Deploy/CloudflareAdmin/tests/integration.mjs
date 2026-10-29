@@ -44,6 +44,26 @@ const result = await races.find(r => r.status === 200).json();
 const [header, payload, signature] = result.token.split('.');
 assert(verify(null, Buffer.from(header+'.'+payload), createPublicKey(result.public_key), Buffer.from(signature,'base64url')));
 assert.equal(JSON.parse(Buffer.from(payload,'base64url')).role, 'player');
+// Repeating the identical publish must not restore a consumed bearer.
+const repeated=await req('/api/admin/publish',player.body,{auth:true});
+assert.equal(repeated.status,200);
+assert.equal((await repeated.json()).consumed,true,'retry did not report prior consumption');
+const freshIp={'cf-connecting-ip':'192.0.2.80'};
+assert.equal((await req('/api/device/exchange',{role:'player',code:player.code},{headers:freshIp})).status,401,
+  'a republished consumed code was exchanged twice');
+const changed={...player.body,code_hash:'f'.repeat(64)};
+const conflict=await req('/api/admin/publish',changed,{auth:true});
+assert.equal(conflict.status,409);
+assert.equal((await conflict.json()).error,'issuance_id_conflict');
+// A delayed retry for an unconsumed but superseded ID must not overwrite the
+// newer code. Both cases run on the actual local Durable Object runtime.
+const olderAdmin=await publish('admin');
+const newerAdmin=await publish('admin');
+const stale=await req('/api/admin/publish',olderAdmin.body,{auth:true});
+assert.equal(stale.status,409);
+assert.equal((await stale.json()).error,'issuance_retired');
+assert.equal((await req('/api/device/exchange',{role:'admin',code:newerAdmin.code},{headers:freshIp})).status,200,
+  'a stale retry replaced the newer code');
 // The failed concurrent redemptions exhaust this IP's rate limit.
 assert.equal((await req('/api/device/exchange', {role:'player',code:'000000'})).status,429);
 // Admin revoke remains idempotent and removes every published code.
