@@ -9,10 +9,11 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -22,6 +23,8 @@ REPOSITORY = "mizuamedesu/MRFPS-Server-Registry"
 BUILDKIT = "moby/buildkit@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea"
 RUNNER_HASH = "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40"
 GH_HASH = "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d"
+ARTIFACT_BASE = Path("/var/tmp")
+ARTIFACT_PREFIX = "mrfps-private-publisher-artifacts-"
 
 
 def task_root(task):
@@ -31,6 +34,220 @@ def task_root(task):
     if root.is_symlink():
         raise ValueError("RUNNER_ROOT_SYMLINK")
     return root
+
+
+def runner_member_needed(name):
+    parts = PurePosixPath(name).parts
+    return not (len(parts) >= 2 and parts[0] == "externals" and
+                parts[1] in {"node20_alpine", "node24_alpine"})
+
+
+def extract_host_runner(archive_path, destination):
+    # This runner executes on Ubuntu/glibc; the reviewed workflow has no
+    # Alpine container jobs. Keep both normal Node runtimes, but do not fill
+    # the RAM-only runner directory with unused musl-only Alpine copies.
+    try:
+        libc = os.confstr("CS_GNU_LIBC_VERSION")
+    except (AttributeError, OSError, ValueError):
+        libc = None
+    if not libc or not libc.startswith("glibc "):
+        raise ValueError("RUNNER_GLIBC_HOST_REQUIRED")
+    omitted = set()
+    with tarfile.open(archive_path) as archive:
+        def needed_members():
+            for member in archive:
+                if runner_member_needed(member.name):
+                    yield member
+                else:
+                    omitted.add(PurePosixPath(member.name).parts[1])
+        archive.extractall(destination, members=needed_members(), filter="data")
+    if omitted != {"node20_alpine", "node24_alpine"}:
+        raise ValueError("RUNNER_ARCHIVE_ALPINE_LAYOUT_CHANGED")
+
+
+def artifact_path(task):
+    if not re.fullmatch(r"[0-9a-f]{16}", task):
+        raise ValueError("RUNNER_TASK_INVALID")
+    return ARTIFACT_BASE / (ARTIFACT_PREFIX + task)
+
+
+def validate_artifact_storage():
+    # Keep the runner and registry credentials in /tmp's RAM-only storage.
+    # Only the audited server bundle/build context lives on a reclaimable disk.
+    temporary = Path("/tmp")
+    if temporary.is_symlink() or temporary.resolve(strict=True) != temporary or not temporary.is_dir():
+        raise ValueError("RUNNER_TMPFS_REQUIRED")
+    tmp_result = subprocess.run(["findmnt", "-n", "-T", str(temporary), "-o", "FSTYPE"],
+                                capture_output=True, text=True, timeout=10)
+    if tmp_result.returncode or tmp_result.stdout.strip() != "tmpfs":
+        raise ValueError("RUNNER_TMPFS_REQUIRED")
+    if ARTIFACT_BASE.is_symlink() or ARTIFACT_BASE.resolve(strict=True) != ARTIFACT_BASE or not ARTIFACT_BASE.is_dir():
+        raise ValueError("ARTIFACT_BASE_INVALID")
+    result = subprocess.run(["findmnt", "-n", "-T", str(ARTIFACT_BASE), "-o", "FSTYPE"],
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode or result.stdout.strip() != "ext4":
+        raise ValueError("ARTIFACT_RECLAIMABLE_EXT4_REQUIRED")
+    if shutil.disk_usage(ARTIFACT_BASE).free < 2 * 1024 * 1024 * 1024:
+        raise ValueError("ARTIFACT_DISK_SPACE_INSUFFICIENT")
+
+
+def prepare_artifact_directory(task, root, state):
+    validate_artifact_storage()
+    path = artifact_path(task)
+    # Persist an unpredictable local ownership marker before creating anything.
+    # A same-name directory is never adopted and cleanup will not delete it.
+    manager = state.get("manager")
+    invocation = state.get("manager_invocation_id")
+    if (not isinstance(manager, dict) or type(manager.get("pid")) is not int or manager["pid"] <= 1 or
+            manager.get("pgid") != manager["pid"] or type(manager.get("start_ticks")) is not int or
+            manager["start_ticks"] < 0 or not re.fullmatch(r"[0-9a-f]{32}", str(invocation or ""))):
+        raise ValueError("ARTIFACT_MANAGER_IDENTITY_REQUIRED")
+    claim = {"path": str(path), "nonce": os.urandom(32).hex(),
+             "manager_pid": manager["pid"], "manager_start_ticks": manager["start_ticks"],
+             "manager_invocation_id": invocation}
+    state["artifact_claim"] = claim
+    write_json(root / "state.json", state)
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        claim["collision"] = True
+        write_json(root / "state.json", state)
+        raise ValueError("ARTIFACT_DIRECTORY_COLLISION") from None
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("ARTIFACT_DIRECTORY_IDENTITY_INVALID")
+    marker = path / ".mrfps-owner.json"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    marker_data = {"task_id": task, "nonce": claim["nonce"], "device": info.st_dev, "inode": info.st_ino,
+                   "owner_uid": info.st_uid, "manager_pid": claim["manager_pid"],
+                   "manager_start_ticks": claim["manager_start_ticks"], "manager_invocation_id": invocation}
+    with os.fdopen(os.open(marker, flags, 0o600), "w", encoding="utf-8") as stream:
+        json.dump(marker_data, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    claim.update(device=info.st_dev, inode=info.st_ino)
+    write_json(root / "state.json", state)
+    return path
+
+
+def read_artifact_marker(task):
+    expected = artifact_path(task)
+    if ARTIFACT_BASE.is_symlink() or ARTIFACT_BASE.resolve(strict=True) != ARTIFACT_BASE:
+        raise ValueError("ARTIFACT_BASE_INVALID")
+    if expected.is_symlink() or expected.resolve(strict=True) != expected:
+        raise ValueError("ARTIFACT_DIRECTORY_SYMLINK")
+    info = expected.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("ARTIFACT_DIRECTORY_IDENTITY_INVALID")
+    marker = expected / ".mrfps-owner.json"
+    if marker.is_symlink() or not marker.is_file() or marker.stat().st_size > 2048:
+        raise ValueError("ARTIFACT_OWNERSHIP_MARKER_REQUIRED")
+    marker_info = marker.lstat()
+    if (not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1 or
+            marker_info.st_uid != os.getuid() or stat.S_IMODE(marker_info.st_mode) != 0o600):
+        raise ValueError("ARTIFACT_OWNERSHIP_MARKER_INVALID")
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    keys = {"task_id", "nonce", "device", "inode", "owner_uid", "manager_pid", "manager_start_ticks", "manager_invocation_id"}
+    if (not isinstance(data, dict) or set(data) != keys or data["task_id"] != task or
+            not re.fullmatch(r"[0-9a-f]{64}", str(data["nonce"])) or
+            (data["device"], data["inode"], data["owner_uid"]) != (info.st_dev, info.st_ino, info.st_uid) or
+            type(data["manager_pid"]) is not int or data["manager_pid"] <= 1 or
+            type(data["manager_start_ticks"]) is not int or data["manager_start_ticks"] < 0 or
+            not re.fullmatch(r"[0-9a-f]{32}", str(data["manager_invocation_id"]))):
+        raise ValueError("ARTIFACT_OWNERSHIP_MARKER_MISMATCH")
+    return data
+
+
+def remove_owned_artifact_directory(task, state):
+    claim = state.get("artifact_claim")
+    if claim is None:
+        return True
+    expected = artifact_path(task)
+    if (not isinstance(claim, dict) or claim.get("path") != str(expected) or
+            not re.fullmatch(r"[0-9a-f]{64}", str(claim.get("nonce", "")))):
+        raise ValueError("ARTIFACT_CLAIM_INVALID")
+    if claim.get("collision") is True:
+        # Another directory won the exclusive create race; do not adopt/remove.
+        return True
+    if not expected.exists() and not expected.is_symlink():
+        return True
+    marker = read_artifact_marker(task)
+    if (marker["nonce"] != claim["nonce"] or
+            marker["manager_pid"] != claim.get("manager_pid") or
+            marker["manager_start_ticks"] != claim.get("manager_start_ticks") or
+            marker["manager_invocation_id"] != claim.get("manager_invocation_id") or
+            ("device" in claim and (claim.get("device"), claim.get("inode")) != (marker["device"], marker["inode"]))):
+        raise ValueError("ARTIFACT_DIRECTORY_IDENTITY_INVALID")
+    # An interrupted create before the marker is durable is deliberately left
+    # alone and reported as a failure: ownership cannot then be proved.
+    shutil.rmtree(expected)
+    return not expected.exists() and not expected.is_symlink()
+
+
+def verify_recovery_report(task, path):
+    if (not path.is_absolute() or path.is_symlink() or not path.is_file() or
+            path.resolve(strict=True) != path or path.stat().st_size > 1024 * 1024):
+        raise ValueError("RECOVERY_REPORT_INVALID")
+    report = json.loads(path.read_text(encoding="utf-8-sig"))
+    if (not isinstance(report, dict) or report.get("repository") != REPOSITORY or report.get("taskId") != task or
+            report.get("runnerLabel") != "mrfps-private-" + task or
+            report.get("operation") not in {"Inspect", "Probe", "Publish"}):
+        raise ValueError("RECOVERY_REPORT_IDENTITY_MISMATCH")
+    return report
+
+
+def verify_no_recovery_unit(task):
+    unit = "mrfps-private-manager-" + task + ".service"
+    result = subprocess.run(["systemctl", "show", unit, "--property=LoadState", "--property=ActiveState",
+                             "--property=ControlGroup", "--property=InvocationID"],
+                            capture_output=True, text=True, timeout=10)
+    props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    if (result.returncode or props.get("LoadState") != "not-found" or
+            props.get("ActiveState") != "inactive" or props.get("ControlGroup") or props.get("InvocationID")):
+        raise ValueError("RECOVERY_MANAGER_UNIT_STILL_PRESENT")
+
+
+def verify_no_recovery_unit_or_pid(task, marker):
+    verify_no_recovery_unit(task)
+    # Even an unrelated process that reused the old PID blocks recovery.
+    if Path("/proc").joinpath(str(marker["manager_pid"])).exists():
+        raise ValueError("RECOVERY_MANAGER_PID_PRESENT")
+
+
+def verify_no_recovery_builder(task):
+    name = "buildx_buildkit_mrfps-private-builder-" + task + "0"
+    # A daemon failure or ambiguous response is not evidence of absence.
+    info = subprocess.run(["docker", "info", "--format", "{{.ID}}"], capture_output=True, text=True, timeout=15)
+    if info.returncode or not info.stdout.strip():
+        raise ValueError("RECOVERY_DOCKER_UNAVAILABLE")
+    result = subprocess.run(["docker", "inspect", "--type=container", name], capture_output=True, text=True, timeout=15)
+    if result.returncode == 0:
+        raise ValueError("RECOVERY_BUILDER_STILL_PRESENT")
+    absent = {"error response from daemon: no such container: " + name, "error: no such object: " + name}
+    if result.returncode != 1 or result.stdout.strip() != "[]" or result.stderr.strip().lower() not in absent:
+        raise ValueError("RECOVERY_BUILDER_ABSENCE_UNVERIFIED")
+
+
+def recover_artifact(task, report_path):
+    """Remove only a specific reboot-orphaned, provably owned artifact directory."""
+    verify_recovery_report(task, report_path)
+    path = artifact_path(task)
+    # If tmpfs state still exists, use the normal task cleanup after inspecting
+    # that state; do not discard evidence or race its independent watchdog.
+    if task_root(task).exists():
+        raise ValueError("RECOVERY_TMP_STATE_STILL_PRESENT")
+    if not path.exists() and not path.is_symlink():
+        verify_no_recovery_unit(task)
+        return {"task_id": task, "status": "already_removed"}
+    marker = read_artifact_marker(task)
+    verify_no_recovery_unit_or_pid(task, marker)
+    verify_no_recovery_builder(task)
+    claim = {"path": str(path), **{key: marker[key] for key in ("nonce", "device", "inode",
+             "manager_pid", "manager_start_ticks", "manager_invocation_id")}}
+    removed = remove_owned_artifact_directory(task, {"artifact_claim": claim})
+    if not removed:
+        raise ValueError("RECOVERY_ARTIFACT_REMOVE_FAILED")
+    return {"task_id": task, "status": "removed"}
 
 
 def write_json(path, value):
@@ -140,7 +357,8 @@ def cleanup(task, reason, *, skip_manager=False):
             raise ValueError("RUNNER_CLEANUP_IDENTITY_MISMATCH")
         report = {"task_id": task, "reason": reason, "runtime_group_stopped": False, "manager_group_stopped": False,
                   "removed_container_ids": [], "builder_was_created": state.get("builder_claimed") is True,
-                  "builder_removed": False, "credential_directory_removed": False, "errors": []}
+                  "builder_removed": False, "credential_directory_removed": False,
+                  "artifact_directory_removed": False, "errors": []}
         report["runtime_group_stopped"] = stop_group(state.get("runtime"))
         if not skip_manager:
             report["manager_group_stopped"] = stop_group(state.get("manager"))
@@ -182,7 +400,8 @@ def cleanup(task, reason, *, skip_manager=False):
         for identifier in set(images):
             command(["docker", "image", "rm", identifier], root, check=False)
         runtime_identity = process_identity((state.get("runtime") or {}).get("pid", 0))
-        if runtime_identity and runtime_identity["state"] != "Z" and same_process(state.get("runtime")):
+        runtime_alive = bool(runtime_identity and runtime_identity["state"] != "Z" and same_process(state.get("runtime")))
+        if runtime_alive:
             report["errors"].append("RUNTIME_GROUP_STILL_ALIVE")
         if not report["errors"]:
             for directory in (root / "runner", root / "docker-config", root / "buildx"):
@@ -191,6 +410,13 @@ def cleanup(task, reason, *, skip_manager=False):
                 if directory.exists():
                     shutil.rmtree(directory)
             report["credential_directory_removed"] = True
+        if not runtime_alive:
+            try:
+                report["artifact_directory_removed"] = remove_owned_artifact_directory(task, state)
+                if not report["artifact_directory_removed"]:
+                    report["errors"].append("ARTIFACT_DIRECTORY_REMOVE_FAILED")
+            except (OSError, ValueError, json.JSONDecodeError):
+                report["errors"].append("ARTIFACT_DIRECTORY_CLEANUP_UNVERIFIED")
         report["finished_utc_ns"] = time.time_ns()
         report["passed"] = not report["errors"]
         write_json(root / "cleanup.json", report)
@@ -282,6 +508,7 @@ def run(task, guard, runner_archive, gh_archive, inspect_only=False):
     try:
         if guard_reason(guard):
             raise ValueError("RUNNER_GUARD_NOT_READY")
+        artifact = prepare_artifact_directory(task, root, state)
         properties = command(["systemctl", "show", "mrfps-private-manager-" + task + ".service", "--property=MemoryMax", "--property=MemorySwapMax", "--property=CPUQuotaPerSecUSec", "--property=InvocationID"], root).stdout.decode()
         properties = dict(line.split("=", 1) for line in properties.splitlines() if "=" in line)
         if (properties.get("InvocationID") != invocation_id or properties.get("MemoryMax") != str(1024 * 1024 * 1024)
@@ -293,8 +520,7 @@ def run(task, guard, runner_archive, gh_archive, inspect_only=False):
         checked_archive(gh_archive, GH_HASH)
         runner = root / "runner"
         runner.mkdir()
-        with tarfile.open(runner_archive) as archive:
-            archive.extractall(runner, filter="data")
+        extract_host_runner(runner_archive, runner)
         (root / "bin").mkdir()
         with tarfile.open(gh_archive) as archive:
             matches = [member for member in archive.getmembers() if member.name.endswith("/bin/gh") and member.isfile()]
@@ -329,7 +555,7 @@ def run(task, guard, runner_archive, gh_archive, inspect_only=False):
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,200}", token):
             raise ValueError("EPHEMERAL_REGISTRATION_TOKEN_INVALID")
         environment = docker_environment(root)
-        environment.update(PATH=str(root / "bin") + ":" + environment.get("PATH", "/usr/bin:/bin"), RUNNER_ALLOW_RUNASROOT="1", MRFPS_PUBLISHER_TASK_ID=task, MRFPS_BUILDER_NAME=builder)
+        environment.update(PATH=str(root / "bin") + ":" + environment.get("PATH", "/usr/bin:/bin"), RUNNER_ALLOW_RUNASROOT="1", MRFPS_PUBLISHER_TASK_ID=task, MRFPS_BUILDER_NAME=builder, MRFPS_ARTIFACT_ROOT=str(artifact))
         environment["LD_LIBRARY_PATH"] = str(icu)
         environment.pop("GH_TOKEN", None)
         environment.pop("GITHUB_TOKEN", None)
@@ -383,17 +609,22 @@ def run(task, guard, runner_archive, gh_archive, inspect_only=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("run", "watch", "cleanup"))
+    parser.add_argument("action", choices=("run", "watch", "cleanup", "recover-artifact"))
     parser.add_argument("--task", required=True)
     parser.add_argument("--guard", type=Path)
     parser.add_argument("--runner-archive", type=Path)
     parser.add_argument("--gh-archive", type=Path)
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--inspect-only", action="store_true")
     args = parser.parse_args()
     if args.action == "run":
         return run(args.task, args.guard, args.runner_archive, args.gh_archive, args.inspect_only)
     if args.action == "watch":
         watchdog(args.task, args.guard)
+    elif args.action == "recover-artifact":
+        if args.report is None:
+            raise ValueError("RECOVERY_REPORT_REQUIRED")
+        print(json.dumps(recover_artifact(args.task, args.report)))
     else:
         print(json.dumps(cleanup(args.task, "host_finally")))
     return 0
