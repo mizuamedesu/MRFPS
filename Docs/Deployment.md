@@ -73,7 +73,7 @@ Before direct Compose startup, set exactly one public-key environment value (`MR
 
 The image copies `Artifacts/Packages/LinuxServer`, exposes **7777/UDP**, starts `/Game/Maps/MRFPSArena`, persists `MRFPS/Saved`, and drops Linux capabilities. Set `MRFPS_HOST_PORT` for another published host port. Inspectors and players connect to that host and port with separate signed connection tokens. For remote devices, route the UDP port through the host's actual LAN/public interface and firewall; WSL's default NAT does not itself guarantee inbound LAN UDP forwarding. The included relay also provides a Windows LAN to WSL UDP path.
 
-`MRFPSServer.debug` and `MRFPSServer.sym` remain in the host's archived package for debugging, but both Docker ignore files exclude them from the build context and runtime image. Other packaged runtime files are retained.
+`MRFPSServer.debug` and `MRFPSServer.sym` are excluded from the Docker build context and runtime image. The low-memory default Linux build strips DWARF at link time and does not generate Breakpad symbols; those host files do not provide full source-level symbols in that mode. Use `-LinuxPortableSymbols` on a machine with sufficient memory to request full debug information and portable symbols. Other packaged runtime files are retained.
 
 Compose explicitly limits the game service to **1 GiB RAM** (`mem_limit: 1g`), **1 GiB total RAM plus swap** (`memswap_limit: 1g`, disabling container swap), and **two CPUs** (`cpus: 2.0`). These runtime limits apply when Compose creates or recreates the service; editing the file does not change an already running container. They do not limit image builds or the entire WSL VM. The bounded game container still needs a real match/stability check under those limits.
 

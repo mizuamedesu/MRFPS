@@ -20,7 +20,7 @@ Macのビルド・起動手順とメモリ監視を同梱していますが、**
 
 このPCのエンジンは `C:\UnrealEngine\UE5.8`。別PCでは `-EngineRoot` を指定してください。SDKは `.local/android` にローカル導入済みです。
 
-ビルドにはメモリ監視 wrapper を推奨します。起動前と2秒ごとに空き物理RAM 10 GiB以上・system commit 75%以下を確認し、超過を検出すると自身が起動した子プロセスだけを停止します。UBTは既定1 action、Shader workerはこのPCで2、GradleはJava heap 2 GiB・worker 2に制限しています。nativeビルドと複数クライアント試験は順番に実行してください。
+ビルドにはメモリ監視 wrapper を推奨します。起動前と2秒ごとに空き物理RAM 10 GiB以上・system commit 75%以下を確認し、超過を検出すると自身が起動した子プロセスだけを停止します。UBTは既定1 action、Shader workerはこのPCで2、GradleはJava heap 2 GiB・worker 2に制限しています。メモリ節約のためLinuxサーバーの既定ビルドはリンク時のデバッグ情報とBreakpad生成を省きます。フルシンボルが必要な場合は、十分なメモリを確保して `-LinuxPortableSymbols` を指定してください。nativeビルドと複数クライアント試験は順番に実行してください。
 
 ```powershell
 # Editorとマップ生成 → Linux専用サーバー → Windows観戦アプリ → Quest APK

@@ -76,13 +76,13 @@ try {
                 $nativeArguments = @($native.Name,$native.Platform,$native.Config,"-Project=$project",'-WaitMutex','-NoHotReloadFromIDE','-NoUBA',"-MaxParallelActions=$MaxParallelActions")
                 if ($native.Platform -eq 'Linux' -and -not $LinuxPortableSymbols) {
                     # Breakpad conversion alone exceeded the RAM reserve on this
-                    # PC. UE still produces its stripped executable and .debug.
+                    # PC. Full DWARF and Breakpad symbols are opt-in below.
                     $nativeArguments += '-NoDumpSyms'
                 }
                 if ($native.Platform -eq 'Linux') {
                     # MaxParallelActions does not limit LLD's internal workers.
                     # A GDB index is optional and expensive for this monolith.
-                    $nativeArguments += $(if ($LinuxPortableSymbols) { '-LinkerArguments=-Wl,--threads=1' } else { '-LinkerArguments=-Wl,--threads=1,--no-gdb-index' })
+                    $nativeArguments += $(if ($LinuxPortableSymbols) { '-LinkerArguments=-Wl,--threads=1' } else { '-LinkerArguments=-Wl,--threads=1,--no-gdb-index,--strip-debug' })
                 }
                 Invoke-MRFPSCommand (Join-Path $engine 'Engine\Build\BatchFiles\Build.bat') $nativeArguments -LogPath $nativeLog -DryRun:$DryRun
             }
