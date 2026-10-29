@@ -2,6 +2,7 @@ import base64
 import datetime as dt
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +15,39 @@ probe=importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
 
 
 class RoleProbeTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows image identity is queried with Win32")
+    def test_running_process_image_matches_actual_python_executable(self):
+        self.assertTrue(os.path.samefile(probe.process_image(os.getpid()),sys.executable))
+
+    def test_executable_digest_changes_with_contents(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"fixture.bin"
+            path.write_bytes(b"first executable")
+            before=probe.file_sha256(path)
+            path.write_bytes(b"second executable")
+            self.assertEqual(len(before),64)
+            self.assertNotEqual(before,probe.file_sha256(path))
+
+    def test_solo_status_requires_actual_bot_round_and_explicit_missing_scan(self):
+        data={"connected":True,"solo_bot":True,"phase":1,"round":1,"round_seconds_remaining":179,
+              "solo_measured_geometry_received":False,"solo_obstacle_data":"not_received"}
+        self.assertTrue(probe.solo_status_ready(data))
+        self.assertTrue(probe.solo_status_ready({**data,"round_seconds_remaining":179.0}))
+        for key,value in (("solo_bot",False),("phase",0),("phase",True),("round",0),("round_seconds_remaining",0),
+                          ("round_seconds_remaining",True),("solo_measured_geometry_received",True),
+                          ("solo_obstacle_data","received")):
+            changed={**data,key:value}
+            self.assertFalse(probe.solo_status_ready(changed),key)
+
+    def test_solo_replacement_requires_waiting_and_clean_scores_and_registration(self):
+        data={"connected":True,"solo_bot":False,"phase":0,"round":0,"completed_rounds":0,
+              "round_wins_0":0,"round_wins_1":0,"shared_floor_confirmed":False,"layout_calibrated":False}
+        self.assertTrue(probe.solo_replacement_ready(data))
+        for key,value in (("solo_bot",True),("phase",1),("phase",False),("round",1),("completed_rounds",1),
+                          ("round_wins_0",1),("round_wins_1",1),("shared_floor_confirmed",True),("layout_calibrated",True)):
+            changed={**data,key:value}
+            self.assertFalse(probe.solo_replacement_ready(changed),key)
+
     def test_subject_role_and_server_binding_are_checked(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/"token"

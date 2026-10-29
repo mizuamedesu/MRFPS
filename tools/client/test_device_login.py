@@ -12,6 +12,19 @@ spec = importlib.util.spec_from_file_location("device_login", Path(__file__).wit
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
+EMPTY_ACTIVITY_DUMP = """ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)
+  * Task{abcd #100 type=home sz=1}
+    * Hist  #0: ActivityRecord{beef u0 com.example/.Home t100}
+"""
+
+ORPHAN_ACTIVITY_DUMP = """ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)
+  * Task{abcd #484 type=standard sz=1}
+    * Task{abcd #485 type=standard rootTaskId=484 sz=1}
+      * Hist  #0: ActivityRecord{dead u0 com.meta.systemui/.media.MediaProjectionPermissionActivity t485}
+        launchedFromUid=10172 launchedFromPackage=org.mrfps.arena launchedFromFeature=null userId=0
+        resultTo=ActivityRecord{dead u0 org.mrfps.arena/com.epicgames.unreal.GameActivity t-1 f}} resultCode=58481
+"""
+
 
 class DeviceLoginControlTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
@@ -82,8 +95,10 @@ class DeviceLoginControlTests(unittest.TestCase):
                 calls.append((cmd, kwargs))
                 if cmd == ["shell", "run-as", module.PACKAGE, "pwd"]:
                     return "/data/user/0/" + module.PACKAGE
+                if cmd == ["shell", "dumpsys", "activity", "activities"]:
+                    return EMPTY_ACTIVITY_DUMP
                 return ""
-            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", fake_adb), mock.patch.object(module, "quest_pid", side_effect=["", "4321", "4321"]):
+            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", fake_adb), mock.patch.object(module, "quest_pid", side_effect=["", "", "", "", "4321", "4321"]):
                 self.assertEqual(module.quest(args)["status"], "launched")
                 count = len(calls)
                 self.assertEqual(module.quest(args)["status"], "already_running")
@@ -102,8 +117,10 @@ class DeviceLoginControlTests(unittest.TestCase):
             calls = []
             def fake_adb(_adb, _serial, cmd, **kwargs):
                 calls.append((cmd, kwargs))
+                if cmd == ["shell", "dumpsys", "activity", "activities"]:
+                    return EMPTY_ACTIVITY_DUMP
                 return "/data/user/0/" + module.PACKAGE if cmd == ["shell", "run-as", module.PACKAGE, "pwd"] else ""
-            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", fake_adb), mock.patch.object(module, "quest_pid", side_effect=["", "4321", "4321", "4321"]):
+            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", fake_adb), mock.patch.object(module, "quest_pid", side_effect=["", "", "", "", "4321", "4321", "4321"]):
                 self.assertEqual(module.quest(args)["status"], "launched")
                 args.code_file = code
                 self.assertEqual(module.quest(args)["status"], "login_queued")
@@ -112,6 +129,126 @@ class DeviceLoginControlTests(unittest.TestCase):
                 self.assertEqual(len(calls), count)
             self.assertEqual(sum(1 for _cmd, kwargs in calls if kwargs.get("data") is not None), 2)
             self.assertFalse(any("000123" in str(cmd) for cmd, _kwargs in calls))
+
+    def test_quest_pid_distinguishes_absence_from_adb_failure(self):
+        def result(code, out=b"", err=b""):
+            return __import__("subprocess").CompletedProcess([], code, out, err)
+        for response, expected in ((result(1), ""), (result(0, b"12 34\n"), "12 34")):
+            with self.subTest(response=response), mock.patch.object(module, "adb_result", return_value=response):
+                self.assertEqual(module.quest_pid("adb", "fixture"), expected)
+        for response in (result(1, err=b"device offline"), result(2), result(0),
+                         result(0, b"12 invalid"), result(1, b"12"), result(0, b"12", b"error")):
+            with self.subTest(response=response), mock.patch.object(module, "adb_result", return_value=response):
+                with self.assertRaisesRegex(RuntimeError, "Cannot reliably inspect"):
+                    module.quest_pid("adb", "fixture")
+
+    def test_orphan_task_requires_the_exact_single_owned_finishing_activity(self):
+        for dump in (ORPHAN_ACTIVITY_DUMP, ORPHAN_ACTIVITY_DUMP.replace("\n", "\r\n")):
+            self.assertEqual(module.quest_share_tasks(dump), ([484], {484}))
+        other = ORPHAN_ACTIVITY_DUMP.replace("org.mrfps.arena", "other.package")
+        self.assertEqual(module.quest_share_tasks(other), ([], {484}))
+        ambiguous = (
+            ORPHAN_ACTIVITY_DUMP.replace("t-1 f}}", "t101}}"),
+            ORPHAN_ACTIVITY_DUMP.replace("sz=1}", "sz=2}"),
+            ORPHAN_ACTIVITY_DUMP.replace("launchedFromPackage=org.mrfps.arena", "launchedFromPackage="),
+            ORPHAN_ACTIVITY_DUMP.replace("MediaProjectionPermissionActivity ", "MediaProjectionPermissionActivityAlias "),
+            ORPHAN_ACTIVITY_DUMP.replace("MediaProjectionPermissionActivity t485}", "MediaProjectionPermissionActivity t999}"),
+            ORPHAN_ACTIVITY_DUMP.replace("      * Hist", "    * Hist"),
+            ORPHAN_ACTIVITY_DUMP + "      * Hist  #1: ActivityRecord{beef u0 com.other/.Activity t485}\n",
+            ORPHAN_ACTIVITY_DUMP + "    * Task{eeee #486 type=standard rootTaskId=484 sz=1}\n",
+            ORPHAN_ACTIVITY_DUMP + "      * Hist  #1: ActivityRecord{beef u0 com.other/.Activity t485}",
+            ORPHAN_ACTIVITY_DUMP.replace("        resultTo=", "        launchedFromUid=2 launchedFromPackage=other.package\n        resultTo="),
+            "", "error: device offline", "unparsed " + module._QUEST_SHARE_NAME,
+        )
+        for dump in ambiguous:
+            with self.subTest(dump=dump), self.assertRaises(RuntimeError):
+                module.quest_share_tasks(dump)
+
+    def test_quest_orphan_cleanup_requires_two_consistent_checks_and_rechecks_removal(self):
+        calls = []
+        dumps = iter((ORPHAN_ACTIVITY_DUMP, ORPHAN_ACTIVITY_DUMP, EMPTY_ACTIVITY_DUMP))
+        def fake_adb(_adb, _serial, cmd, **_kwargs):
+            calls.append(cmd)
+            if cmd == ["shell", "dumpsys", "activity", "activities"]:
+                return next(dumps)
+            return ""
+        with mock.patch.object(module, "run_adb", fake_adb), mock.patch.object(module, "quest_pid", return_value=""):
+            module.clear_orphaned_quest_share("adb", "fixture")
+        self.assertEqual(calls, [["shell", "dumpsys", "activity", "activities"],
+                                 ["shell", "dumpsys", "activity", "activities"],
+                                 ["shell", "am", "stack", "remove", "484"],
+                                 ["shell", "dumpsys", "activity", "activities"]])
+        with mock.patch.object(module, "run_adb", return_value=EMPTY_ACTIVITY_DUMP) as adb, \
+             mock.patch.object(module, "quest_pid", return_value=""):
+            module.clear_orphaned_quest_share("adb", "fixture")
+            adb.assert_called_once_with("adb", "fixture", ["shell", "dumpsys", "activity", "activities"])
+
+    def test_quest_orphan_cleanup_never_removes_ambiguous_or_changed_tasks(self):
+        multiple = ORPHAN_ACTIVITY_DUMP + ORPHAN_ACTIVITY_DUMP.replace("#484", "#488")
+        changed = ORPHAN_ACTIVITY_DUMP.replace("#484", "#488")
+        scenarios = (
+            ([ORPHAN_ACTIVITY_DUMP], ["7"]),
+            ([multiple], [""]),
+            ([ORPHAN_ACTIVITY_DUMP, changed], ["", ""]),
+            ([ORPHAN_ACTIVITY_DUMP, ORPHAN_ACTIVITY_DUMP], ["", "", "7"]),
+            ([ORPHAN_ACTIVITY_DUMP.replace("sz=1}", "sz=2}")], [""]),
+            (["unrecognized dump"], [""]),
+        )
+        for dump_sequence, pid_sequence in scenarios:
+            calls = []
+            dumps = iter(dump_sequence)
+            def fake_adb(_adb, _serial, cmd, **_kwargs):
+                calls.append(cmd)
+                return next(dumps)
+            with self.subTest(dump_sequence=dump_sequence, pid_sequence=pid_sequence), \
+                 mock.patch.object(module, "run_adb", fake_adb), \
+                 mock.patch.object(module, "quest_pid", side_effect=pid_sequence):
+                with self.assertRaises(RuntimeError):
+                    module.clear_orphaned_quest_share("adb", "fixture")
+            self.assertFalse(any(cmd[:4] == ["shell", "am", "stack", "remove"] for cmd in calls))
+
+    def test_quest_cleanup_refuses_to_launch_if_removal_is_unverified(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player",
+                                      adb="adb", replace=False, code_file=None)
+            calls = []
+            def fake_adb(_adb, _serial, cmd, **_kwargs):
+                calls.append(cmd)
+                return ORPHAN_ACTIVITY_DUMP if cmd == ["shell", "dumpsys", "activity", "activities"] else ""
+            with mock.patch.object(module, "ROOT", Path(folder)), \
+                 mock.patch.object(module, "run_adb", fake_adb), \
+                 mock.patch.object(module, "quest_pid", return_value=""):
+                with self.assertRaisesRegex(RuntimeError, "could not be cleared"):
+                    module.quest(args)
+            self.assertEqual(sum(cmd[:4] == ["shell", "am", "stack", "remove"] for cmd in calls), 1)
+            self.assertFalse(any(cmd[:3] == ["shell", "am", "start"] for cmd in calls))
+
+    def test_quest_replace_only_cleans_a_proven_orphan_after_the_app_stops(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player",
+                                      adb="adb", replace=True, code_file=None)
+            calls = []
+            dumps = iter((ORPHAN_ACTIVITY_DUMP, ORPHAN_ACTIVITY_DUMP, EMPTY_ACTIVITY_DUMP))
+            def fake_adb(_adb, _serial, cmd, **_kwargs):
+                calls.append(cmd)
+                if cmd == ["shell", "dumpsys", "activity", "activities"]:
+                    return next(dumps)
+                if cmd == ["shell", "run-as", module.PACKAGE, "pwd"]:
+                    return "/data/user/0/" + module.PACKAGE
+                return ""
+            # Running, still stopping, stopped, three deletion checks, then a new PID.
+            pids = ["111", "111", "", "", "", "", "", "", "", "222"]
+            with mock.patch.object(module, "ROOT", Path(folder)), \
+                 mock.patch.object(module, "run_adb", fake_adb), \
+                 mock.patch.object(module, "quest_pid", side_effect=pids), \
+                 mock.patch.object(module.time, "sleep"):
+                self.assertEqual(module.quest(args)["status"], "launched")
+            force = ["shell", "am", "force-stop", module.PACKAGE]
+            remove = ["shell", "am", "stack", "remove", "484"]
+            self.assertIn(force, calls)
+            self.assertIn(remove, calls)
+            self.assertLess(calls.index(force), calls.index(remove))
+            self.assertLess(calls.index(remove), next(i for i, cmd in enumerate(calls) if cmd[:3] == ["shell", "am", "start"]))
 
     def test_key_reset_is_idempotent(self):
         with tempfile.TemporaryDirectory() as folder:

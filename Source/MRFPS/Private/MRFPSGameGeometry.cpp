@@ -19,9 +19,12 @@ bool AMRFPSPlayerController::IsGeometrySessionValid(bool Publisher) const
     if (!Publisher) return PS->bInspector || (PS->Slot>=0 && PS->Slot<2);
     const auto* GeometryPawn=GetPawn<AMRFPSPawn>();
     const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+    const bool Shared=GS && GS->Layout.bCalibrated && GS->bSharedFloorConfirmed && GS->SharedFloorRevision &&
+        GS->Layout.RegistrationRevision==GS->SharedFloorRevision;
+    const bool Solo=GS && GeometryPawn && GS->bSoloBotSession && GS->SoloHumanSlot==PS->Slot &&
+        GS->SoloHumanCalibration && GeometryPawn->GeometryCalibrationGeneration==GS->SoloHumanCalibration;
     return !PS->bInspector && PS->Slot>=0 && PS->Slot<2 && GeometryPawn && GeometryPawn->GetPlayerState<AMRFPSPlayerState>()==PS &&
-        FindPlayer(PS->Slot)==GeometryPawn && GS && GS->Layout.bCalibrated && GS->bSharedFloorConfirmed && GS->SharedFloorRevision &&
-        GS->Layout.RegistrationRevision==GS->SharedFloorRevision && GeometryPawn->bStageFloorReferenced &&
+        FindPlayer(PS->Slot)==GeometryPawn && (Shared || Solo) && GeometryPawn->bStageFloorReferenced &&
         GeometryPawn->bCalibrated && GeometryPawn->GeometryCalibrationGeneration!=0 &&
         !GeometryPawn->Pose.bDesktop && GeometryPawn->Pose.IsSane() && GeometryPawn->IsInsideArena() &&
         (!HasAuthority() || GeometryPawn->IsPoseFresh());

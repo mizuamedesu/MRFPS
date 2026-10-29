@@ -48,17 +48,126 @@ def read_code(path: Path) -> bytes:
     return data
 
 
-def run_adb(adb: str, serial: str, args: list[str], *, data: bytes | None = None, check: bool = True) -> str:
+def adb_result(adb: str, serial: str, args: list[str], *, data: bytes | None = None) -> subprocess.CompletedProcess:
     command = [adb] + (["-s", serial] if serial else []) + args
-    result = subprocess.run(command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    return subprocess.run(command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+
+
+def run_adb(adb: str, serial: str, args: list[str], *, data: bytes | None = None, check: bool = True) -> str:
+    result = adb_result(adb, serial, args, data=data)
     if check and result.returncode:
         raise RuntimeError(f"adb operation failed (exit {result.returncode}); contents omitted")
     return result.stdout.decode("utf-8", "replace").strip()
 
 
 def quest_pid(adb: str, serial: str) -> str:
-    value = run_adb(adb, serial, ["shell", "pidof", PACKAGE], check=False)
-    return value if re.fullmatch(r"[0-9]+(?:\s+[0-9]+)*", value) else ""
+    # pidof returns 1 with no output when the process is absent. Do not mistake
+    # a disconnected device, a missing command or malformed output for absence.
+    result = adb_result(adb, serial, ["shell", "pidof", PACKAGE])
+    value = result.stdout.decode("utf-8", "replace").strip()
+    error = result.stderr.decode("utf-8", "replace").strip()
+    if result.returncode == 1 and not value and not error:
+        return ""
+    if result.returncode == 0 and not error and re.fullmatch(r"[0-9]+(?:\s+[0-9]+)*", value):
+        return value
+    raise RuntimeError("Cannot reliably inspect the Quest app process; no dialog was closed")
+
+
+_QUEST_ROOT = re.compile(r"(?m)^  \* Task\{[^\r\n]*#(?P<id>\d+)[^\r\n]*\r?$")
+_QUEST_TASK = re.compile(r"(?m)^[ \t]+\* Task\{[^\r\n]*\r?$")
+_QUEST_HISTORY = re.compile(r"(?ms)^[ \t]*\* Hist[ \t]+#\d+:[^\r\n]*\r?\n.*?(?=^[ \t]*\* (?:Hist[ \t]+#\d+:|Task\{)|\Z)")
+_QUEST_SHARE = re.compile(r"^[ \t]*\* Hist[ \t]+#\d+:[ \t]+ActivityRecord\{[0-9a-f]+[ \t]+u\d+[ \t]+com\.meta\.systemui/\.media\.MediaProjectionPermissionActivity[ \t]+t(?P<task_id>\d+)(?:[ \t}]|$)")
+_QUEST_SHARE_NAME = "com.meta.systemui/.media.MediaProjectionPermissionActivity"
+
+
+def quest_share_tasks(activity_dump: str) -> tuple[list[int], set[int]]:
+    """Identify only proven orphans, using the same criteria as Deploy-Quest.ps1.
+
+    A root may be removed only when every task has one child, the root has one
+    history record, and the system permission activity was launched by MRFPS
+    with a finishing result target for its GameActivity. Unknown ownership or
+    structure is an error, rather than permission to remove or start anything.
+    """
+    roots = list(_QUEST_ROOT.finditer(activity_dump))
+    if not roots:
+        raise RuntimeError("Cannot reliably inspect Quest activity roots; no dialog was closed")
+    root_ids = [int(root.group("id")) for root in roots]
+    if len(set(root_ids)) != len(root_ids) or any(task > 2147483647 for task in root_ids):
+        raise RuntimeError("Quest activity roots are ambiguous; no dialog was closed")
+    orphans: list[int] = []
+    found_share = False
+    parsed_share_headers = 0
+    for index, root in enumerate(roots):
+        end = roots[index + 1].start() if index + 1 < len(roots) else len(activity_dump)
+        block = activity_dump[root.start():end]
+        tasks = list(_QUEST_TASK.finditer(block))
+        records = list(_QUEST_HISTORY.finditer(block))
+        for record in records:
+            text = record.group()
+            header = text.splitlines()[0]
+            if _QUEST_SHARE_NAME in header:
+                parsed_share_headers += 1
+                if not _QUEST_SHARE.match(text):
+                    raise RuntimeError("Quest share dialog identity is ambiguous; no dialog was closed")
+            share = _QUEST_SHARE.match(text)
+            if not share:
+                continue
+            found_share = True
+            owners = re.findall(r"(?m)^[ \t]*launchedFromUid=\d+ launchedFromPackage=([A-Za-z0-9_.]+)(?:\s|$)", text)
+            if len(owners) != 1:
+                raise RuntimeError("Quest share dialog ownership is unknown; no dialog was closed")
+            if owners[0] != PACKAGE and PACKAGE not in text:
+                # A proven different application's request is not ours to alter.
+                continue
+            finishing_targets = re.findall(
+                r"(?m)^[ \t]*resultTo=ActivityRecord\{[^\r\n]*\s" + re.escape(PACKAGE) +
+                r"/com\.epicgames\.unreal\.GameActivity t-1 f\}\}", text)
+            task_indents = [len(task.group()) - len(task.group().lstrip(" \t")) for task in tasks]
+            history_count = len(re.findall(r"(?m)^[ \t]*\* Hist[ \t]+#\d+:", block))
+            target_count = len(re.findall(r"(?m)^[ \t]*resultTo=", text))
+            last_task_id = re.search(r"#(\d+)", tasks[-1].group()) if tasks else None
+            history_indent = len(header) - len(header.lstrip(" \t"))
+            if (owners[0] != PACKAGE or len(finishing_targets) != 1 or len(records) != 1 or history_count != 1 or not tasks or
+                    target_count != 1 or not last_task_id or share.group("task_id") != last_task_id.group(1) or
+                    history_indent <= task_indents[-1] or record.start() <= tasks[-1].start() or
+                    any(not re.search(r"\bsz=1\b", task.group()) for task in tasks) or
+                    any(first >= second for first, second in zip(task_indents, task_indents[1:]))):
+                raise RuntimeError("Quest share dialog is not a proven single-task MRFPS orphan; no dialog was closed")
+            orphans.append(root_ids[index])
+    share_headers = re.findall(r"(?m)^[ \t]*\* Hist[ \t]+#\d+:[^\r\n]*" + re.escape(_QUEST_SHARE_NAME), activity_dump)
+    if len(share_headers) != parsed_share_headers or (_QUEST_SHARE_NAME in activity_dump and not found_share):
+        raise RuntimeError("Quest share dialog location is unknown; no dialog was closed")
+    return orphans, set(root_ids)
+
+
+def clear_orphaned_quest_share(adb: str, serial: str) -> None:
+    """Close only a twice-confirmed orphan, without accepting screen capture."""
+    def inspect() -> tuple[list[int], set[int]]:
+        return quest_share_tasks(run_adb(adb, serial, ["shell", "dumpsys", "activity", "activities"]))
+
+    if quest_pid(adb, serial):
+        raise RuntimeError("Quest app is running; no dialog was closed")
+    orphans, _ = inspect()
+    if len(orphans) > 1:
+        raise RuntimeError("Multiple orphaned MRFPS share tasks found; no dialog was closed")
+    if not orphans:
+        return
+    if quest_pid(adb, serial):
+        raise RuntimeError("Quest app restarted; no dialog was closed")
+    fresh, _ = inspect()
+    if fresh != orphans:
+        raise RuntimeError("Quest share task changed; no dialog was closed")
+    if quest_pid(adb, serial):
+        raise RuntimeError("Quest app restarted; no dialog was closed")
+    run_adb(adb, serial, ["shell", "am", "stack", "remove", str(orphans[0])])
+    try:
+        remaining, root_ids = inspect()
+    except RuntimeError as exc:
+        raise RuntimeError("Could not verify Quest share task removal") from exc
+    if remaining or orphans[0] in root_ids:
+        raise RuntimeError("The orphaned MRFPS share task could not be cleared")
+    if quest_pid(adb, serial):
+        raise RuntimeError("Quest app restarted during orphan cleanup")
 
 
 def load_state(path: Path) -> dict:
@@ -164,7 +273,18 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
         raise RuntimeError("Quest app is running with unknown or different settings; use --replace to restart this app")
     if current_pid:
         run_adb(args.adb, serial, ["shell", "am", "force-stop", PACKAGE])
+        for _ in range(8):
+            if not quest_pid(args.adb, serial):
+                break
+            time.sleep(.25)
+        else:
+            raise RuntimeError("Quest app still has a process after force-stop; no dialog was closed")
+    clear_orphaned_quest_share(args.adb, serial)
+    if quest_pid(args.adb, serial):
+        raise RuntimeError("Quest app restarted before launch; no dialog was closed")
     quest_control(args, address, code)
+    if quest_pid(args.adb, serial):
+        raise RuntimeError("Quest app restarted before launch")
     save_state(state_path, {"pid": None, "pending": True, "config": wanted, "submitted": marker})
     cmdline = "/Game/Maps/MRFPSArena -vr -log"
     run_adb(args.adb, serial, ["shell", "am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-n", PACKAGE + "/com.epicgames.unreal.GameActivity", "--es", "cmdline", "'" + cmdline + "'"])

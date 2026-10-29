@@ -10,7 +10,9 @@ import argparse
 import base64
 import ctypes
 import datetime as dt
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -29,6 +31,47 @@ JWT_RE=re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{80,
 SUBJECT_RE=re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 FINGERPRINT_RE=re.compile(r"[0-9a-f]{64}\Z")
 CREATE_FLAGS=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0
+
+
+def json_number_is(value,expected):
+    return type(value) in (int,float) and math.isfinite(value) and value==expected
+
+
+def solo_status_ready(data):
+    seconds=data.get("round_seconds_remaining")
+    return (data.get("connected") is True and data.get("solo_bot") is True and json_number_is(data.get("phase"),1)
+            and json_number_is(data.get("round"),1) and type(seconds) in (int,float) and math.isfinite(seconds) and float(seconds).is_integer() and 0<seconds<=180
+            and data.get("solo_measured_geometry_received") is False and data.get("solo_obstacle_data")=="not_received")
+
+
+def solo_replacement_ready(data):
+    return (data.get("connected") is True and data.get("solo_bot") is False and json_number_is(data.get("phase"),0)
+            and json_number_is(data.get("round"),0) and json_number_is(data.get("completed_rounds"),0)
+            and json_number_is(data.get("round_wins_0"),0) and json_number_is(data.get("round_wins_1"),0)
+            and data.get("shared_floor_confirmed") is False and data.get("layout_calibrated") is False)
+
+
+def file_sha256(path):
+    digest=hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda:stream.read(1024*1024),b""): digest.update(block)
+    return digest.hexdigest()
+
+
+def process_image(pid):
+    kernel=ctypes.WinDLL("kernel32",use_last_error=True)
+    kernel.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]; kernel.OpenProcess.restype=wintypes.HANDLE
+    kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+    kernel.QueryFullProcessImageNameW.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,ctypes.POINTER(wintypes.DWORD)]
+    kernel.QueryFullProcessImageNameW.restype=wintypes.BOOL
+    handle=kernel.OpenProcess(0x1000,False,pid)
+    if not handle: raise RuntimeError("cannot inspect the launched client image")
+    try:
+        size=wintypes.DWORD(32768); path=ctypes.create_unicode_buffer(size.value)
+        if not kernel.QueryFullProcessImageNameW(handle,0,path,ctypes.byref(size)):
+            raise RuntimeError("cannot read the launched client image path")
+        return Path(path.value).resolve(strict=True)
+    finally: kernel.CloseHandle(handle)
 
 
 class StopRequested(Exception): pass
@@ -169,6 +212,10 @@ class Probe:
             raise RuntimeError("server fingerprint does not match this container")
         self.report["containerId"]=inspected.get("Id")
         self.report["containerStartedAt"]=state.get("StartedAt")
+        self.report["containerRestartCount"]=inspected.get("RestartCount")
+        self.report["clientKind"]="editor" if self.args.editor else "packaged"
+        self.report["clientExecutable"]=str(self.executable)
+        self.report["clientSha256"]=file_sha256(self.executable)
         ensure_private_dir(self.private)
         self.persist()
 
@@ -207,15 +254,18 @@ class Probe:
         # Smoke produces periodic spectator snapshots but also fires shots for
         # fighters. Never enable it for the synthetic player role.
         if role!="player": arguments += ["-MRFPSSmoke"]
+        if role=="player" and self.args.scenario=="solo-bot": arguments += ["-MRFPSAutoReady"]
         if role=="inspector": arguments += ["-MRFPSInspector"]
         if role=="admin": arguments += ["-MRFPSAdmin"]
         # UE FParse requires quotes immediately after '=' for spaced paths.
         commandline=subprocess.list2cmdline(arguments)+f' -MRFPSAuthTokenFile="{token}" -MRFPSAuthPublicKeyFile="{self.issuer}" -abslog="{log}"'
         process=subprocess.Popen(commandline,cwd=ROOT,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                                  creationflags=CREATE_FLAGS,close_fds=True)
-        item={"name":name,"role":role,"subject":subject,"process":process,"log":log,"required":required}
+        item={"name":name,"role":role,"subject":subject,"process":process,"log":log,"required":required,"control_name":control_name}
         self.children.append(item)
-        self.report["instances"].append({"name":name,"controlName":control_name,"role":role,"subject":subject,"pid":process.pid,"status":"starting"})
+        if not os.path.samefile(process_image(process.pid),self.executable):
+            raise RuntimeError("running client image does not match the selected executable")
+        self.report["instances"].append({"name":name,"controlName":control_name,"role":role,"subject":subject,"pid":process.pid,"executableMatched":True,"status":"starting"})
         self.persist()
         return item
 
@@ -270,8 +320,68 @@ class Probe:
         age=(dt.datetime.now(dt.timezone.utc)-when).total_seconds()
         return int(value) if -3<=age<=5 else None
 
+    def status_snapshot(self,item):
+        command=[sys.executable,str(ROOT/"tools"/"automation"/"control.py"),"--name",item["control_name"],
+                 "--operation-id",str(uuid.uuid4()),"--operation","status","--parameters","{}","--wait-seconds","3"]
+        result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=8,creationflags=CREATE_FLAGS)
+        try: response=json.loads(result.stdout)
+        except ValueError as error: raise RuntimeError("status command returned invalid JSON") from error
+        if response.get("status")=="pending": return None
+        if result.returncode or response.get("status") not in ("ok","already_applied") or not isinstance(response.get("data"),dict):
+            raise RuntimeError("client status command failed")
+        return response["data"]
+
+    def test_solo_bot(self):
+        markers=("MRFPS_BOT_SPAWN slot=","MRFPS_BOT_BT_READY","MRFPS_BOT_EQS_READY candidates=",
+                 "MRFPS_BOT_MOVED","MRFPS_BOT_FIRED","MRFPS_BOT_REMOVED reason=human_join")
+        failures=("MRFPS_BOT_AI_UNAVAILABLE","MRFPS_BOT_EQS_FAILED")
+        baseline=self.logs()
+        counts={marker:baseline.count(marker) for marker in (*markers,*failures)}
+        first=self.accept("player","soloPlayer")
+        observed={}
+        def ready():
+            result=self.status_snapshot(first)
+            if result and solo_status_ready(result): observed.update(result); return True
+            return False
+        self.wait("solo_round_and_status",ready,timeout=90)
+        self.report["checks"]["soloRoundStarted"]=True
+        self.report["checks"]["scanNotReceivedExplicit"]=True
+        initial=observed["round_seconds_remaining"]
+        def countdown():
+            result=self.status_snapshot(first)
+            return bool(result and solo_status_ready(result) and result["round_seconds_remaining"]<initial)
+        self.wait("solo_countdown_advances",countdown,timeout=15)
+        self.report["checks"]["roundClockAdvances"]=True; self.persist()
+        def bot_actions():
+            log=self.logs()
+            if any(log.count(marker)>counts[marker] for marker in failures):
+                raise RuntimeError("bot AI or EQS reported failure")
+            return all(log.count(marker)>counts[marker] for marker in markers[:5])
+        self.wait("solo_bot_actions",bot_actions,timeout=120)
+        self.report["checks"]["botSpawned"]=True; self.report["checks"]["behaviorTreeReady"]=True
+        self.report["checks"]["eqsReady"]=True; self.report["checks"]["botMoved"]=True; self.report["checks"]["botFired"]=True; self.persist()
+        self.accept("player","secondPlayer")
+        def replacement():
+            log=self.logs()
+            if log.count(markers[5])<=counts[markers[5]]: return False
+            result=self.status_snapshot(first)
+            return bool(result and solo_replacement_ready(result))
+        self.wait("human_replaces_bot",replacement,timeout=45)
+        self.report["checks"]["botReplacedByHuman"]=True; self.report["checks"]["newFighterHasNoOldScore"]=True
+        self.report["checks"]["physicalFloorNotFalselyRegistered"]=True
+        current=json.loads(self.docker("inspect",self.args.container))[0]
+        state=current.get("State",{})
+        if (current.get("Id")!=self.report["containerId"] or state.get("StartedAt")!=self.report["containerStartedAt"]
+            or current.get("RestartCount")!=self.report["containerRestartCount"] or not state.get("Running")
+            or state.get("Health",{}).get("Status")!="healthy"):
+            raise RuntimeError("server identity or health changed during the test")
+        self.report["checks"]["sameHealthyServer"]=True
+        self.report["limitations"].append("Desktop synthetic players do not validate Quest tracking or measured real-world obstacle capture")
+        return self.finish_checks()
+
     def run_test(self):
         self.preflight()
+        if self.args.scenario=="solo-bot": return self.test_solo_bot()
         if self.args.scenario=="admin-inspector":
             observer=self.accept("inspector","inspector1")
             admin=self.accept("admin","admin1")
@@ -364,7 +474,7 @@ def main():
     p.add_argument("--server",required=True); p.add_argument("--port",type=int,required=True); p.add_argument("--container",required=True)
     p.add_argument("--fingerprint",required=True); p.add_argument("--admin-dir",required=True); p.add_argument("--inspectors",type=int,default=2)
     p.add_argument("--hold-seconds",type=int,default=0); p.add_argument("--editor",action="store_true"); p.add_argument("--allow-existing-player",action="store_true")
-    p.add_argument("--scenario",choices=("full","player-limit","admin-limit","inspector-multi","admin-inspector"),default="full")
+    p.add_argument("--scenario",choices=("full","player-limit","admin-limit","inspector-multi","admin-inspector","solo-bot"),default="full")
     args=parser.parse_args(); run=Path(args.run_dir).resolve()
     if args.command=="stop":
         run.mkdir(parents=True,exist_ok=True); (run/"STOP").touch(exist_ok=True)

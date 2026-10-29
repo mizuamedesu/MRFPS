@@ -110,30 +110,30 @@ Observers load first; each must receive its inspector role before either fighter
 
 ## Linux authority multiplayer regression
 
-`Scripts/Test-LinuxMultiplayer.ps1` is prepared for an existing, empty Linux QA server. It has not yet passed against the protocol3 package. Its five primary clients are two synthetic desktop fighters and three independent NullRHI inspectors; a sixth client tests arena-full rejection and exits. The harness retains the27 baseline checks above, adds authoritative elimination/winner and each inspector's replicated finished phase/kill scoreboard, then requires300–600 seconds of fresh two-player snapshots, living owned clients and the same healthy server identity. View checks establish replicated POV selection, not rendered pixels or physical Quest gameplay.
+`Scripts/Test-LinuxMultiplayer.ps1` targets an existing, empty Linux QA server built with the same current network protocol as the clients. Its five primary clients are two synthetic desktop fighters and three independent NullRHI inspectors; a sixth client tests arena-full rejection and exits. Both authenticated fighters join before the CLI requests either calibration, so a temporary one-human Bot match cannot consume the scripted-combat timer. The harness checks the server's elimination and each inspector's matching kill score while the match is playing. Match and combat markers must follow both unique fighter joins, and the inspected score snapshots must be written after the server elimination has been observed. View checks establish replicated POV selection, not rendered pixels or physical Quest gameplay. This p14 workflow has unit coverage but has not yet been verified against a p14 server and package.
 
-The short scripted combat needs a QA-only one-kill match. Select this explicitly when deploying the QA image:
+Select the QA-only automatic two-player start when deploying the QA image:
 
 ```powershell
 .\Scripts\Start-LinuxContainer.ps1 -Build -HostPort 17779 `
   -PublicKeyFile <issuer-public.pem> -SmokeValidation
 ```
 
-`-SmokeValidation` adds `Deploy/Linux/compose.smoke.yaml`: `-MRFPSSmoke` and the process override `-ini:Game:[/Script/MRFPS.MRFPSGameMode]:ScoreToWin=1`. Production `Config/DefaultGame.ini` remains10 and authentication stays enabled. Compose retains the same1 GiB RAM/swap-total limit,2 CPUs, dropped capabilities and read-only root filesystem. Recreating this process changes its DTLS fingerprint; obtain the current startup fingerprint before running the test. Keep the outside-guard WSL keepalive alive throughout deployment and testing.
+`-SmokeValidation` adds `Deploy/Linux/compose.smoke.yaml`: `-MRFPSSmoke` and an override disabling the administrator-start requirement for that smoke test. Each round still lasts 180 seconds; eliminations do not terminate a round early. Authentication stays enabled. Compose retains the same1 GiB RAM/swap-total limit,2 CPUs, dropped capabilities and read-only root filesystem. Recreating this process changes its DTLS fingerprint; obtain the current startup fingerprint before running the test. Keep the outside-guard WSL keepalive alive throughout deployment and testing.
 
 ```powershell
 # Production signer keys are encrypted; the passphrase file remains host-only.
 .\Scripts\Test-LinuxMultiplayer.ps1 -Server 172.23.166.33 -Port 17779 `
   -PrivateKeyFile <host-only-issuer-private.pem> -PassphraseFile <host-only-passphrase-file> `
   -PublicKeyFile <issuer-public.pem> -Fingerprint <current-64-lowercase-hex-pin> `
-  -Executable <Windows-package\MRFPS.exe> -StableSeconds 300
+  -Executable <Windows-package\MRFPS.exe> -StableSeconds 30
 ```
 
 The packaged executable must be a Development build with the evidence log markers enabled. An outer `MRFPS.exe` package launcher is resolved to its native game executable when present. Omit `-Executable` to use the built UnrealEditor game fallback. The wrapper automatically contains its child tree in the10 GiB free/75% commit resource guard. The clients receive process-scoped `UE_SKIP_UBT_SDK_SETUP=1`, `MSBUILDDISABLENODEREUSE=1` and a two-processor .NET limit. It mints distinct one-connection,3600-second JWT files just before launching each client; only public verification material and tokens reach clients. `-DevUnencrypted` is an explicit opt-in solely for a disposable unencrypted test issuer. `-DryRun` writes a prepared-only plan without reading the signer, contacting Docker or starting UE.
 
-Reports are saved under `Saved/Validation/LinuxMultiplayer-<timestamp>` and its `-guard` sibling. A `STOP` file in that run directory aborts the test; teardown addresses only the processes it created, with remaining descendants contained by the guard's private Windows job. A memory-guard stop is a failed/incomplete attempt, never an automatic retry or stability pass. The five-minute hold is bounded software stability evidence; session-expiry tests are separate, and physical tracking, gestures, haptics and dynamic geometry require their own evidence.
+Reports are saved under `Saved/Validation/LinuxMultiplayer-<timestamp>` and its `-guard` sibling. A `STOP` file in that run directory aborts the test; teardown addresses only the processes it created, with remaining descendants contained by the guard's private Windows job. A memory-guard stop is a failed/incomplete attempt, never an automatic retry or stability pass. The default 30-second hold can be changed to 15–600 seconds. Even a longer hold verifies combat and connection stability only: `round_result_verified` and `match_result_verified` remain false. Session-expiry tests are separate, and physical tracking, gestures, haptics and dynamic geometry require their own evidence.
 
-After QA, deploy again **without `-SmokeValidation`** to restore the production score10 command. Verify the new process/fingerprint and issue fresh credentials for it. The old QA tokens cannot be reused against the replacement certificate.
+After QA, deploy again **without `-SmokeValidation`** to restore the production administrator-start setting. Verify the new process/fingerprint and issue fresh credentials for it. The old QA tokens cannot be reused against the replacement certificate. Earlier protocol3 runs documented below used the now-removed score override and do not prove the current round rules.
 
 ## Consolidated evidence
 

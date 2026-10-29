@@ -5,5 +5,4 @@ services:
     command:
       - /Game/Maps/MRFPSArena
       - -MRFPSSmoke
-      - '-ini:Game:[/Script/MRFPS.MRFPSGameMode]:ScoreToWin=1'
       - '-ini:Game:[/Script/MRFPS.MRFPSGameMode]:bRequireAdminStart=False'

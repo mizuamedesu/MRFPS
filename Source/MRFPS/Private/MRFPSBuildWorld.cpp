@@ -447,6 +447,8 @@ FString AMRFPSPlayerController::AdminFeedback() const
     if(AdminStatus==TEXT("ADMIN_WALL_CAPACITY")) return TEXT("設置数の上限です");
     if(AdminStatus==TEXT("ADMIN_WALL_HEIGHT_LIMIT")) return TEXT("高さの上限・下限です");
     if(AdminStatus==TEXT("ADMIN_PLAYERS_NOT_READY")) return TEXT("プレイヤーの準備待ち");
+    if(AdminStatus==TEXT("BOT_RESIZE_NOT_READY")) return TEXT("プレイヤーの準備待ち");
+    if(AdminStatus==TEXT("BOT_RESIZE_BLOCKED")) return TEXT("Botの配置場所がありません");
     if(AdminStatus==TEXT("LAYOUT_SHARED_BASIS_UNAVAILABLE")) return TEXT("先に原点を登録してください");
     if(AdminStatus==TEXT("LAYOUT_DIMENSIONS_INVALID")) return TEXT("サイズを確認してください");
     if(AdminStatus==TEXT("ADMIN_INVALID_STATE")) return TEXT("試合を一時停止してください");

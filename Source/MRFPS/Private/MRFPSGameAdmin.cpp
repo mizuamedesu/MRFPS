@@ -1,4 +1,5 @@
 #include "MRFPSGame.h"
+#include "MRFPSBot.h"
 #include "MRFPSAdminPanel.h"
 #include "MRFPSMenu.h"
 #include "MRFPSGeometryWorld.h"
@@ -14,8 +15,9 @@ namespace
 bool LivePlayer(const AMRFPSPawn* Fighter)
 {
     const auto* PS=Fighter?Fighter->GetPlayerState<AMRFPSPlayerState>():nullptr;
-    return PS && PS->bAuthenticated && !PS->bInspector && !PS->bAdmin && PS->Slot>=0 && PS->Slot<2 &&
-        PS->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp() && Fighter->bCalibrated &&
+    const bool Authenticated=PS && PS->bAuthenticated && PS->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp();
+    return PS && (Authenticated || MRFPSBot::IsServerBot(Fighter)) && !PS->bInspector && !PS->bAdmin && PS->Slot>=0 && PS->Slot<2 &&
+        Fighter->bCalibrated &&
         Fighter->Pose.bHeadTracked && Fighter->Pose.IsSane() && Fighter->IsPoseFresh();
 }
 AMRFPSPawn* FighterAt(UWorld* World,int32 Slot)
@@ -33,6 +35,11 @@ bool BothReady(UWorld* World,bool& Nominal)
     auto* A=FighterAt(World,0); auto* B=FighterAt(World,1);
     Nominal=false;
     if (!GS || !LivePlayer(A) || !LivePlayer(B) || !A->IsInsideArena() || !B->IsInsideArena()) return false;
+    if (GS->bSoloBotSession) {
+        const auto* GM=World->GetAuthGameMode<AMRFPSGameMode>();
+        Nominal=(GS->SoloHumanSlot==0?A:B)->Pose.bDesktop;
+        return MRFPSBot::IsPrepared(GM);
+    }
     Nominal=A->Pose.bDesktop && B->Pose.bDesktop;
     return Nominal || (!A->Pose.bDesktop && !B->Pose.bDesktop && GS->bSharedFloorConfirmed && GS->Layout.bCalibrated &&
         GS->SharedFloorRevision && GS->Layout.RegistrationRevision==GS->SharedFloorRevision);
@@ -199,7 +206,7 @@ void AMRFPSGameMode::InvalidateSharedFloor()
     GS->bSharedFloorConfirmed=false; GS->Layout.bCalibrated=false; GS->Layout.RegistrationRevision=0; GS->MeasuredAnchorDistanceCm=0;
     if (GS->Layout.Revision<MAX_uint32) ++GS->Layout.Revision;
     for (int32 Slot=0;Slot<2;++Slot) { RegisteredPlayers[Slot].Reset(); RegisteredCalibration[Slot]=0; }
-    if (GS->Phase==EMRFPSMatchPhase::Playing) SetCombatPaused(true);
+    if (GS->Phase==EMRFPSMatchPhase::Playing || GS->Phase==EMRFPSMatchPhase::BetweenRounds) SetCombatPaused(true);
     ApplyLayoutChange(); // retains its last centre, orientation, size and floor height
 }
 void AMRFPSGameMode::ApplyLayoutChange()
@@ -220,11 +227,14 @@ void AMRFPSGameMode::ApplyLayoutChange()
     }
     PausedWallLifetimes.Reset();
 }
+void AMRFPSGameMode::ApplyBotLayoutChange() { if (HasAuthority()) ApplyLayoutChange(); }
+void AMRFPSGameMode::SetBotTrackingPause(bool Paused) { if (HasAuthority()) SetCombatPaused(Paused); }
 void AMRFPSGameMode::SetCombatPaused(bool Paused)
 {
     auto* GS=GetGameState<AMRFPSGameState>(); if (!GS || GS->bCombatPaused==Paused) return;
     const double Now=GetWorld()->GetTimeSeconds();
     if (Paused) {
+        GS->RoundPausedAt=Now;
         CombatPausedAt=Now; PausedWallLifetimes.Reset();
         for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) {
             const float Remaining=It->GetLifeSpan();
@@ -235,6 +245,8 @@ void AMRFPSGameMode::SetCombatPaused(bool Paused)
         const double Duration=FMath::Max(0.,Now-CombatPausedAt);
         for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) { It->OffsetCombatTimers(Duration); It->ClientCombatStopped(); }
         if (GS->RestartAt>0) GS->RestartAt+=Duration;
+        if (GS->RoundEndsAt>0) GS->RoundEndsAt+=Duration;
+        GS->RoundPausedAt=0;
         for (const auto& Pair:PausedWallLifetimes) if (auto* Wall=Pair.Key.Get()) Wall->SetLifeSpan(Pair.Value);
         PausedWallLifetimes.Reset();
     }
@@ -247,7 +259,11 @@ void AMRFPSGameMode::ResetToWaiting()
     for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) { It->ClientCombatStopped(); It->Respawn(); }
     for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if (!It->bAdminPlaced) It->Destroy();
     PausedWallLifetimes.Reset();
-    if (auto* GS=GetGameState<AMRFPSGameState>()) { GS->Phase=EMRFPSMatchPhase::Waiting; GS->WinnerSlot=-1; GS->RestartAt=0; GS->bNominalDesktopSession=false; GS->ForceNetUpdate(); }
+    if (auto* GS=GetGameState<AMRFPSGameState>()) {
+        GS->Phase=EMRFPSMatchPhase::Waiting; GS->WinnerSlot=GS->LastRoundWinnerSlot=-1;
+        GS->RoundNumber=GS->CompletedRounds=GS->RoundWinsSlot0=GS->RoundWinsSlot1=0;
+        GS->RoundEndsAt=GS->RoundPausedAt=GS->RestartAt=0; GS->bNominalDesktopSession=false; GS->ForceNetUpdate();
+    }
 }
 bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdminAction Action,FVector2D Dimensions,FString& SafeError)
 {
@@ -256,26 +272,28 @@ bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdmin
     if (!AdminAuthorized(Admin) || !GS) return false;
     SafeError=TEXT("ADMIN_INVALID_STATE");
     if (GS->ControlRevision==MAX_uint32) return false;
-    const bool Editable=GS->Phase!=EMRFPSMatchPhase::Playing || GS->bCombatPaused;
+    const bool Editable=(GS->Phase!=EMRFPSMatchPhase::Playing && GS->Phase!=EMRFPSMatchPhase::BetweenRounds) || GS->bCombatPaused;
     switch (Action) {
     case EMRFPSAdminAction::Start: {
         bool Nominal=false;
-        if (GS->Phase!=EMRFPSMatchPhase::Waiting) return false;
+        if (GS->Phase!=EMRFPSMatchPhase::Waiting && GS->Phase!=EMRFPSMatchPhase::Finished) return false;
         SafeError=TEXT("ADMIN_PLAYERS_NOT_READY");
-        if (!BothReady(GetWorld(),Nominal) || (!Nominal && !RegisteredAnchorsValid())) return false;
-        GS->bNominalDesktopSession=Nominal; ResetMatch(); break;
+        if (!BothReady(GetWorld(),Nominal) || (!Nominal && !GS->bSoloBotSession && !RegisteredAnchorsValid())) return false;
+        GS->bNominalDesktopSession=Nominal; MRFPSBot::CancelAutoStart(this); ResetMatch(); break;
     }
     case EMRFPSAdminAction::Pause:
-        if (GS->Phase!=EMRFPSMatchPhase::Playing || GS->bCombatPaused) return false;
-        SetCombatPaused(true); break;
+        if (GS->Phase!=EMRFPSMatchPhase::Playing && GS->Phase!=EMRFPSMatchPhase::BetweenRounds) return false;
+        if (GS->bCombatPaused) { if (!MRFPSBot::ClaimTrackingPause(this)) return false; }
+        else SetCombatPaused(true);
+        break;
     case EMRFPSAdminAction::Resume: {
         bool Nominal=false;
-        if (GS->Phase!=EMRFPSMatchPhase::Playing || !GS->bCombatPaused) return false;
+        if ((GS->Phase!=EMRFPSMatchPhase::Playing && GS->Phase!=EMRFPSMatchPhase::BetweenRounds) || !GS->bCombatPaused) return false;
         SafeError=TEXT("ADMIN_PLAYERS_NOT_READY");
-        if (!BothReady(GetWorld(),Nominal) || (!Nominal && !RegisteredAnchorsValid())) return false;
+        if (!BothReady(GetWorld(),Nominal) || (!Nominal && !GS->bSoloBotSession && !RegisteredAnchorsValid())) return false;
         GS->bNominalDesktopSession=Nominal; SetCombatPaused(false); break;
     }
-    case EMRFPSAdminAction::Reset: ResetToWaiting(); break;
+    case EMRFPSAdminAction::Reset: MRFPSBot::CancelAutoStart(this); ResetToWaiting(); break;
     case EMRFPSAdminAction::ConfirmSharedFloor:
         if (!Editable || GS->Layout.Revision==MAX_uint32 || !CaptureSharedFloorRegistration(SafeError)) return false;
         GS->Layout.bCalibrated=false; GS->Layout.RegistrationRevision=0;
@@ -287,8 +305,14 @@ bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdmin
         GS->MeasuredAnchorDistanceCm=FVector::Dist2D(A->Pose.Head,B->Pose.Head); ApplyLayoutChange(); break;
     }
     case EMRFPSAdminAction::SetDimensions:
-        if (!Editable || !GS->Layout.SetDimensions(Dimensions.X,Dimensions.Y,SafeError)) return false;
-        ArenaWidthCm=GS->Layout.WidthCm; ArenaLengthCm=GS->Layout.LengthCm; ApplyLayoutChange(); break;
+        if (!Editable) return false;
+        if (GS->bSoloBotSession) {
+            if (!MRFPSBot::ResizeSolo(this,Dimensions.X,Dimensions.Y,SafeError)) return false;
+        } else {
+            if (!GS->Layout.SetDimensions(Dimensions.X,Dimensions.Y,SafeError)) return false;
+            ApplyLayoutChange();
+        }
+        ArenaWidthCm=GS->Layout.WidthCm; ArenaLengthCm=GS->Layout.LengthCm; break;
     case EMRFPSAdminAction::ClearAdminWalls:
         for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if (It->bAdminPlaced) It->Destroy();
         break;

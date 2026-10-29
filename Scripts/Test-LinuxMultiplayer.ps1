@@ -7,7 +7,7 @@ param(
     [string]$Server='172.23.166.33', [ValidateRange(1,65535)][int]$Port=17779,
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$')][string]$Container='linux-mrfps-1',
     [string]$Executable, [string]$EngineRoot,
-    [ValidateRange(300,600)][int]$StableSeconds=300,
+    [ValidateRange(15,600)][int]$StableSeconds=30,
     [ValidateRange(30,600)][int]$StartupTimeoutSeconds=180,
     [string]$ReportDirectory, [string]$PassphraseFile, [switch]$DevUnencrypted,
     [switch]$DryRun, [switch]$InternalWorker

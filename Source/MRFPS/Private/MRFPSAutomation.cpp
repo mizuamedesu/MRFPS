@@ -1,4 +1,5 @@
 #include "MRFPSGame.h"
+#include "MRFPSBot.h"
 #include "MRFPSAdminPanel.h"
 #include "MRFPSLoginMenu.h"
 #include "MRFPSMenu.h"
@@ -179,6 +180,15 @@ void AMRFPSPlayerController::TickAutomation()
                 Data->SetNumberField(TEXT("haptics_connection"),int32(Fighter->Haptics->GetConnectionState())); Data->SetBoolField(TEXT("haptics_armed"),Fighter->Haptics->IsHapticsArmed());
             }
             if(GS) { Data->SetNumberField(TEXT("phase"),int32(GS->Phase)); Data->SetBoolField(TEXT("paused"),GS->bCombatPaused);
+                Data->SetBoolField(TEXT("solo_bot"),GS->bSoloBotSession); Data->SetBoolField(TEXT("solo_geometry_ready"),GS->bSoloGeometryReady);
+                Data->SetBoolField(TEXT("solo_measured_geometry_received"),GS->bSoloGeometryReady);
+                Data->SetStringField(TEXT("solo_obstacle_data"),!GS->bSoloBotSession?TEXT("not_solo"):GS->bSoloGeometryReady?TEXT("received"):TEXT("not_received"));
+                Data->SetNumberField(TEXT("round"),GS->RoundNumber); Data->SetNumberField(TEXT("completed_rounds"),GS->CompletedRounds);
+                Data->SetNumberField(TEXT("max_rounds"),AMRFPSGameState::MaximumRounds); Data->SetNumberField(TEXT("round_seconds_remaining"),GS->RoundSecondsRemaining());
+                Data->SetNumberField(TEXT("round_wins_0"),GS->RoundWinsSlot0); Data->SetNumberField(TEXT("round_wins_1"),GS->RoundWinsSlot1);
+                Data->SetNumberField(TEXT("last_round_winner_slot"),GS->LastRoundWinnerSlot); Data->SetBoolField(TEXT("last_round_draw"),GS->CompletedRounds>0 && GS->LastRoundWinnerSlot<0);
+                Data->SetNumberField(TEXT("match_winner_slot"),GS->WinnerSlot); Data->SetBoolField(TEXT("match_draw"),GS->Phase==EMRFPSMatchPhase::Finished && GS->WinnerSlot<0);
+                Data->SetBoolField(TEXT("shared_floor_confirmed"),GS->bSharedFloorConfirmed); Data->SetBoolField(TEXT("layout_calibrated"),GS->Layout.bCalibrated);
                 Data->SetNumberField(TEXT("layout_revision"),GS->Layout.Revision); Data->SetNumberField(TEXT("control_revision"),GS->ControlRevision);
                 Data->SetNumberField(TEXT("width_cm"),GS->Layout.WidthCm); Data->SetNumberField(TEXT("length_cm"),GS->Layout.LengthCm); }
         } else if(Operation==TEXT("objects.list")) {
@@ -370,9 +380,9 @@ void AMRFPSPlayerController::ServerAutomationCommand_Implementation(FGuid Id,con
                 else if(Action==TEXT("set_dimensions")) { Type=EMRFPSAdminAction::SetDimensions; double W=0,L=0; Valid=Valid&&Params->TryGetNumberField(TEXT("width_cm"),W)&&Params->TryGetNumberField(TEXT("length_cm"),L)&&FMath::IsFinite(W)&&FMath::IsFinite(L); Dimensions=FVector2D(W,L); }
                 else Valid=false;
                 if(!Valid) Code=TEXT("INVALID_REQUEST");
-                else if((Action==TEXT("pause")&&GS->Phase==EMRFPSMatchPhase::Playing&&GS->bCombatPaused)||
-                        (Action==TEXT("resume")&&GS->Phase==EMRFPSMatchPhase::Playing&&!GS->bCombatPaused)||
-                        (Action==TEXT("start")&&GS->Phase==EMRFPSMatchPhase::Playing&&!GS->bCombatPaused)||
+                else if((Action==TEXT("pause")&&(GS->Phase==EMRFPSMatchPhase::Playing||GS->Phase==EMRFPSMatchPhase::BetweenRounds)&&GS->bCombatPaused&&!MRFPSBot::IsTrackingPause(GM))||
+                        (Action==TEXT("resume")&&(GS->Phase==EMRFPSMatchPhase::Playing||GS->Phase==EMRFPSMatchPhase::BetweenRounds)&&!GS->bCombatPaused)||
+                        (Action==TEXT("start")&&(GS->Phase==EMRFPSMatchPhase::Playing||GS->Phase==EMRFPSMatchPhase::BetweenRounds)&&!GS->bCombatPaused)||
                         (Action==TEXT("set_dimensions")&&FMath::IsNearlyEqual(GS->Layout.WidthCm,Dimensions.X)&&FMath::IsNearlyEqual(GS->Layout.LengthCm,Dimensions.Y))) {
                     Accepted=true; Code=TEXT("AUTOMATION_ALREADY");
                 } else Accepted=GM->HandleAdminAction(this,Type,Dimensions,Code);

@@ -105,7 +105,8 @@ void UMRFPSAdminPanel::RefreshStatus()
 {
     auto* PC=Controller();if(!PC||!PC->IsAdmin()) { Close();return; }
     const auto* GS=PC->GetWorld()->GetGameState<AMRFPSGameState>();if(!GS||!Status) return;
-    const TCHAR* Phase=GS->bCombatPaused?TEXT("一時停止"):GS->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):GS->Phase==EMRFPSMatchPhase::Finished?TEXT("終了"):TEXT("待機中");
+    const TCHAR* Phase=GS->bCombatPaused?TEXT("一時停止"):GS->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):
+        GS->Phase==EMRFPSMatchPhase::BetweenRounds?TEXT("ラウンド間"):GS->Phase==EMRFPSMatchPhase::Finished?TEXT("終了"):TEXT("待機中");
     Status->SetText(FText::FromString(FString::Printf(TEXT("%s   %.1f × %.1fm"),Phase,GS->Layout.WidthCm/100,GS->Layout.LengthCm/100)));
     Result->SetText(FText::FromString(PC->AdminFeedback()));
 }

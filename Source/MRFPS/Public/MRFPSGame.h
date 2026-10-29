@@ -43,7 +43,7 @@ UENUM()
 enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFloor,CalibrateFloor,SetDimensions,ClearAdminWalls };
 
 UENUM(BlueprintType)
-enum class EMRFPSMatchPhase : uint8 { Waiting, Playing, Finished };
+enum class EMRFPSMatchPhase : uint8 { Waiting, Playing, Finished, BetweenRounds };
 
 // Quantized ContactGlove joint flexions and finger spreads, thumb to little.
 // Invalid input is explicit; a disconnected glove must never retain a grip.
@@ -136,11 +136,29 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
     UPROPERTY(Replicated, BlueprintReadOnly) EMRFPSMatchPhase Phase = EMRFPSMatchPhase::Waiting;
     UPROPERTY(Replicated, BlueprintReadOnly) int32 WinnerSlot = -1;
-    UPROPERTY(Replicated, BlueprintReadOnly) int32 ScoreToWin = 10;
     UPROPERTY(Replicated, BlueprintReadOnly) double RestartAt = 0;
+    static constexpr int32 RoundDurationSeconds=180;
+    static constexpr int32 MaximumRounds=3;
+    static constexpr int32 RoundsToWin=2;
+    UPROPERTY(Replicated,BlueprintReadOnly) int32 RoundNumber=0;
+    UPROPERTY(Replicated,BlueprintReadOnly) int32 CompletedRounds=0;
+    UPROPERTY(Replicated,BlueprintReadOnly) int32 RoundWinsSlot0=0;
+    UPROPERTY(Replicated,BlueprintReadOnly) int32 RoundWinsSlot1=0;
+    UPROPERTY(Replicated,BlueprintReadOnly) int32 LastRoundWinnerSlot=-1;
+    UPROPERTY(Replicated,BlueprintReadOnly) double RoundEndsAt=0;
+    UPROPERTY(Replicated,BlueprintReadOnly) double RoundPausedAt=0;
+    int32 RoundSecondsRemaining() const;
+    FString RoundHeaderText() const;
+    FString RoundScoreText(int32 Slot) const;
     UPROPERTY(ReplicatedUsing=OnRepLayout,BlueprintReadOnly) FMRFPSArenaLayout Layout;
     UPROPERTY(Replicated,BlueprintReadOnly) bool bSharedFloorConfirmed=false;
     UPROPERTY(Replicated,BlueprintReadOnly) bool bNominalDesktopSession=false;
+    // A solo bot session uses one real player's Stage basis. It is never a
+    // confirmed two-device shared-floor registration.
+    UPROPERTY(Replicated,BlueprintReadOnly) bool bSoloBotSession=false;
+    UPROPERTY(Replicated,BlueprintReadOnly) bool bSoloGeometryReady=false;
+    UPROPERTY(Replicated) int32 SoloHumanSlot=-1;
+    UPROPERTY(Replicated) uint32 SoloHumanCalibration=0;
     UPROPERTY(Replicated,BlueprintReadOnly) bool bCombatPaused=false;
     UPROPERTY(Replicated) uint32 ControlRevision=1;
     UPROPERTY(Replicated) uint32 SharedFloorRevision=0;
@@ -256,6 +274,7 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> Label;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> HeadsetStatus;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> PlayerHud;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> RoundHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSHapticsComponent> Haptics;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UVRNotificationsComponent> XRNotifications;
     FString TrackingDescription;
@@ -296,6 +315,7 @@ private:
     TArray<TWeakObjectPtr<AMRFPSBarrier>> DeployedWalls;
     FMRFPSReloadGesture ServerReload;
     TSharedPtr<SWidget> PlayerHudSlate;
+    TSharedPtr<SWidget> RoundHudSlate;
 };
 
 UCLASS()
@@ -381,6 +401,9 @@ public:
     int32 ViewSlot = -1;
     FString ConnectionError;
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FMRFPSSoloBotScenario;
+#endif
 #if !UE_SERVER
     FString RequestedWindowTitle;
     double NextWindowTitleUpdate=0;
@@ -526,6 +549,10 @@ public:
     virtual void RestartPlayer(AController* NewPlayer) override;
     virtual void Logout(AController* Exiting) override;
     void OnElimination(AMRFPSPawn* Victim, AMRFPSPawn* Killer);
+    void ResetForFighterChange();
+    bool StartPreparedSoloMatch();
+    void ApplyBotLayoutChange();
+    void SetBotTrackingPause(bool Paused);
     bool HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdminAction Action,FVector2D Dimensions,FString& SafeError);
     bool PlaceAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
     bool PlaceAdminObject(AMRFPSPlayerController* Admin,EMRFPSBuildKind Kind,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
@@ -538,7 +565,6 @@ public:
     void InvalidateSharedFloor();
     // Candidate may already be in PlayerArray during InitNewPlayer.
     FString RoleCapacityError(const FString& RequestedRole,const AMRFPSPlayerState* Candidate=nullptr) const;
-    UPROPERTY(Config) int32 ScoreToWin = 10;
     UPROPERTY(Config) float ArenaWidthCm=450;
     UPROPERTY(Config) float ArenaLengthCm=700;
     UPROPERTY(Config) bool bRequireAdminStart=true;
@@ -559,6 +585,9 @@ private:
     int32 CountFighters(const AMRFPSPlayerState* Exclude=nullptr) const;
     int32 CountAdmins(const AMRFPSPlayerState* Exclude=nullptr) const;
     void ResetMatch();
+    void BeginRound();
+    void FinishRound();
+    void TickRounds();
     TUniquePtr<FMRFPSAuthVerifier> AuthVerifier;
     TMap<FString,FMRFPSAuthClaims> PendingAuthentication;
     TMap<FString,double> PendingAuthenticationDeadlines;

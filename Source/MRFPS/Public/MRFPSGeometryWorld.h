@@ -25,6 +25,10 @@ public:
     void RemoveOwner(AMRFPSPawn* Owner);
     void ResetAll();
     bool Trace(const FVector& Start,const FVector& End,FVector& HitPoint) const;
+    bool HasLiveMeasurement(int32 Slot) const;
+    /** Conservative authority-only broad phase for placing a bot. A triangle's
+     * bounds may overlap even if the triangle itself does not. */
+    bool OverlapsMeasuredBounds(const FBox& Bounds) const;
     /** Read-only visual foot placement on validated replicated measurements.
      * Combat still uses the authority-only Trace entry point. */
     bool SampleAvatarGround(const FVector& Probe,float& GroundZ) const;

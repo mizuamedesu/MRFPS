@@ -49,11 +49,14 @@ bool UMRFPSGeometryWorld::OwnerIdentityValid(int32 Slot) const
     const auto& S=State->Slots[Slot]; const auto* Pawn=S.Owner.Get();
     const auto* PS=Pawn?Pawn->GetPlayerState<AMRFPSPlayerState>():nullptr;
     const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+    const bool Shared=GS && GS->bSharedFloorConfirmed && GS->Layout.bCalibrated && GS->SharedFloorRevision &&
+        GS->Layout.RegistrationRevision==GS->SharedFloorRevision;
+    const bool Solo=GS && Pawn && GS->bSoloBotSession && GS->SoloHumanSlot==Slot && GS->SoloHumanCalibration &&
+        Pawn->bStageFloorReferenced && Pawn->GeometryCalibrationGeneration==GS->SoloHumanCalibration;
     return PS && Pawn->GetWorld()==GetWorld() && PS->bAuthenticated && !PS->bInspector && PS->Slot==Slot &&
         PS->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp() && PS->GeometryStreamId==S.Header.StreamId &&
-        Pawn->bCalibrated && Pawn->GeometryCalibrationGeneration==S.Header.Calibration && GS &&
-        GS->bSharedFloorConfirmed && GS->Layout.bCalibrated && GS->SharedFloorRevision &&
-        GS->Layout.RegistrationRevision==GS->SharedFloorRevision && GS->Layout.Revision==S.Header.LayoutRevision;
+        Pawn->bCalibrated && Pawn->GeometryCalibrationGeneration==S.Header.Calibration && GS && (Shared || Solo) &&
+        GS->Layout.Revision==S.Header.LayoutRevision;
 }
 bool UMRFPSGeometryWorld::OwnerValid(int32 Slot) const
 {
@@ -128,6 +131,32 @@ void UMRFPSGeometryWorld::Tick(float DeltaTime)
 bool UMRFPSGeometryWorld::Trace(const FVector& Start,const FVector& End,FVector& HitPoint) const
 {
     return GetWorld()->GetNetMode()!=NM_Client && TraceMeasuredSurface(Start,End,HitPoint);
+}
+bool UMRFPSGeometryWorld::HasLiveMeasurement(int32 Slot) const
+{
+    if (!State || Slot<0 || Slot>=2) return false;
+    const auto& S=State->Slots[Slot];
+    return S.bActive && FPlatformTime::Seconds()<S.ExpiresAt && OwnerValid(Slot) && !S.Mesh.Indices.IsEmpty();
+}
+bool UMRFPSGeometryWorld::OverlapsMeasuredBounds(const FBox& Bounds) const
+{
+    if (!GetWorld() || GetWorld()->GetNetMode()==NM_Client || !Bounds.IsValid || Bounds.Min.ContainsNaN() || Bounds.Max.ContainsNaN() ||
+        Bounds.Min.X>Bounds.Max.X || Bounds.Min.Y>Bounds.Max.Y || Bounds.Min.Z>Bounds.Max.Z || !State) return true;
+    const double Now=FPlatformTime::Seconds();
+    for (int32 Slot=0;Slot<2;++Slot) {
+        const auto& S=State->Slots[Slot];
+        if (!S.bActive || Now>=S.ExpiresAt || !OwnerValid(Slot)) continue;
+        for (int32 I=0;I<S.Mesh.Indices.Num();I+=3) {
+            if (!S.Mesh.Indices.IsValidIndex(I+2) || !S.Mesh.Vertices.IsValidIndex(S.Mesh.Indices[I]) ||
+                !S.Mesh.Vertices.IsValidIndex(S.Mesh.Indices[I+1]) || !S.Mesh.Vertices.IsValidIndex(S.Mesh.Indices[I+2])) return true;
+            FBox Triangle(ForceInit);
+            Triangle+=S.Mesh.Vertices[S.Mesh.Indices[I]];
+            Triangle+=S.Mesh.Vertices[S.Mesh.Indices[I+1]];
+            Triangle+=S.Mesh.Vertices[S.Mesh.Indices[I+2]];
+            if (Bounds.Intersect(Triangle)) return true;
+        }
+    }
+    return false;
 }
 bool UMRFPSGeometryWorld::SampleAvatarGround(const FVector& Probe,float& GroundZ) const
 {

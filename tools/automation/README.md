@@ -1,6 +1,6 @@
 # UE local control
 
-`control.py` submits a JSON operation to a named, running protocol-13 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
+`control.py` submits a JSON operation to a named, running protocol-14 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
 
 Each request requires an immutable UUIDv4. Repeating the same UUID and payload returns or waits for the original result, and the same UUID with different parameters is rejected. If a client restarts after dispatch but before its reply is recorded, the result is `unknown`: it does not silently run the operation again. A server keeps up to 8192 operation receipts for its lifetime; this is not a durable transaction across a server restart or a machine power failure. A repeated UUID returns the original receipt; use a new UUID to apply the desired state again after other changes.
 
@@ -9,6 +9,9 @@ Admin mutations are sent only by the authenticated admin controller to the autho
 ## Commands
 
 Each operation takes an explicit JSON parameters object. `status` returns view state, role, layout and control revisions. `objects.list` returns editable objects with their local `target`, kind, position, yaw, and `shape` (`height` in 50 cm rows and a 24-bit `mask` for the 3×8 grid). It also returns the current revisions.
+
+`status` also reports `solo_bot`, `solo_geometry_ready`, `solo_measured_geometry_received`, `solo_obstacle_data`, `round`, `completed_rounds`, `max_rounds`, `round_seconds_remaining`, `round_wins_0`, `round_wins_1`, `last_round_winner_slot`, `last_round_draw`, `match_winner_slot`, and `match_draw`. In solo mode `solo_obstacle_data` is `not_received` until an actual measured mesh has arrived; it is `received` afterward and `not_solo` outside solo mode. A desktop session with no measured mesh remains `not_received`. Winner slots are 0 or 1; -1 means no winner. A draw is only reported after a round or match has actually ended. The same replicated state drives the player HUD.
+The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared physical-floor registration; solo Bot calibration must not set them as if two people had registered a common floor.
 
 | Operation | Parameters | Effect |
 |---|---|---|

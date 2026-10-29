@@ -4,6 +4,8 @@
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/WidgetComponent.h"
+#include "Camera/CameraComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -321,6 +323,62 @@ bool FMRFPSAutomationBuildTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("No object survives deletion"),F.Walls(),0);
     return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSRoundRulesTest,"MRFPS.Match.ThreeRoundRules",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
+{
+    FAdminWorld F; if (!TestTrue(TEXT("Round rules use actual authoritative game actors"),F.Create())) return false;
+    TestTrue(TEXT("Quest round HUD is attached above the player camera"),F.Players[0]->RoundHud &&
+        F.Players[0]->RoundHud->GetAttachParent()==F.Players[0]->Camera && F.Players[0]->RoundHud->GetRelativeLocation().Z>0);
+    FString Error;
+    TestTrue(TEXT("Administrator starts the match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    TestEqual(TEXT("First round starts at one"),F.State->RoundNumber,1);
+    TestEqual(TEXT("A full round starts at 180 seconds"),F.State->RoundSecondsRemaining(),180);
+    TestTrue(TEXT("The HUD uses the same full timer"),F.State->RoundHeaderText().Contains(TEXT("03:00")));
+    const double FirstDeadline=F.State->RoundEndsAt;
+    TestTrue(TEXT("The admin can pause the round"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));
+    const int32 Frozen=F.State->RoundSecondsRemaining();
+    F.World->Tick(LEVELTICK_All,.2f); F.World->Tick(LEVELTICK_All,.2f);
+    TestEqual(TEXT("Paused client clock retains the same remaining seconds"),F.State->RoundSecondsRemaining(),Frozen);
+    F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
+    TestTrue(TEXT("The admin can resume a ready match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Resume,FVector2D::ZeroVector,Error));
+    TestTrue(TEXT("The server deadline is extended by paused time"),F.State->RoundEndsAt>FirstDeadline);
+    for (int32 Index=0;Index<11;++Index) F.Mode->OnElimination(F.Players[1],F.Players[0]);
+    TestEqual(TEXT("Eleven eliminations do not end a 180 second round"),int32(F.State->Phase),int32(EMRFPSMatchPhase::Playing));
+    const auto Expire=[&]() { F.State->RoundEndsAt=F.World->GetTimeSeconds(); F.Mode->Tick(0); };
+    const auto Next=[&]() { F.State->RestartAt=F.World->GetTimeSeconds(); F.Mode->Tick(0); };
+    F.State->RoundEndsAt=F.World->GetTimeSeconds();
+    F.Mode->OnElimination(F.Players[1],F.Players[0]);
+    TestEqual(TEXT("A late elimination at the deadline cannot alter the result"),F.Players[0]->GetPlayerState<AMRFPSPlayerState>()->Kills,11);
+    Expire();
+    TestTrue(TEXT("First round compares kills and awards player zero one win"),F.State->RoundWinsSlot0==1 && F.State->RoundWinsSlot1==0 && F.State->CompletedRounds==1 && F.State->LastRoundWinnerSlot==0);
+    TestEqual(TEXT("A nonfinal round enters a break"),int32(F.State->Phase),int32(EMRFPSMatchPhase::BetweenRounds));
+    TestTrue(TEXT("The round break also accepts admin pause"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));
+    F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
+    TestTrue(TEXT("The round break resumes without starting a new match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Resume,FVector2D::ZeroVector,Error));
+    Next();
+    TestTrue(TEXT("Round two starts with fresh kills and the old win retained"),F.State->RoundNumber==2 && F.Players[0]->GetPlayerState<AMRFPSPlayerState>()->Kills==0 && F.State->RoundWinsSlot0==1);
+    F.Mode->OnElimination(F.Players[0],F.Players[1]); Expire(); Next();
+    TestTrue(TEXT("Both fighters can win a round"),F.State->RoundNumber==3 && F.State->RoundWinsSlot0==1 && F.State->RoundWinsSlot1==1);
+    Expire();
+    TestTrue(TEXT("A tied third round without two wins ends the match in a draw"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->CompletedRounds==3 && F.State->WinnerSlot==-1 && F.State->LastRoundWinnerSlot==-1);
+    F.Mode->ResetForFighterChange();
+    TestTrue(TEXT("A fighter replacement clears all prior match results"),F.State->Phase==EMRFPSMatchPhase::Waiting && F.State->RoundNumber==0 && F.State->CompletedRounds==0 && F.State->RoundWinsSlot0==0 && F.State->RoundWinsSlot1==0 && F.State->RoundEndsAt==0);
+    F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
+    TestTrue(TEXT("A new match starts independently after replacement"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    F.Mode->OnElimination(F.Players[1],F.Players[0]); Expire(); Next();
+    F.Mode->OnElimination(F.Players[1],F.Players[0]); Expire();
+    TestTrue(TEXT("Two round wins finish the match without a third round"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundNumber==2 && F.State->RoundWinsSlot0==2 && F.State->WinnerSlot==0);
+    TestTrue(TEXT("The losing player's HUD uses their own result"),F.State->RoundScoreText(1).Contains(TEXT("敗北")));
+    F.Mode->bRequireAdminStart=false;
+    F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
+    F.Mode->Tick(0);
+    TestTrue(TEXT("A finished match never auto-restarts when admin start is optional"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundNumber==2 && F.State->RoundWinsSlot0==2);
+    TestTrue(TEXT("An explicit admin start begins a new match after completion"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    TestTrue(TEXT("The new match has one fresh round and no old wins"),F.State->Phase==EMRFPSMatchPhase::Playing && F.State->RoundNumber==1 && F.State->RoundWinsSlot0==0 && F.State->RoundWinsSlot1==0);
+    return true;
+}
+
 namespace
 {
 class FAdminPauseScenario final : public IAutomationLatentCommand

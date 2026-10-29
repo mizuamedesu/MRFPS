@@ -1,4 +1,5 @@
 #include "MRFPSGame.h"
+#include "MRFPSBot.h"
 #include "Camera/CameraComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
@@ -10,6 +11,7 @@
 #include "Widgets/SLeafWidget.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 
 // Draw the same compact status language in the headset and desktop: a dark
@@ -86,7 +88,7 @@ void AMRFPSPawn::DesktopReload() { if (!IsXR()) ServerDesktopReload(); }
 void AMRFPSPawn::ServerDesktopReload_Implementation()
 {
     const double Now=GetWorld()->GetTimeSeconds();
-    if (!HasAuthority() || !Pose.bDesktop || !CanAct() || Now-LastReloadAt<.5) return;
+    if (!HasAuthority() || (!Pose.bDesktop && !MRFPSBot::IsServerBot(this)) || !CanAct() || Now-LastReloadAt<.5) return;
     MagazineRounds=MagazineCapacity;LastReloadAt=Now;ForceNetUpdate();
 }
 
@@ -96,9 +98,37 @@ void AMRFPSPawn::UpdatePlayerHud()
     if (!PlayerHud) return;
     const bool Show=IsLocallyControlled() && IsXR();
     PlayerHud->SetVisibility(Show);
-    if (!Show || PlayerHudSlate.IsValid()) return;
+    if (RoundHud) RoundHud->SetVisibility(Show);
+    if (!Show) return;
     const TWeakObjectPtr<AMRFPSPawn> Weak(this);
     const auto Font=[](int32 Size) { return FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size); };
+    if (RoundHud && !RoundHudSlate.IsValid()) {
+        RoundHudSlate=SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+            .BorderBackgroundColor(FLinearColor(.008f,.025f,.045f,.78f)).Padding(FMargin(12,5))
+            [ SNew(SVerticalBox)
+              +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+              [ SNew(STextBlock).Font(Font(25)).ColorAndOpacity(FSlateColor(FLinearColor(.75f,1.f,.96f)))
+                .Text_Lambda([Weak]() {
+                    const auto* State=Weak.IsValid() && Weak->GetWorld()?Weak->GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+                    return State?FText::FromString(State->RoundHeaderText()):FText::GetEmpty();
+                }) ]
+              +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+              [ SNew(STextBlock).Font(Font(20)).ColorAndOpacity(FSlateColor(FLinearColor(.55f,.8f,.9f)))
+                .Text_Lambda([Weak]() {
+                    const auto* State=Weak.IsValid() && Weak->GetWorld()?Weak->GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+                    return State?FText::FromString(State->RoundScoreText(Weak->GetSlot())):FText::GetEmpty();
+                }) ]
+              +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+              [ SNew(STextBlock).Font(Font(15)).ColorAndOpacity(FSlateColor(FLinearColor(1.f,.68f,.2f)))
+                .Text_Lambda([Weak]() {
+                    const auto* State=Weak.IsValid() && Weak->GetWorld()?Weak->GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+                    return State && State->bSoloBotSession && !State->bSoloGeometryReady
+                        ? FText::FromString(TEXT("障害物スキャン未受信")):FText::GetEmpty();
+                }) ]
+            ];
+        RoundHud->SetSlateWidget(RoundHudSlate);
+    }
+    if (PlayerHudSlate.IsValid()) return;
     PlayerHudSlate=SNew(SOverlay)
         +SOverlay::Slot()[ SNew(SMRFPSPlayerHudFrame).Pawn(Weak) ]
         +SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(FMargin(0,2,0,0))

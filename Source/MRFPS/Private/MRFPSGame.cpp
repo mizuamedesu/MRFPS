@@ -38,6 +38,7 @@
 #include "MRFPSGeometryWorld.h"
 #include "MRFPSAuthClientSubsystem.h"
 #include "MRFPSLoginMenu.h"
+#include "MRFPSBot.h"
 #include "MRFPSTransportModule.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
@@ -171,7 +172,11 @@ void AMRFPSGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(AMRFPSGameState, Phase); DOREPLIFETIME(AMRFPSGameState, WinnerSlot);
-    DOREPLIFETIME(AMRFPSGameState, ScoreToWin); DOREPLIFETIME(AMRFPSGameState, RestartAt);
+    DOREPLIFETIME(AMRFPSGameState,bSoloBotSession); DOREPLIFETIME(AMRFPSGameState,bSoloGeometryReady); DOREPLIFETIME(AMRFPSGameState,SoloHumanSlot); DOREPLIFETIME(AMRFPSGameState,SoloHumanCalibration);
+    DOREPLIFETIME(AMRFPSGameState, RestartAt);
+    DOREPLIFETIME(AMRFPSGameState,RoundNumber); DOREPLIFETIME(AMRFPSGameState,CompletedRounds);
+    DOREPLIFETIME(AMRFPSGameState,RoundWinsSlot0); DOREPLIFETIME(AMRFPSGameState,RoundWinsSlot1);
+    DOREPLIFETIME(AMRFPSGameState,LastRoundWinnerSlot); DOREPLIFETIME(AMRFPSGameState,RoundEndsAt); DOREPLIFETIME(AMRFPSGameState,RoundPausedAt);
     DOREPLIFETIME(AMRFPSGameState,Layout); DOREPLIFETIME(AMRFPSGameState,bSharedFloorConfirmed);
     DOREPLIFETIME(AMRFPSGameState,bCombatPaused); DOREPLIFETIME(AMRFPSGameState,bNominalDesktopSession);
     DOREPLIFETIME(AMRFPSGameState,ControlRevision); DOREPLIFETIME(AMRFPSGameState,SharedFloorRevision);
@@ -291,6 +296,13 @@ AMRFPSPawn::AMRFPSPawn()
     PlayerHud->SetRelativeLocation(FVector(85,0,-42));PlayerHud->SetRelativeRotation(FRotator(0,180,0));
     PlayerHud->SetCollisionEnabled(ECollisionEnabled::NoCollision);PlayerHud->SetOnlyOwnerSee(true);
     PlayerHud->SetVisibility(false);
+    RoundHud=CreateDefaultSubobject<UWidgetComponent>(TEXT("RoundHud"));
+    RoundHud->SetupAttachment(Camera); RoundHud->SetWidgetSpace(EWidgetSpace::World);
+    RoundHud->SetDrawSize(FVector2D(600,100)); RoundHud->SetPivot(FVector2D(.5,.5));
+    RoundHud->SetRelativeScale3D(FVector(.075));
+    RoundHud->SetRelativeLocation(FVector(85,0,30)); RoundHud->SetRelativeRotation(FRotator(0,180,0));
+    RoundHud->SetCollisionEnabled(ECollisionEnabled::NoCollision); RoundHud->SetOnlyOwnerSee(true);
+    RoundHud->SetVisibility(false);
 #endif
     Haptics = CreateDefaultSubobject<UMRFPSHapticsComponent>(TEXT("MoBits"));
     XRNotifications=CreateDefaultSubobject<UVRNotificationsComponent>(TEXT("XRNotifications"));
@@ -334,15 +346,20 @@ bool AMRFPSPawn::CanAct() const
 {
     const auto* GS = GetWorld()->GetGameState<AMRFPSGameState>();
     const auto* PS = GetPlayerState<AMRFPSPlayerState>();
-    if (!PS || !PS->bAuthenticated || PS->AuthExpiresAt<=FDateTime::UtcNow().ToUnixTimestamp() ||
+    const bool ServerBot=MRFPSBot::IsServerBot(this);
+    if (!PS || (!ServerBot && (!PS->bAuthenticated || PS->AuthExpiresAt<=FDateTime::UtcNow().ToUnixTimestamp())) ||
         PS->bInspector || PS->bAdmin || PS->Slot<0 || PS->Slot>=2 || !GS || GS->bCombatPaused ||
         GS->Phase==EMRFPSMatchPhase::Finished || Health<=0 || !Pose.bHeadTracked || !IsPoseFresh()) return false;
+    if (GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundEndsAt>0 && GS->GetServerWorldTimeSeconds()>=GS->RoundEndsAt) return false;
     // Practice actions are available immediately; player damage still requires
     // the authoritative match and registered shared floor.
     if (GS->Phase==EMRFPSMatchPhase::Waiting) return !GS->Layout.bCalibrated || IsInsideArena();
+    const bool Solo=GS->bSoloBotSession && GS->SoloHumanSlot>=0 && GS->SoloHumanSlot<2 &&
+        (ServerBot || (PS->Slot==GS->SoloHumanSlot &&
+            (Pose.bDesktop || (bStageFloorReferenced && GeometryCalibrationGeneration==GS->SoloHumanCalibration && GS->SoloHumanCalibration!=0))));
     return GS->Phase==EMRFPSMatchPhase::Playing &&
         ((GS->Layout.bCalibrated && GS->bSharedFloorConfirmed && bStageFloorReferenced && GS->SharedFloorRevision &&
-          GS->Layout.RegistrationRevision==GS->SharedFloorRevision) || (GS->bNominalDesktopSession && Pose.bDesktop)) &&
+          GS->Layout.RegistrationRevision==GS->SharedFloorRevision) || (GS->bNominalDesktopSession && Pose.bDesktop) || Solo) &&
         bCalibrated && IsInsideArena();
 }
 void AMRFPSPawn::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -1106,7 +1123,9 @@ void AMRFPSHUD::DrawHUD()
     const FString RoleLabel=PC->IsAdmin()?TEXT("管理者"):Inspector?TEXT("観戦"):TEXT("プレイ");
     Text(TEXT("MRFPS  /  ")+RoleLabel,30,26,19,FLinearColor(.5,.8,1));
     FString Phase=TEXT("準備中");
-    if(GS) Phase=GS->bCombatPaused?TEXT("一時停止"):GS->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):GS->Phase==EMRFPSMatchPhase::Finished?FString::Printf(TEXT("P%d の勝利"),GS->WinnerSlot+1):TEXT("待機中");
+    if(GS) Phase=GS->bCombatPaused?TEXT("一時停止"):GS->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):
+        GS->Phase==EMRFPSMatchPhase::BetweenRounds?TEXT("ラウンド間"):
+        GS->Phase==EMRFPSMatchPhase::Finished?(GS->WinnerSlot<0?TEXT("引き分け"):FString::Printf(TEXT("P%d の勝利"),GS->WinnerSlot+1)):TEXT("待機中");
     Text(Phase,30,54,15);
     for(auto* P:PC->GetPlayers()) {
         const auto* PS=P->GetPlayerState<AMRFPSPlayerState>();const float X=30+(P->GetSlot()*120);
@@ -1115,6 +1134,19 @@ void AMRFPSHUD::DrawHUD()
         DrawRect(FLinearColor(.16,.55,1),X,112,104*FMath::Clamp(P->ShieldEnergy/100,0.f,1.f),3);
     }
     if (!Inspector) if (const auto* P=PC->GetPawn<AMRFPSPawn>();P && !P->IsXR()) {
+        if (GS) {
+            const float Center=Canvas->SizeX*.5f;
+            const bool MissingScan=GS->bSoloBotSession && !GS->bSoloGeometryReady;
+            DrawRect(FLinearColor(.008f,.025f,.045f,.78f),Center-150,18,300,MissingScan?88:66);
+            const auto Centered=[this,Center](const FString& Value,float Y,int32 Size,FLinearColor Color) {
+                FCanvasTextItem Item(FVector2D(Center,Y),FText::FromString(Value),FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size),Color);
+                Item.Font=GEngine?GEngine->GetSmallFont():nullptr; Item.bCentreX=true;
+                Item.EnableShadow(FLinearColor(0,0,0,.6)); Canvas->DrawItem(Item);
+            };
+            Centered(GS->RoundHeaderText(),24,20,FLinearColor(.75f,1.f,.96f));
+            Centered(GS->RoundScoreText(P->GetSlot()),52,16,FLinearColor(.55f,.8f,.9f));
+            if (MissingScan) Centered(TEXT("障害物スキャン未受信"),75,13,FLinearColor(1.f,.68f,.2f));
+        }
         const float W=FMath::Min(440.f,FMath::Max(120.f,float(Canvas->SizeX)-32.f));
         const float X=(Canvas->SizeX-W)*.5f,Y=FMath::Max(16.f,FMath::Min(Canvas->SizeY*.82f,float(Canvas->SizeY)-86.f));
         const FLinearColor Edge(.19f,.82f,1.f,.88f);
@@ -1187,7 +1219,7 @@ void AMRFPSGameMode::BeginPlay()
     }
     bAllowDesktop=!FParse::Param(FCommandLine::Get(),TEXT("MRFPSRequireXR"));
     if (auto* GS=GetGameState<AMRFPSGameState>()) {
-        GS->ScoreToWin=ScoreToWin; GS->Layout.WidthCm=ArenaWidthCm; GS->Layout.LengthCm=ArenaLengthCm;
+        GS->Layout.WidthCm=ArenaWidthCm; GS->Layout.LengthCm=ArenaLengthCm;
         if (!GS->Layout.IsSane()) { UE_LOG(LogMRFPS,Error,TEXT("MRFPS_LAYOUT_CONFIG_INVALID")); FPlatformMisc::RequestExitWithStatus(true,78); return; }
     }
     MaxAdminWalls=FMath::Clamp(MaxAdminWalls,1,32);
@@ -1206,7 +1238,7 @@ int32 AMRFPSGameMode::CountAdmins(const AMRFPSPlayerState* Exclude) const
 FString AMRFPSGameMode::RoleCapacityError(const FString& RequestedRole,const AMRFPSPlayerState* Candidate) const
 {
     if (RequestedRole==TEXT("admin") && CountAdmins(Candidate)>=1) return TEXT("ADMIN_FULL");
-    if (RequestedRole==TEXT("player") && CountFighters(Candidate)>=2) return TEXT("ARENA_FULL");
+    if (RequestedRole==TEXT("player") && MRFPSBot::CountHumanFighters(this,Candidate)>=2) return TEXT("ARENA_FULL");
     return FString();
 }
 void AMRFPSGameMode::PreLogin(const FString& Options,const FString& Address,const FUniqueNetIdRepl& ID,FString& Error)
@@ -1269,8 +1301,11 @@ FString AMRFPSGameMode::InitNewPlayer(APlayerController* PC,const FUniqueNetIdRe
         PS->Slot=-1;
     }
     else {
+        // The network client has passed signature, role, DTLS and capacity
+        // checks. Only now may it replace the server-owned bot.
+        MRFPSBot::BeforeHumanAdmission(this);
         bool Occupied[2]={false,false};
-        for (APlayerState* Base:GameState->PlayerArray) if (const auto* Other=Cast<AMRFPSPlayerState>(Base); Other && Other!=PS && !Other->bInspector && Other->Slot>=0 && Other->Slot<2) Occupied[Other->Slot]=true;
+        for (APlayerState* Base:GameState->PlayerArray) if (const auto* Other=Cast<AMRFPSPlayerState>(Base); Other && Other!=PS && !Other->IsABot() && !Other->bInspector && Other->Slot>=0 && Other->Slot<2) Occupied[Other->Slot]=true;
         PS->Slot=!Occupied[0] ? 0 : !Occupied[1] ? 1 : -1;
         if (PS->Slot<0) return TEXT("ARENA_FULL");
     }
@@ -1292,29 +1327,35 @@ void AMRFPSGameMode::RestartPlayer(AController* NewPlayer)
 }
 void AMRFPSGameMode::Logout(AController* Exiting)
 {
+    const auto* Departing=Exiting?Exiting->GetPlayerState<AMRFPSPlayerState>():nullptr;
+    const bool HumanFighter=Departing && !Departing->IsABot() && !Departing->bInspector && !Departing->bAdmin && Departing->Slot>=0;
     if (Exiting && Exiting->GetPawn()) Exiting->GetPawn()->Destroy();
     Super::Logout(Exiting);
-    if (!RegisteredAnchorsValid()) InvalidateSharedFloor();
+    const auto* CurrentState=GetGameState<AMRFPSGameState>();
+    if ((!CurrentState || !CurrentState->bSoloBotSession) && !RegisteredAnchorsValid()) InvalidateSharedFloor();
+    if (HumanFighter) ResetForFighterChange();
     if (auto* GS=GetGameState<AMRFPSGameState>(); GS && CountFighters()<2) GS->Phase=EMRFPSMatchPhase::Waiting;
 }
 void AMRFPSGameMode::OnElimination(AMRFPSPawn* Victim,AMRFPSPawn* Killer)
 {
+    if (!Victim || !Killer) return;
+    const auto* GS=GetGameState<AMRFPSGameState>();
+    if (!GS || GS->Phase!=EMRFPSMatchPhase::Playing || GS->bCombatPaused ||
+        (GS->RoundEndsAt>0 && GetWorld()->GetTimeSeconds()>=GS->RoundEndsAt)) return;
     auto* VPS=Victim->GetPlayerState<AMRFPSPlayerState>(); auto* KPS=Killer->GetPlayerState<AMRFPSPlayerState>();
     if (VPS) ++VPS->Deaths;
     if (KPS) ++KPS->Kills;
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_ELIMINATION winner=%d victim=%d kills=%d"),Killer->GetSlot(),Victim->GetSlot(),KPS?KPS->Kills:-1);
-    if (KPS && KPS->Kills>=ScoreToWin) if (auto* GS=GetGameState<AMRFPSGameState>()) {
-        GS->Phase=EMRFPSMatchPhase::Finished; GS->WinnerSlot=KPS->Slot; GS->RestartAt=GetWorld()->GetTimeSeconds()+8;
-        UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH winner=%d"),KPS->Slot);
-    }
+    if (VPS) VPS->ForceNetUpdate();
+    if (KPS) KPS->ForceNetUpdate();
 }
 void AMRFPSGameMode::ResetMatch()
 {
     SetCombatPaused(false);
-    for (APlayerState* Base:GameState->PlayerArray) if (auto* PS=Cast<AMRFPSPlayerState>(Base)) { PS->Kills=0; PS->Deaths=0; }
-    for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) It->Respawn();
-    for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if (!It->bAdminPlaced) It->Destroy();
-    if (auto* GS=GetGameState<AMRFPSGameState>()) { GS->Phase=EMRFPSMatchPhase::Playing; GS->WinnerSlot=-1; GS->RestartAt=0; }
+    auto* GS=GetGameState<AMRFPSGameState>(); if (!GS) return;
+    GS->RoundNumber=GS->CompletedRounds=GS->RoundWinsSlot0=GS->RoundWinsSlot1=0;
+    GS->LastRoundWinnerSlot=GS->WinnerSlot=-1; GS->RoundEndsAt=GS->RoundPausedAt=GS->RestartAt=0;
+    BeginRound();
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH playing"));
 }
 void AMRFPSGameMode::Tick(float Dt)
@@ -1333,8 +1374,10 @@ void AMRFPSGameMode::Tick(float Dt)
         }
         for (auto* PC:Expired) if (GameSession) { UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_SESSION_EXPIRED")); GameSession->KickPlayer(PC,FText::FromString(TEXT("AUTH_EXPIRED"))); }
     }
+    MRFPSBot::Maintain(this,Dt);
     auto* GS=GetGameState<AMRFPSGameState>(); if (!GS) return;
     if (GS->bSharedFloorConfirmed && !RegisteredAnchorsValid()) InvalidateSharedFloor();
+    TickRounds();
     // Administrator control never pauses network, tracking, video, geometry,
     // or authentication checks above. Only match progression waits here.
     if (bRequireAdminStart || GS->bCombatPaused) return;
@@ -1343,14 +1386,11 @@ void AMRFPSGameMode::Tick(float Dt)
     if (!Nominal && !(GS->bSharedFloorConfirmed && GS->Layout.bCalibrated)) return;
     if (Ready==2) GS->bNominalDesktopSession=Nominal;
     if (GS->Phase==EMRFPSMatchPhase::Waiting && Ready==2 && CountFighters()==2) ResetMatch();
-    if (GS->Phase==EMRFPSMatchPhase::Finished && GetWorld()->GetTimeSeconds()>=GS->RestartAt) {
-        if (Ready==2 && CountFighters()==2) ResetMatch(); else GS->Phase=EMRFPSMatchPhase::Waiting;
-    }
 }
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(13);
+    FNetworkVersion::SetGameNetworkProtocolVersion(14);
     Super::Init();
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
     // This CVar is marked Cheat in UE 5.8, so setting it in Engine.ini causes
@@ -1505,7 +1545,8 @@ void AMRFPSPawn::UpdateVisuals()
     HeadHitbox->SetCollisionEnabled(Targetable ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
     BodyHitbox->SetCollisionEnabled(Targetable ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
     MiniShield->SetCollisionEnabled(Targetable && bShieldActive ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
-    const bool ShowAvatar=MRFPS::ViewerShowsAvatars(GetWorld());
+    const auto* VisualState=GetPlayerState<AMRFPSPlayerState>();
+    const bool ShowAvatar=MRFPS::ViewerShowsAvatars(GetWorld()) || (GetNetMode()!=NM_DedicatedServer && VisualState && VisualState->IsABot());
     FMRFPSPose RetainedPose;
     const bool HaveRetainedPose=ShowAvatar && Avatar && Avatar->GetVisualPose(RetainedPose);
     const FMRFPSPose& DisplayPose=HaveRetainedPose?RetainedPose:Pose;
@@ -1530,7 +1571,7 @@ void AMRFPSPawn::UpdateVisuals()
 void AMRFPSPawn::Tick(float Dt)
 {
     Super::Tick(Dt);
-    if (IsLocallyControlled()) SampleLocalPose(Dt);
+    if (IsLocallyControlled() && !MRFPSBot::IsServerBot(this)) SampleLocalPose(Dt);
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
     if (HasAuthority() && (!CombatState || !CombatState->bCombatPaused)) {
         const double Now=GetWorld()->GetTimeSeconds();
@@ -1543,7 +1584,8 @@ void AMRFPSPawn::Tick(float Dt)
         else if (Now-LastShieldUse>1.0) ShieldEnergy=FMath::Min(100.f,ShieldEnergy+14*Dt);
         if (Health<=0 && Now>=RespawnAt) if (auto* GS=GetWorld()->GetGameState<AMRFPSGameState>(); GS && GS->Phase==EMRFPSMatchPhase::Playing) Respawn();
     }
-    const bool ShowAvatar=MRFPS::ViewerShowsAvatars(GetWorld());
+    const auto* VisualState=GetPlayerState<AMRFPSPlayerState>();
+    const bool ShowAvatar=MRFPS::ViewerShowsAvatars(GetWorld()) || (GetNetMode()!=NM_DedicatedServer && VisualState && VisualState->IsABot());
     if (ShowAvatar && Avatar && !Avatar->IsAvatarReady()) Avatar->InitializeAvatar();
     if(Avatar) {
         if (ShowAvatar && Health>0 && Avatar->IsAvatarReady()) Avatar->UpdateTracking(Pose,MRFPS::Layout(GetWorld()),GeometryCalibrationGeneration,Dt,false);

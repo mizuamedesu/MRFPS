@@ -455,7 +455,10 @@ void UMRFPSMenu::RefreshStatus()
     RoleText->SetText(FText::FromString(Role));
     FString Match=TEXT("接続待ち");
     if(State&&PC->GetNetMode()!=NM_Standalone) {
-        Match=State->bCombatPaused?TEXT("一時停止"):State->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):State->Phase==EMRFPSMatchPhase::Finished?FString::Printf(TEXT("P%dの勝利"),State->WinnerSlot+1):TEXT("開始待ち");
+        Match=State->bCombatPaused?TEXT("一時停止"):State->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):
+            State->Phase==EMRFPSMatchPhase::BetweenRounds?TEXT("ラウンド間"):
+            State->Phase==EMRFPSMatchPhase::Finished?(State->WinnerSlot<0?TEXT("引き分け"):FString::Printf(TEXT("P%dの勝利"),State->WinnerSlot+1)):TEXT("開始待ち");
+        if(State->bSoloBotSession&&!State->bSoloGeometryReady) Match+=TEXT("  障害物スキャン未受信");
         if(Pawn&&!Pawn->bCalibrated) Match+=TEXT("  原点を登録してください");
     }
     MatchText->SetText(FText::FromString(Match));

@@ -8,7 +8,7 @@ param(
     [string]$Fingerprint,
     [string]$AdminDirectory=(Join-Path $env:LOCALAPPDATA 'MRFPS\Admin'),
     [ValidateRange(2,8)][int]$InspectorCount=2,
-    [ValidateSet('full','player-limit','admin-limit','inspector-multi','admin-inspector')][string]$Scenario='full',
+    [ValidateSet('full','player-limit','admin-limit','inspector-multi','admin-inspector','solo-bot')][string]$Scenario='full',
     [ValidateRange(0,1800)][int]$HoldSeconds=0,
     [switch]$Editor,
     [switch]$AllowExistingPlayer,
