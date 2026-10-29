@@ -80,6 +80,8 @@ void AMRFPSPlayerController::ServerRequestVideoConsentPause_Implementation(uint3
 
 void AMRFPSPlayerController::ServerFinishVideoConsentPause_Implementation(uint32 Request)
 {
+    UE_LOG(LogMRFPSVideo,Display,TEXT("MRFPS_CONSENT_FINISH request=%u expected=%u valid=%d"),
+        Request,VideoConsentServerRequest,IsVideoSessionValid(true)?1:0);
     if (!IsVideoSessionValid(true) || Request==0 || Request!=VideoConsentServerRequest) return;
     if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
     // This real packet refreshed the server's receive clock. The reply similarly
@@ -90,6 +92,9 @@ void AMRFPSPlayerController::ServerFinishVideoConsentPause_Implementation(uint32
 void AMRFPSPlayerController::ClientVideoConsentPause_Implementation(uint32 Request,float Seconds)
 {
 #if !UE_SERVER
+    UE_LOG(LogMRFPSVideo,Display,TEXT("MRFPS_CONSENT_REPLY request=%u expected=%u seconds=%.2f local=%d valid=%d phase=%d"),
+        Request,VideoConsentFlow.GetRequest(),Seconds,IsLocalController()?1:0,IsVideoSessionValid(true)?1:0,
+        static_cast<int32>(VideoConsentFlow.GetPhase()));
     if (!IsLocalController() || !IsVideoSessionValid(true) || Request!=VideoConsentFlow.GetRequest() || !FMath::IsFinite(Seconds) || Seconds<0) return;
     auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection());
     auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>();
@@ -106,8 +111,10 @@ void AMRFPSPlayerController::ClientVideoConsentPause_Implementation(uint32 Reque
         const double Allowed=MRFPSConsent::AllowedPauseSeconds(FDateTime::UtcNow().ToUnixTimestamp(),GetPlayerState<AMRFPSPlayerState>()->AuthExpiresAt);
         if (!VideoConsentFlow.Grant(Request,double(Seconds),FPlatformTime::Seconds(),Allowed) ||
             Connection->BeginCaptureConsentPauseUntil(VideoConsentFlow.GetHardDeadline())<=0) {
+            UE_LOG(LogMRFPSVideo,Warning,TEXT("MRFPS_CONSENT_REPLY_ABORT reason=client_lease"));
             AbortConsent(); ConnectionError=TEXT("認証の残り時間が不足しています。再接続してください"); return;
         }
+        UE_LOG(LogMRFPSVideo,Display,TEXT("MRFPS_CONSENT_REQUEST_OS"));
         Capture->RequestCapture(); bViewSharingRequested=true;
     } else if (VideoConsentFlow.Resume(Request,FPlatformTime::Seconds())) {
         Connection->EndCaptureConsentPause();
@@ -168,19 +175,23 @@ void AMRFPSPlayerController::TickQuestVideo()
         MRFPSShareView();
     }
     if (Publisher && Capture && VideoConsentFlow.IsBusy()) {
+        // MRFPSShareView above may have started this flow after the tick's
+        // timestamp was sampled. A fresh clock avoids treating that earlier
+        // timestamp as a clock rollback and immediately aborting the grant.
+        const double ConsentNow=FPlatformTime::Seconds();
         if (VideoConsentFlow.GetPhase()==MRFPSConsent::EPhase::AwaitingConsent &&
-            (!Capture->IsCaptureRequestPending() || VideoConsentFlow.IsExpired(Now))) {
-            if (VideoConsentFlow.IsExpired(Now)) { Capture->StopCapture(); bViewSharingRequested=false; }
+            (!Capture->IsCaptureRequestPending() || VideoConsentFlow.IsExpired(ConsentNow))) {
+            if (VideoConsentFlow.IsExpired(ConsentNow)) { Capture->StopCapture(); bViewSharingRequested=false; }
             // Even a late OS result releases the server lease, but cannot create
             // a new ACK deadline beyond the original conservative hard limit.
-            const bool AwaitingAck=VideoConsentFlow.Finish(Now);
+            const bool AwaitingAck=VideoConsentFlow.Finish(ConsentNow);
             ServerFinishVideoConsentPause(VideoConsentFlow.GetRequest());
             if (!AwaitingAck) {
                 Capture->StopCapture(); bViewSharingRequested=false; VideoConsentFlow.Abort();
                 if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
                 ConnectionError=TEXT("共有の待機時間が過ぎました。再接続してください");
             }
-        } else if (VideoConsentFlow.IsExpired(Now)) {
+        } else if (VideoConsentFlow.IsExpired(ConsentNow)) {
             ServerFinishVideoConsentPause(VideoConsentFlow.GetRequest());
             Capture->StopCapture(); bViewSharingRequested=false; VideoConsentFlow.Abort();
             if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();

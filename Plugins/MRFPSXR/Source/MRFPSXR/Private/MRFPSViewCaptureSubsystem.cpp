@@ -149,10 +149,14 @@ static bool CallJava(const char* MethodName, uint64 Session, bool bWithSession =
 {
     JNIEnv* Env = AndroidJavaEnv::GetJavaEnv();
     jobject Activity = AndroidJavaEnv::GetGameActivityThis();
-    if (!Env || !Activity) return false;
+    if (!Env || !Activity) {
+        UE_LOG(LogMRFPSViewCapture, Warning, TEXT("MRFPS_CAPTURE_JNI_UNAVAILABLE stage=environment"));
+        return false;
+    }
     jclass Class = AndroidJavaEnv::FindJavaClass("com/mrfps/capture/MRFPSViewCapture");
     if (!Class || Env->ExceptionCheck())
     {
+        UE_LOG(LogMRFPSViewCapture, Warning, TEXT("MRFPS_CAPTURE_JNI_UNAVAILABLE stage=class"));
         Env->ExceptionClear();
         if (Class) Env->DeleteLocalRef(Class);
         return false;
@@ -165,6 +169,7 @@ static bool CallJava(const char* MethodName, uint64 Session, bool bWithSession =
         else Env->CallStaticVoidMethod(Class, Method, Activity);
     }
     const bool bSuccess = Method && !Env->ExceptionCheck();
+    if (!bSuccess) UE_LOG(LogMRFPSViewCapture, Warning, TEXT("MRFPS_CAPTURE_JNI_UNAVAILABLE stage=method_or_call"));
     if (Env->ExceptionCheck()) Env->ExceptionClear();
     Env->DeleteLocalRef(Class);
     return bSuccess;

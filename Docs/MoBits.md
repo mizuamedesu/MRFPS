@@ -2,6 +2,14 @@
 
 公式 [MoBits UE5 SDK](https://github.com/MoBits-Project/UE5_SDK) 0.5.0 / protocol v2 を同梱し、`UMRFPSHapticsComponent` でゲームイベントに接続しています。参照リビジョンは `6d657216b990948581684f61ae18ddbc9ca9116a`。取得元と変更点は [UPSTREAM.md](../Plugins/MoBitsSDK/UPSTREAM.md) に記載しています。
 
+## Quest 3 への Bluetooth 直結について
+
+2026-10-29に提供されたMoBits公式アプリのAndroid向けブランチは、Quest本体のBluetoothを使う接続経路を含みます。このアプリをARM64向けにビルドしてQuest 3にインストールし、起動と「付近のデバイス」権限を確認しました。実機の発見・接続・トラッキング・身体への出力は未確認です。APK単体の起動確認を、MRFPS内からのMoBits利用完了とは扱いません。
+
+現在のMRFPS Questビルドは、下記のPCアプリとADB reverseを使います。Quest上のMoBitsアプリをインストールしただけでは、独立したアプリ領域にあるSDK認証情報がMRFPSに渡らず、ゲームからMoBitsへ直結する経路は完成していません。また、確認したAndroidアプリはバックグラウンド移行時にSDKを終了するため、Quest上でゲームに切り替えた後も安全に接続を維持するには、アプリ間の認証情報の受け渡しとライフサイクルを含む連携の設計・実機検証が必要です。
+
+連携対応では、まず利用者が許可した機器の発見・接続とprofileを出力なしで確認し、既存の校正、出力上限、明示ARM、物理ACK、STOP確認を維持した上で、期限切れ、接続断、STOP、再接続時の非ARMを実機検証する必要があります。現時点でゲームからの直結、実機への刺激、実機の停止確認はいずれも検証できていません。
+
 ## 動作
 
 | ゲームイベント / API | MoBits の要求 |

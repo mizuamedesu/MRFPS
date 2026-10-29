@@ -12,7 +12,7 @@ UE **5.8.1** のC++製、オンライン1対1のMR FPSです。Questをプレイ
 
 直前のprotocol4配布版では、実Windowsゲーム画面をWindows観戦アプリ内で約23〜24fps表示し、LAN中継でも確認しました。認証33件、2プレイヤー＋3観戦者の27項目と300秒継続試験も合格しました。これはQuest映像のFPSや物理MRの最終確認とは別です。
 
-protocol5のQuest実機→Linuxコンテナ→Windows配布版で、実写パススルーを含む映像を観戦画面に表示して目視確認しました。QuestのUDP送信バッファを32KiBから1MiBに変えた比較では、Windowsの受信は調整前の約5fpsから、調整後の52秒間平均約23fpsに改善しました。約27〜30fpsの区間もありましたが、Quest側の取得自体が約18fpsに低下する区間もあり、長時間の安定性や装着して動いたときの品質は未確認です。1MiBをソースの既定設定に追加済みですが、既存APKの測定では起動時の一時設定を使っています。共有にはQuest側の許可が必要です。他のキャストがMediaProjectionを開始すると既存共有が終了するため、MRFPSの1配信をサーバーで観戦者へ分配します。[Metaの仕様](https://developers.meta.com/vr/documentation/native/native-media-projection/)
+Quest実機→Linuxコンテナ→Windows配布版で、実写パススルーを含む映像を観戦画面に表示して目視確認しました。protocol5でQuestのUDP送信バッファを32KiBから1MiBに変えた比較では、Windowsの受信は調整前の約5fpsから、調整後の52秒間平均約23fpsに改善しました。2026-10-29には既定設定を組み込んだprotocol6のAPKでも確認し、Windows側の94.58秒間の受信・デコードは平均28.24fpsでした。共有許可画面で30秒以上待機しても同じ認証済み接続が維持され、許可後に映像が再開しました。プレイヤーが動いたときや長時間の安定性は未確認です。共有にはQuest側の許可が必要です。他のキャストがMediaProjectionを開始すると既存共有が終了するため、MRFPSの1配信をサーバーで観戦者へ分配します。[Metaの仕様](https://developers.meta.com/vr/documentation/native/native-media-projection/)
 
 Macのビルド・起動手順とメモリ監視を同梱していますが、**Mac実機でのビルド・描画・接続は未確認**です。[Macで開発する](Docs/Mac.md)。二台の物理共通原点、実障害物での弾遮蔽、ContactGlove実ジェスチャー、MoBits実デバイス出力も未確認です。最新の実測範囲は[引き継ぎ](Docs/Handoff.md)と[完了条件・証拠](Docs/ImplementationStatus.md)に記録します。
 
