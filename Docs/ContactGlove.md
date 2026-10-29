@@ -8,7 +8,7 @@ CG2 の[専用ドングルの公式仕様](https://store.melt-interface-technolo
 
 CG2単体は空間内の手の位置を計測できません。[メーカーのQuest用アダプター](https://store.melt-interface-technologies.com/en/products/quest-3-3s-pro-adapter-for-cg2-3)はQuest 3 / 3s / Proのコントローラーをグローブへ取り付ける構成です。コントローラー側の位置追跡とグローブ側の指入力は別々のデータであり、アダプターだけでグローブの指データがQuestへBluetooth直結されるわけではありません。取付位置と手の位置の差は実機で校正する必要があります。
 
-2026-10-29 の PC 上の 5 秒実測では、専用ドングルと DivingStation の OSC は稼働していましたが、左右のグローブはどちらも未接続と報告されました。これはその時点の状態で、電源投入・ペアリング後の動作を否定するものではありません。
+2026-10-29の実測では、左グローブがPCのドングルに接続し、指と手首のデータを受信できました。右グローブは電源投入後もDivingStationが未接続と報告しました。その後は左も未接続となっており、両手のペアリングとQuest内での実動作は未確認です。
 
 ## 確認した公式仕様
 
@@ -55,7 +55,7 @@ ContactGlove 2 の公式配布から Android ネイティブ機器接続の保�
 uv run --python 3.12 python tools/gloves/contactglove_bridge.py --target 192.168.1.20
 ```
 
-PC relay は `127.0.0.1:25789/udp` で実際の DivingStation に購読し、Device snapshot と、実接続状態が確認できる手の Hand / HandQuat / Wrist / Controller メッセージだけを Quest の `25788/udp` に転送します。各 route/hand の新規sampleを最大90Hzへまとめます (`--rate-hz` で15〜120)。古いcached sampleを再送して鮮度を作る処理はありません。複数 `--target` を指定すると同じ入力を複数の開発端末へ送れます。Quest の手をそれぞれ動かす用途では各プレイヤーの別 device ID と別 relay を使用します。relay を停止した場合、ゲーム側は 150ms で入力を無効化し、古いパーやトリガーを押し続けません。Wi-Fi の端末間通信を許可し、Quest が受信する送信元 IP を設定します。
+PC relay は `127.0.0.1:25789/udp` で実際の DivingStation に購読し、Device snapshot と、実接続状態が確認できる手の Hand / HandQuat / Wrist / Controller メッセージだけを Quest の `25788/udp` に転送します。各 route/hand の新規sampleを最大90Hzへまとめます (`--rate-hz` で15〜120)。DivingStation が大量の重複パケットを送る場合は、受信処理を制限し、小さな受信キューから古いパケットの滞留を抑えます。古いcached sampleを再送して鮮度を作る処理はありません。複数 `--target` を指定すると同じ入力を複数の開発端末へ送れます。Quest の手をそれぞれ動かす用途では各プレイヤーの別 device ID と別 relay を使用します。relay を停止した場合、ゲーム側は 150ms で入力を無効化し、古いパーやトリガーを押し続けません。Wi-Fi の端末間通信を許可し、Quest が受信する送信元 IP を設定します。
 
 独立した SteamVR tracker から位置を送る場合は、トラッカーのシリアル番号と Quest stage との校正値を JSON に用意します。
 
@@ -155,3 +155,7 @@ uv run --python 3.12 python tools/gloves/check_device.py --duration 10 --require
 [公式 CG2 FAQ](https://melt-interface-technologies.com/en/products/contactglove2/) は本体に位置追跡がなく、Quest standalone を直接サポートせず、公式構成では Quest Link / SteamVR と対応 tracker・tracking space 校正を使うことを明記しています。本プロジェクトの PC relay は独自の standalone 連携経路なので、実機での追加検証が必要です。Quest の光学手追跡がグローブ越しに正しく見えることは保証されず、CG2 の指入力を Quest の光学入力で検証済みと置き換えません。
 
 未確認の実機 gate: DivingStation で CG2 の左右指が追従すること、Quest 上で受信の鮮度が維持されること、SteamVR/Quest の座標校正、手の上昇による壁、パーによる盾、トリガーによる射撃、機器切断時に入力が解除されること。
+
+受信は描画フレームとは別の軽量スレッドで到着時刻を記録します。フレームが遅くても新しい指情報を取り込み、古い入力を再開時に新しいものとして扱いません。`MRFPS.Gloves.ResumeDiscardsOldInput` は左右の実形式OSCと低フレームレートを検証します。
+
+2026-10-29の再計測では左右ともDivingStationの接続と指データを確認しましたが、その後グローブが未接続状態となり、実際に指を動かしたQuestから観戦画面までの追従は未確認です。PC中継がメモリ保護で停止するとQuestには入力が届かないため、再開と状態の確認が必要です。

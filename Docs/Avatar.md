@@ -8,8 +8,12 @@ UE5.8標準テンプレートの`SKM_Manny_Simple`を表示します。`Content/
 
 視覚用IKはQuestの追跡原点、世界の縮尺、床寸法、サーバーのヒット判定を変更しません。観戦側では短い補間をかけ、追跡が途切れた姿勢は非表示にします。
 
+両手の位置はQuestコントローラーのGrip poseを優先し、ContactGloveから両手15関節の曲げと指の開きを受けて、マネキンの指骨に反映します。指のデータは観戦者にも同期します。コントローラーが追跡できない場合は、設定済みで有効な外部トラッカーだけを代替に使います。グローブの取付位置や指の曲がり方の最終調整は実機確認が必要です。
+
 Quest単体の頭・手の3点追跡では、腰・膝・足先の実際の動作を一意に復元できません。踏み出す足や体重移動は推定です。全身の実測一致には追加の身体トラッカーとその校正が必要です。
 
 実装: `Source/MRFPS/Private/MRFPSAvatar.cpp`。検証: `MRFPS.Avatar.MannyTrackedIKAndLocomotion`、`MRFPS.Avatar.RenderedAnatomy`。立位から低い姿勢へ移る場合も骨盤を下げ、頭の位置をHMDの測定値に近づけます。後者の試験は実際に描画される頭、胸、骨盤の骨位置を確認します。2026-10-29のUE自動試験では、前進中の最大足移動が修正前の41.17/38.20 cmから5.93/5.89 cm／フレームになり、30 Hzで届く横移動でも両足が動き、最大6.04 cm／フレームでした（描画更新60 Hz）。実機の観戦画面で最終的な見た目・遅延も確認します。
 
 参考: [Epic Full Body IK](https://dev.epicgames.com/documentation/en-us/unreal-engine/control-rig-full-body-ik-in-unreal-engine)、[Blend Spaces](https://dev.epicgames.com/documentation/en-us/unreal-engine/blend-spaces-in-unreal-engine)。
+
+プレイヤー画面では自分と相手の仮想アバターを表示せず、銃やゲーム内の障害物は表示します。観戦画面では両プレイヤーのマネキンと指を描画します。指・身体の描画やIKは観戦クライアントごとに解決し、サーバーは測定姿勢とゲーム状態を扱います。プレイヤー画面ではマネキンの読み込みとIKも省きます。`MRFPS.Avatar.ViewerVisibility` は役割を切り替えた際の表示と銃の維持を検証します。

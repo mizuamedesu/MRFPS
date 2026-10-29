@@ -262,6 +262,10 @@ def run(args: argparse.Namespace) -> None:
     targets = [(str(ipaddress.IPv4Address(target)), args.target_port) for target in args.target]
     station = (str(ipaddress.IPv4Address(args.station)), args.station_port)
     receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # DivingStation can emit tens of thousands of duplicate datagrams per
+    # second. Keep its receive queue short so that dropping excess datagrams
+    # does not turn into a long backlog of old hand poses.
+    receiver.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, MAX_PACKET)
     receiver.bind(("127.0.0.1", args.listen_port))
     receiver.setblocking(False)
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -300,6 +304,9 @@ def run(args: argparse.Namespace) -> None:
                     data, source = receiver.recvfrom(65535)
                 except ConnectionResetError:
                     continue
+                # Bound the work spent parsing a flooded local OSC stream,
+                # while leaving room for both hands and the device heartbeat.
+                time.sleep(0.00025)
                 if source[0] != station[0] or len(data) > MAX_PACKET:
                     rejected += 1
                     continue

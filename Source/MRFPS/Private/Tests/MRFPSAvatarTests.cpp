@@ -1,9 +1,11 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_SERVER
 #include "MRFPSAvatar.h"
 #include "MRFPSGame.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/World.h"
+#include "GameFramework/WorldSettings.h"
 #include "Misc/AutomationTest.h"
 #include <cfloat>
 
@@ -158,5 +160,69 @@ bool FMRFPSRenderedAnatomyTest::RunTest(const FString& Parameters)
         Check(TEXT("standing after low initial sample"),170,0,true);
     }
     World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSFingerVisualTest,"MRFPS.Avatar.TwoGloveHands",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSFingerVisualTest::RunTest(const FString& Parameters)
+{
+    const auto Init=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false).CreateNavigation(false)
+        .CreateAISystem(false).ShouldSimulatePhysics(false).CreateFXSystem(false).SetTransactional(false);
+    UWorld* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Init);
+    if(!TestNotNull(TEXT("Finger visual world"),World)) return false;
+    GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+    auto* Owner=World->SpawnActor<AActor>();auto* Avatar=NewObject<UMRFPSAvatarComponent>(Owner);
+    Owner->SetRootComponent(Avatar);Owner->AddInstanceComponent(Avatar);Avatar->RegisterComponent();
+    if(TestTrue(TEXT("Manny loads for finger tracking"),Avatar->InitializeAvatar())) {
+        FMRFPSPose Pose;FMRFPSArenaLayout Layout;
+        Pose.bHeadTracked=Pose.bLeftTracked=Pose.bRightTracked=true;
+        Pose.Head=FVector(0,0,170);Pose.Left=FVector(30,-30,125);Pose.Right=FVector(40,25,140);
+        Pose.LeftFingers.bValid=Pose.RightFingers.bValid=true;
+        ++Pose.Sequence;Avatar->UpdateTracking(Pose,Layout,1,1.f/60,true);
+        const TCHAR* Fingers[]={TEXT("thumb"),TEXT("index"),TEXT("middle"),TEXT("ring"),TEXT("pinky")};
+        FVector Open[2][5];
+        for (int32 Hand=0;Hand<2;++Hand) for (int32 Finger=0;Finger<5;++Finger) {
+            const FName Bone(*FString::Printf(TEXT("%s_03_%s"),Fingers[Finger],Hand==0?TEXT("l"):TEXT("r")));
+            Open[Hand][Finger]=Avatar->SolvedWorldPosition(Bone);
+        }
+        for(int32 I=0;I<15;++I) Pose.LeftFingers.Joint[I]=Pose.RightFingers.Joint[I]=255;
+        ++Pose.Sequence;Avatar->UpdateTracking(Pose,Layout,1,1.f/60,true);
+        for (int32 Hand=0;Hand<2;++Hand) for (int32 Finger=0;Finger<5;++Finger) {
+            const FName Bone(*FString::Printf(TEXT("%s_03_%s"),Fingers[Finger],Hand==0?TEXT("l"):TEXT("r")));
+            const FVector Closed=Avatar->SolvedWorldPosition(Bone);
+            TestTrue(FString::Printf(TEXT("%s moves with glove flex"),*Bone.ToString()),FVector::Dist(Open[Hand][Finger],Closed)>.5);
+            TestTrue(FString::Printf(TEXT("%s rendered bone agrees with solution"),*Bone.ToString()),
+                FVector::Dist(Closed,Avatar->GetBoneLocationByName(Bone,EBoneSpaces::WorldSpace))<1);
+        }
+    }
+    World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSAvatarViewerPolicyTest,"MRFPS.Avatar.ViewerVisibility",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSAvatarViewerPolicyTest::RunTest(const FString& Parameters)
+{
+    const auto Init=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false).CreateNavigation(false)
+        .CreateAISystem(false).ShouldSimulatePhysics(false).CreateFXSystem(false).SetTransactional(false);
+    UWorld* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Init);
+    if(!TestNotNull(TEXT("Viewer world"),World)) return false;
+    GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+    World->InitializeActorsForPlay(FURL());World->BeginPlay();World->GetWorldSettings()->NotifyBeginPlay();
+    auto* Viewer=World->SpawnActor<AMRFPSPlayerController>();auto* ViewerState=World->SpawnActor<AMRFPSPlayerState>();
+    Viewer->SetPlayerState(ViewerState);
+    TestEqual(TEXT("The fixture registers the local viewer"),World->GetFirstPlayerController(),static_cast<APlayerController*>(Viewer));
+    auto* Player=World->SpawnActor<AMRFPSPawn>();auto* PlayerState=World->SpawnActor<AMRFPSPlayerState>();
+    PlayerState->Slot=0;Player->SetPlayerState(PlayerState);Player->bGunSpawned=true;
+    Player->Pose.bHeadTracked=Player->Pose.bLeftTracked=Player->Pose.bRightTracked=true;
+    ++Player->Pose.Sequence;Player->Tick(1.f/60);
+    TestFalse(TEXT("Player views do not show the mannequin"),Player->Avatar->IsVisible());
+    TestFalse(TEXT("Player views do not show the fallback body"),Player->BodyVisual->IsVisible());
+    TestFalse(TEXT("Player views do not show a fallback hand"),Player->LeftVisual->IsVisible());
+    TestTrue(TEXT("The weapon remains visible in a player view"),Player->GunVisual->IsVisible());
+    ViewerState->bInspector=true;++Player->Pose.Sequence;Player->Tick(1.f/60);
+    TestTrue(TEXT("Inspector loads the mannequin on demand"),Player->Avatar->IsAvatarReady());
+    TestTrue(TEXT("Inspector sees a tracked avatar"),Player->Avatar->IsVisible());
+    ViewerState->bInspector=false;++Player->Pose.Sequence;Player->Tick(1.f/60);
+    TestFalse(TEXT("Changing back to player view hides the mannequin again"),Player->Avatar->IsVisible());
+    World->EndPlay(EEndPlayReason::EndPlayInEditor);World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
 }
 #endif

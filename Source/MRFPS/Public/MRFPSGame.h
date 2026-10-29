@@ -24,6 +24,7 @@ class UBoxComponent;
 class UCapsuleComponent;
 class USphereComponent;
 class UTextRenderComponent;
+class UWidgetComponent;
 class UFloatingPawnMovement;
 class USceneCaptureComponent2D;
 class UTextureRenderTarget2D;
@@ -34,12 +35,30 @@ class UTexture2D;
 class UMRFPSAdminPanel;
 class UMRFPSAvatarComponent;
 class SWindow;
+class SWidget;
 
 UENUM()
 enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFloor,CalibrateFloor,SetDimensions,ClearAdminWalls };
 
 UENUM(BlueprintType)
 enum class EMRFPSMatchPhase : uint8 { Waiting, Playing, Finished };
+
+// Quantized ContactGlove joint flexions and finger spreads, thumb to little.
+// Invalid input is explicit; a disconnected glove must never retain a grip.
+USTRUCT()
+struct FMRFPSFingerPose
+{
+    GENERATED_BODY()
+    UPROPERTY() bool bValid = false;
+    UPROPERTY() uint8 Joint[15] = {};
+    UPROPERTY() uint8 Splay[5] = {128,128,128,128,128};
+    float Curl(int32 Finger) const
+    {
+        if (!bValid || Finger<0 || Finger>=5) return 0;
+        return (float(Joint[Finger*3])+Joint[Finger*3+1]+Joint[Finger*3+2])/(3.f*255.f);
+    }
+    float GripCurl() const { return (Curl(2)+Curl(3)+Curl(4))/3.f; }
+};
 
 // Measured shared-world centimetres. Configured/nominal starts are separate.
 USTRUCT()
@@ -57,12 +76,24 @@ struct FMRFPSPose
     UPROPERTY() FRotator RightRotation = FRotator::ZeroRotator;
     UPROPERTY() FRotator RightHandRotation = FRotator::ZeroRotator;
     UPROPERTY() float LeftOpenness = 0;
+    UPROPERTY() FMRFPSFingerPose LeftFingers;
+    UPROPERTY() FMRFPSFingerPose RightFingers;
     UPROPERTY() bool bHeadTracked = false;
     UPROPERTY() bool bLeftTracked = false;
     UPROPERTY() bool bRightTracked = false;
     UPROPERTY() bool bDesktop = false;
     bool IsSane() const;
     bool IsInsideArena(const FMRFPSArenaLayout& Layout=FMRFPSArenaLayout()) const;
+};
+
+// A single deliberate slide across the magazine, expressed in gun space.
+struct FMRFPSReloadGesture
+{
+    bool Update(const FVector& RelativeHand,double Time,bool bEligible);
+    void Reset();
+    double StartTime=-1;
+    float StartZ=0;
+    bool bLatched=false;
 };
 
 // State shared by local and authoritative recognizers; uses elapsed receipt time.
@@ -164,6 +195,7 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
     void Calibrate();
     void SetFiring(bool bPressed);
+    void DesktopReload();
     void DesktopWall();
     void SetDesktopShield(bool bEnabled) { bDesktopShield = bEnabled; }
     void DesktopMove(const FVector& Input, float DeltaSeconds);
@@ -186,12 +218,19 @@ public:
     UFUNCTION(Client,Reliable) void ClientCombatStopped();
     UFUNCTION(Client,Reliable) void ClientNominalDesktopStart(FVector_NetQuantize10 Head,FRotator Rotation);
     UFUNCTION(Server, Reliable) void ServerFire();
+    UFUNCTION(Server, Reliable) void ServerDesktopReload();
     UFUNCTION(Server, Reliable) void ServerDesktopWall();
     UFUNCTION(Client, Reliable) void ClientFeedback(uint8 Kind, float Damage);
     UFUNCTION(NetMulticast, Unreliable) void MulticastShot(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit);
     UFUNCTION() void OnRepPose();
     UPROPERTY(ReplicatedUsing=OnRepPose) FMRFPSPose Pose;
     UPROPERTY(Replicated, BlueprintReadOnly) float Health = 100;
+    static constexpr int32 MagazineCapacity=30;
+    UPROPERTY(Replicated, BlueprintReadOnly) int32 MagazineRounds = MagazineCapacity;
+    UPROPERTY(Replicated, BlueprintReadOnly) bool bGunHeld = false;
+    UPROPERTY(Replicated, BlueprintReadOnly) bool bGunSpawned = false;
+    UPROPERTY(Replicated) FVector_NetQuantize10 GunRestLocation = FVector::ZeroVector;
+    UPROPERTY(Replicated) FRotator GunRestRotation = FRotator::ZeroRotator;
     UPROPERTY(Replicated, BlueprintReadOnly) float ShieldEnergy = 100;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bShieldActive = false;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bCalibrated = false;
@@ -214,6 +253,7 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> ShieldVisual;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> Label;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> HeadsetStatus;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> PlayerHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSHapticsComponent> Haptics;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UVRNotificationsComponent> XRNotifications;
     FString TrackingDescription;
@@ -222,6 +262,10 @@ public:
 private:
     void SampleLocalPose(float DeltaSeconds);
     void UpdateVisuals();
+    void UpdateWeaponFromPose(double Now);
+    void SpawnWeaponAtPose();
+    void DropWeapon();
+    void UpdatePlayerHud();
     UFUNCTION() void InvalidateCalibration();
     UFUNCTION() void OnXRSpaceChanged();
     bool bDesktopInitialized = false;
@@ -243,9 +287,14 @@ private:
     float PoseAccumulator = 0;
     double LastLocalFire = -100;
     double LastServerFire = -100;
+    double LastReloadAt = -100;
     double LastShieldUse = -100;
     double IgnoreOriginChangesUntil = -1;
     FMRFPSRiseGesture ServerRise;
+    FMRFPSReloadGesture ServerReload;
+    FVector LastGunPosition=FVector::ZeroVector;
+    FRotator LastGunRotation=FRotator::ZeroRotator;
+    TSharedPtr<SWidget> PlayerHudSlate;
 };
 
 UCLASS()
@@ -404,6 +453,7 @@ private:
     uint32 VideoConsentServerRequest = 0;
     void FirePressed();
     void FireReleased();
+    void ReloadPressed();
     void WallPressed();
     void ShieldPressed();
     void ShieldReleased();

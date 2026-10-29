@@ -1,5 +1,6 @@
 #include "MRFPSGloveSubsystem.h"
 #include "MRFPSGloveSettings.h"
+#include "MRFPSGloveReceiver.h"
 #include "MRFPSOSC.h"
 #include "Common/UdpSocketBuilder.h"
 #include "HAL/PlatformTime.h"
@@ -12,6 +13,18 @@
 DEFINE_LOG_CATEGORY_STATIC(LogMRFPSGloves, Log, All);
 
 UMRFPSGloveSubsystem::UMRFPSGloveSubsystem() : FTickableGameObject(ETickableTickType::Never) {}
+UMRFPSGloveSubsystem::~UMRFPSGloveSubsystem() { StopReceiver(); }
+
+bool UMRFPSGloveSubsystem::StartReceiver()
+{
+    if (Receiver) return false;
+    Receiver=new FMRFPSGloveReceiver(Socket,AllowedSender,StaleAfter);
+    if (Receiver->Start()) return true;
+    StopReceiver();
+    return false;
+}
+
+void UMRFPSGloveSubsystem::StopReceiver() { delete Receiver;Receiver=nullptr; }
 
 bool UMRFPSGloveSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
@@ -58,6 +71,12 @@ void UMRFPSGloveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
         UE_LOG(LogMRFPSGloves, Error, TEXT("Could not bind ContactGlove OSC port %d"), ReceiverPort);
         return;
     }
+    if (!StartReceiver())
+    {
+        UE_LOG(LogMRFPSGloves, Error, TEXT("Could not start ContactGlove receiver thread"));
+        Socket->Close();ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);Socket=nullptr;
+        return;
+    }
     Station = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
     bool bStationValid = false;
     Station->SetIp(*Settings->StationAddress, bStationValid);
@@ -71,6 +90,7 @@ void UMRFPSGloveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UMRFPSGloveSubsystem::Deinitialize()
 {
     SetTickableTickType(ETickableTickType::Never);
+    StopReceiver();
     if (Socket)
     {
         if (bStationConnection) SendStationControl("/DS/HC/Disconnect");
@@ -85,6 +105,7 @@ void UMRFPSGloveSubsystem::Deinitialize()
 void UMRFPSGloveSubsystem::BeginDestroy()
 {
     SetTickableTickType(ETickableTickType::Never);
+    StopReceiver();
     Super::BeginDestroy();
 }
 
@@ -117,9 +138,30 @@ void UMRFPSGloveSubsystem::Tick(float DeltaTime)
         SendStationControl("/DS/HC/Connect");
         NextConnectAt = Now + 2.0;
     }
+    if (Receiver) {
+        TArray<FMRFPSGloveReceiver::FPacket> Captured;
+        Receiver->TakePackets(Captured);
+        for (const auto& Packet:Captured) ProcessPacket(Packet.Data.GetData(),Packet.Data.Num(),Packet.ReceivedAt);
+        return;
+    }
+    // The direct reader is kept for deterministic socket tests. Runtime always
+    // uses the receiver thread above, even when the render frame rate is low.
+    // On headset suspension packets can accumulate in the OS socket queue.
+    // Discard that backlog before accepting fresh sensor samples, so an old
+    // held trigger or grip cannot become fresh merely because the app resumed.
+    if (LastTickAt>=0 && (Now<LastTickAt || Now-LastTickAt>StaleAfter)) bDiscardBacklog=true;
+    LastTickAt=Now;
     uint32 Pending = 0;
     uint8 Data[8192];
     const TSharedRef<FInternetAddr> Sender = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+    if (bDiscardBacklog) {
+        for (int32 Count=0;Count<512 && Socket->HasPendingData(Pending);++Count) {
+            int32 Read=0;
+            if (!Socket->RecvFrom(Data,sizeof(Data),Read,*Sender)) break;
+        }
+        if (!Socket->HasPendingData(Pending)) bDiscardBacklog=false;
+        return;
+    }
     for (int32 Count = 0; Count < 512 && Socket->HasPendingData(Pending); ++Count)
     {
         int32 Read = 0;

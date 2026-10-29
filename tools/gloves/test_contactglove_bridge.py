@@ -4,6 +4,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -142,6 +143,66 @@ class OSCProtocolTests(unittest.TestCase):
             with self.assertRaises(socket.timeout):
                 target.recvfrom(8192)
         finally:
+            process.terminate()
+            process.wait(timeout=5)
+            station.close()
+            target.close()
+
+    def test_overloaded_station_still_forwards_both_hands_and_disconnect(self):
+        # A local flood reproduces the high-rate stream seen from DivingStation.
+        # These packets go only to loopback fixture sockets, never to hardware.
+        station = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        target = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        reserve = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for sock in (station, target, reserve):
+            sock.bind(("127.0.0.1", 0))
+        listen_port = reserve.getsockname()[1]
+        reserve.close()
+        station.settimeout(5)
+        target.settimeout(.1)
+        process = subprocess.Popen([sys.executable, str(MODULE_PATH), "--target", "127.0.0.1",
+            "--target-port", str(target.getsockname()[1]), "--station-port", str(station.getsockname()[1]),
+            "--listen-port", str(listen_port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stop = threading.Event()
+        thread = None
+        try:
+            _, source = station.recvfrom(8192)
+            connected = bridge.encode_message("/DS/HC/Device", 1, "fixture", 1, 2, "ContactGlove2", 6, 0.0, 1, 80, 0.0, 1, 80, 0.0)
+            hands = [bridge.encode_message("/DS/HC/Hand", 1, "fixture", side, *([.3] * 20)) for side in (1, 0)]
+            def flood():
+                while not stop.is_set():
+                    for packet in (connected, *hands):
+                        station.sendto(packet, source)
+            thread = threading.Thread(target=flood, daemon=True)
+            thread.start()
+            seen = {"device": 0, "left": 0, "right": 0}
+            until = time.monotonic() + 1.5
+            while time.monotonic() < until:
+                try:
+                    packet, _ = target.recvfrom(8192)
+                except socket.timeout:
+                    continue
+                for address, _, values in bridge.decode_packet(packet):
+                    key = "device" if address == "/DS/HC/Device" else "left" if values[2] == 1 else "right"
+                    seen[key] += 1
+            self.assertGreaterEqual(min(seen.values()), 5, seen)
+            stop.set()
+            thread.join(timeout=2)
+            disconnected = bridge.encode_message("/DS/HC/Device", 1, "fixture", 1, 2, "ContactGlove2", 6, 0.0, 0, 0, 0.0, 0, 0, 0.0)
+            deadline = time.monotonic() + 1.0
+            confirmed = False
+            while time.monotonic() < deadline and not confirmed:
+                station.sendto(disconnected, source)
+                try:
+                    packet, _ = target.recvfrom(8192)
+                    confirmed = packet == disconnected
+                except socket.timeout:
+                    pass
+            self.assertTrue(confirmed, "disconnect status was delayed by the flood")
+        finally:
+            stop.set()
+            if thread:
+                thread.join(timeout=2)
             process.terminate()
             process.wait(timeout=5)
             station.close()

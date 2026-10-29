@@ -373,6 +373,7 @@ private:
         Pawn->Pose.Left = Head + Rotation.RotateVector(FVector(40, 0, -40));
         Pawn->Pose.Right = Head + Rotation.RotateVector(FVector(40, 0, -40));
         Pawn->bCalibrated = true;
+        Pawn->bGunSpawned = true; Pawn->bGunHeld = true;
         Pawn->LastPoseReceived = World->GetTimeSeconds();
         Pawn->OnRepPose();
         return Pawn;

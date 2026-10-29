@@ -22,6 +22,9 @@ struct FMRFPSAvatarRig
     TArray<int32> AnimationBones;
     int32 Bone[5]={INDEX_NONE,INDEX_NONE,INDEX_NONE,INDEX_NONE,INDEX_NONE};
     int32 Effector[5]={INDEX_NONE,INDEX_NONE,INDEX_NONE,INDEX_NONE,INDEX_NONE};
+    int32 FingerBone[2][5][3];
+    FVector FingerFlexAxis[2][5][3];
+    FVector FingerSplayAxis[2][5];
     FQuat TrackingToBone[3];
     FVector Feet[2]={FVector::ZeroVector,FVector::ZeroVector};
     FVector FootGoals[2]={FVector::ZeroVector,FVector::ZeroVector};
@@ -55,11 +58,13 @@ UMRFPSAvatarComponent::UMRFPSAvatarComponent()
     SetCollisionEnabled(ECollisionEnabled::NoCollision);
     SetGenerateOverlapEvents(false);
     SetCastShadow(true);
-    SetOwnerNoSee(true);
+    // Visibility is selected per local viewer by the pawn. Inspectors render
+    // this mesh; player views see the physical participants through passthrough.
+    SetOwnerNoSee(false);
     BoundsScale=2;
 }
 UMRFPSAvatarComponent::~UMRFPSAvatarComponent()=default;
-void UMRFPSAvatarComponent::BeginPlay() { Super::BeginPlay();InitializeAvatar(); }
+void UMRFPSAvatarComponent::BeginPlay() { Super::BeginPlay(); }
 bool UMRFPSAvatarComponent::IsAvatarReady() const { return Rig.IsValid(); }
 
 bool UMRFPSAvatarComponent::InitializeAvatar()
@@ -87,6 +92,35 @@ bool UMRFPSAvatarComponent::InitializeAvatar()
         Candidate->Bone[I]=Ref.FindBoneIndex(Names[I]);
         Candidate->Effector[I]=Candidate->Solver.AddEffector(Names[I]);
         if(Candidate->Bone[I]==INDEX_NONE||Candidate->Effector[I]==INDEX_NONE) return false;
+    }
+    const TCHAR* FingerNames[]={TEXT("thumb"),TEXT("index"),TEXT("middle"),TEXT("ring"),TEXT("pinky")};
+    for (int32 Hand=0;Hand<2;++Hand) {
+        const TCHAR* Suffix=Hand==0?TEXT("l"):TEXT("r");
+        for (int32 Finger=0;Finger<5;++Finger) {
+            Candidate->FingerSplayAxis[Hand][Finger]=FVector::ZeroVector;
+            for (int32 Joint=0;Joint<3;++Joint) {
+                Candidate->FingerBone[Hand][Finger][Joint]=Ref.FindBoneIndex(*FString::Printf(TEXT("%s_%02d_%s"),FingerNames[Finger],Joint+1,Suffix));
+                Candidate->FingerFlexAxis[Hand][Finger][Joint]=FVector::ZeroVector;
+            }
+        }
+        const int32 Middle=Candidate->FingerBone[Hand][2][0],Index=Candidate->FingerBone[Hand][1][0],Little=Candidate->FingerBone[Hand][4][0];
+        if (Middle==INDEX_NONE || Index==INDEX_NONE || Little==INDEX_NONE) continue;
+        const FVector Forward=(Candidate->Global[Middle].GetLocation()-Candidate->Global[Candidate->Bone[Hand+1]].GetLocation()).GetSafeNormal();
+        const FVector Across=(Candidate->Global[Index].GetLocation()-Candidate->Global[Little].GetLocation()).GetSafeNormal();
+        FVector Palm=FVector::CrossProduct(Forward,Across).GetSafeNormal();
+        if (FVector::DotProduct(Palm,FVector::DownVector)<0) Palm=-Palm;
+        if (Palm.IsNearlyZero()) Palm=FVector::DownVector;
+        for (int32 Finger=0;Finger<5;++Finger) for (int32 Joint=0;Joint<3;++Joint) {
+            const int32 Bone=Candidate->FingerBone[Hand][Finger][Joint];
+            const int32 Adjacent=Candidate->FingerBone[Hand][Finger][Joint<2?Joint+1:Joint-1];
+            if (Bone==INDEX_NONE || Adjacent==INDEX_NONE) continue;
+            FVector Direction=Joint<2 ? Candidate->Global[Adjacent].GetLocation()-Candidate->Global[Bone].GetLocation() :
+                Candidate->Global[Bone].GetLocation()-Candidate->Global[Adjacent].GetLocation();
+            Direction=Direction.GetSafeNormal();
+            const FVector Flex=FVector::CrossProduct(Direction,Palm).GetSafeNormal();
+            Candidate->FingerFlexAxis[Hand][Finger][Joint]=Candidate->Global[Bone].InverseTransformVectorNoScale(Flex).GetSafeNormal();
+            if (Joint==0) Candidate->FingerSplayAxis[Hand][Finger]=Candidate->Global[Bone].InverseTransformVectorNoScale(Palm).GetSafeNormal();
+        }
     }
     if(!Candidate->Solver.Initialize()) return false;
     const auto Configure=[&](const TCHAR* Name,float Position,float Rotation) {
@@ -261,6 +295,26 @@ void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSAr
         const int32 Parent=Ref.GetParentIndex(I);
         const FTransform Local=Parent<0?R.Global[I]:R.Global[I].GetRelativeTransform(R.Global[Parent]);
         if(!Local.ContainsNaN()) BoneSpaceTransforms[I]=Local;
+    }
+    for (int32 Hand=0;Hand<2;++Hand) {
+        const FMRFPSFingerPose& Fingers=Hand==0?Pose.LeftFingers:Pose.RightFingers;
+        if (!Fingers.bValid || !(Hand==0?Pose.bLeftTracked:Pose.bRightTracked)) continue;
+        for (int32 Finger=0;Finger<5;++Finger) for (int32 Joint=0;Joint<3;++Joint) {
+            const int32 Bone=R.FingerBone[Hand][Finger][Joint];
+            if (Bone==INDEX_NONE || R.FingerFlexAxis[Hand][Finger][Joint].IsNearlyZero()) continue;
+            const float Flex=float(Fingers.Joint[Finger*3+Joint])/255.f;
+            const float Degrees=Flex*(Joint==0?70.f:85.f);
+            FQuat Delta(R.FingerFlexAxis[Hand][Finger][Joint],FMath::DegreesToRadians(Degrees));
+            if (Joint==0 && !R.FingerSplayAxis[Hand][Finger].IsNearlyZero()) {
+                const float Spread=(float(Fingers.Splay[Finger])/127.5f-1.f)*15.f;
+                Delta=FQuat(R.FingerSplayAxis[Hand][Finger],FMath::DegreesToRadians(Spread))*Delta;
+            }
+            BoneSpaceTransforms[Bone].SetRotation((R.Reference[Bone].GetRotation()*Delta).GetNormalized());
+        }
+    }
+    for (int32 I=0;I<Ref.GetNum();++I) {
+        const int32 Parent=Ref.GetParentIndex(I);
+        R.Global[I]=Parent<0?BoneSpaceTransforms[I]:BoneSpaceTransforms[I]*R.Global[Parent];
     }
     MarkRefreshTransformDirty();RefreshBoneTransforms();
 #endif

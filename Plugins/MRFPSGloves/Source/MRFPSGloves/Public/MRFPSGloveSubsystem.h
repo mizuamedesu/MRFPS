@@ -7,6 +7,7 @@
 
 class FSocket;
 class FInternetAddr;
+class FMRFPSGloveReceiver;
 
 UENUM(BlueprintType)
 enum class EMRFPSGloveHand : uint8 { Left, Right };
@@ -72,6 +73,7 @@ class MRFPSGLOVES_API UMRFPSGloveSubsystem : public UGameInstanceSubsystem, publ
     GENERATED_BODY()
 public:
     UMRFPSGloveSubsystem();
+    virtual ~UMRFPSGloveSubsystem() override;
     virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;
     virtual void Deinitialize() override;
@@ -90,10 +92,16 @@ public:
     void SubmitTrackedPose(EMRFPSGloveHand Hand, const FTransform& TrackingPose, bool bTracked);
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FMRFPSGloveBacklogTest;
+#endif
     void SendStationControl(const ANSICHAR* Address);
+    bool StartReceiver();
+    void StopReceiver();
     bool ProcessMessage(const uint8* Data, int32 Size, double Now);
     void ProcessPacket(const uint8* Data, int32 Size, double Now, int32 Depth = 0);
     FSocket* Socket = nullptr;
+    FMRFPSGloveReceiver* Receiver = nullptr;
     TSharedPtr<FInternetAddr> Station;
     FString AllowedSender;
     FString PinnedDeviceId;
@@ -102,6 +110,8 @@ private:
     bool bStationConnection = false;
     int32 ReceiverPort = 25788;
     double NextConnectAt = 0.0;
+    double LastTickAt = -1.0;
+    bool bDiscardBacklog = false;
     FMRFPSGloveHandFrame Hands[2];
     FTransform TrackerMounts[2] = { FTransform::Identity, FTransform::Identity };
     bool bMountValid[2] = { true, true };

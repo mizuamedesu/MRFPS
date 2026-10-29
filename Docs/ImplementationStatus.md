@@ -14,7 +14,7 @@
 | 固定床・管理 | 既定X4.5m/Y7m。明示校正時だけ二人のXY中点・方向を反映し、床高さ・サイズ・追跡縮尺を維持。protocol4の実UIで壁の配置・他クライアント反映、幅変更と復元、Esc解放を確認 |
 | 実測ジオメトリ | 動的な表面送受信、鮮度・校正世代管理、サーバーの三角形弾遮蔽を実装。クライアントの足接地問い合わせも追加。8自動試験が合格。実障害物を使う確認は未完了 |
 | Mac | OpenXR依存の分離、MacのEnhancedInput依存、共通映像・認証経路、ビルド・起動スクリプトとメモリ監視を追加。Bash構文と軽量テスト10件合格。Mac実機でのビルド・表示は未確認 |
-| ContactGlove | USBドングルとDivingStationのOSC通信を確認。両手disconnected、実ジェスチャーは未確認 |
+| ContactGlove | USBドングルとDivingStationのOSC通信を確認。左手の接続・指データ受信とPC中継を実測、右手は電源投入時も未接続。両手の実ジェスチャー・Quest内の反映は未確認 |
 | MoBits | Android向け公式アプリをQuest 3にビルド・導入し、起動とBluetooth権限を確認。機器の接続、Quest上のMRFPSとのアプリ間連携、実出力は未確認。PC上では実GUI SDK通信とRust SDK・UEの障害復旧結合試験が合格 |
 
 最新の作業runは`Saved/Validation/MannyBuild-20261028-1745/`。protocol4の配布・ネットワーク・画面証拠は`Saved/Validation/AdminVideoRecovery-20261028-1518/`にあります。秘密鍵、JWT、部屋の画像はGitに含めません。実測した範囲と未検証の実機条件を分けて記録します。
