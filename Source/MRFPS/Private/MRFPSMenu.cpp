@@ -195,6 +195,10 @@ void UMRFPSMenu::NativeOnInitialized()
     RowButton(JoinRow, InspectorJoin);
     RowButton(JoinRow, AdminJoin, true);
     Body->AddChildToVerticalBox(JoinRow);
+    Space(WidgetTree,Body,8);
+    auto* DeviceLoginButton=Button(WidgetTree,TEXT("OpenDeviceLogin"),TEXT("サーバー設定・デバイスログイン"),Secondary);
+    DeviceLoginButton->OnClicked.AddDynamic(this,&UMRFPSMenu::OpenDeviceLogin);
+    Body->AddChildToVerticalBox(DeviceLoginButton);
 
     Divider(WidgetTree, Body);
     Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("プレイヤー"), 10, Muted, true));
@@ -405,6 +409,7 @@ void UMRFPSMenu::JoinRole(const FString& Role)
           if (AccessTokenBox && !AccessTokenBox->GetText().IsEmpty() && !Credentials->SetAccessToken(AccessTokenBox->GetText().ToString(),ActionError)) { RefreshStatus(); return; }
         SaveAddress();
         PC->ConnectionError.Empty();
+        if (auto* Instance=PC->GetGameInstance<UMRFPSGameInstance>()) Instance->CancelNextDeviceConnection();
         if (Role==TEXT("admin")) PC->MRFPSConnectAdmin(Address);
         else PC->MRFPSConnect(Address,Role==TEXT("inspector"));
         if (PC->ConnectionError.IsEmpty()) Close();
@@ -415,6 +420,7 @@ void UMRFPSMenu::JoinRole(const FString& Role)
 void UMRFPSMenu::JoinPlayer() { Join(false); }
 void UMRFPSMenu::JoinInspector() { Join(true); }
 void UMRFPSMenu::JoinAdmin() { JoinRole(TEXT("admin")); }
+void UMRFPSMenu::OpenDeviceLogin() { if (auto* PC=Controller()) PC->OpenDeviceLogin(); }
 void UMRFPSMenu::Align() { if (auto* PC = Controller()) PC->Calibrate(); RefreshStatus(); }
 void UMRFPSMenu::ArmHaptics() { if (auto* PC = Controller()) PC->ArmHaptics(); RefreshStatus(); }
 void UMRFPSMenu::StopHaptics() { if (auto* PC = Controller()) PC->StopHaptics(); RefreshStatus(); }

@@ -1,0 +1,49 @@
+name: Deploy MRFPS admin
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Deploy/CloudflareAdmin/**'
+      - '.github/workflows/mrfps-admin.yml'
+permissions:
+  contents: read
+concurrency:
+  group: mrfps-admin-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: ${{ vars.MRFPS_ADMIN_CI_DEPLOY == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Deploy/CloudflareAdmin
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      MRFPS_ADMIN_USERNAME: ${{ secrets.MRFPS_ADMIN_USERNAME }}
+      MRFPS_ADMIN_PASSWORD: ${{ secrets.MRFPS_ADMIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Wrangler
+        run: npm ci
+      - name: Test and validate
+        run: |
+          npm test
+          npx wrangler deploy --dry-run
+      - name: Configure secrets
+        shell: bash
+        run: |
+          set -eu
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$MRFPS_ADMIN_USERNAME"
+          test -n "$MRFPS_ADMIN_PASSWORD"
+          node -e "require('fs').writeFileSync(process.env.RUNNER_TEMP + '/mrfps-secrets.json', JSON.stringify({MRFPS_ADMIN_USERNAME:process.env.MRFPS_ADMIN_USERNAME,MRFPS_ADMIN_PASSWORD:process.env.MRFPS_ADMIN_PASSWORD}),{mode:0o600})"
+          trap 'rm -f "$RUNNER_TEMP/mrfps-secrets.json"' EXIT
+          npx wrangler secret bulk "$RUNNER_TEMP/mrfps-secrets.json"
+      - name: Deploy
+        run: npx wrangler deploy

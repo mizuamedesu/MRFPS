@@ -14,12 +14,12 @@
 
 未指定、二重指定、不正base64、Ed25519以外、秘密鍵PEM、複数鍵、末尾の余分なデータは拒否します。前に読み込んだ鍵も無効化し、開発用鍵の自動生成や匿名接続へ切り替えません。
 
-クライアントも発行者の公開鍵を独立に受け取ります。`UMRFPSAuthClientSubsystem` は公開鍵による署名検証を完了してからJWTを保持し、署名されたDTLS証明書fingerprintを採用します。秘密鍵はクライアントにも渡しません。
+デバイスコードのクライアントは HTTPS の認証サービスから公開鍵と署名済み JWT を受け取り、初回に公開鍵を端末へ固定します。公開鍵が変更された場合は拒否し、明示的な信頼解除を必要とします。`UMRFPSAuthClientSubsystem` は公開鍵による署名検証を完了してから JWT を保持し、署名された DTLS 証明書 fingerprint を採用します。秘密鍵はクライアントにも渡しません。旧来どおり公開鍵と JWT を別ファイルから用意する方法も利用できます。詳しくは [デバイスログイン](DeviceLogin.md) を参照してください。
 
 | クライアント指定 | Windows既定値 | Android既定値 |
 |---|---|---|
-| `-MRFPSAuthPublicKeyFile=` | `Saved/Auth/issuer-public.pem` | アプリの `files/MRFPS/issuer-public.pem` |
-| `-MRFPSAuthTokenFile=` | `Saved/Auth/access.jwt` | アプリの `files/MRFPS/access.jwt` |
+| `-MRFPSAuthPublicKeyFile=` | `%LOCALAPPDATA%/MRFPS/Auth/issuer-public.pem`（Windows） | アプリ内部の `files/MRFPS/issuer-public.pem` |
+| `-MRFPSAuthTokenFile=` | `%LOCALAPPDATA%/MRFPS/Auth/access.jwt`（Windows） | アプリ内部の `files/MRFPS/access.jwt` |
 | `-MRFPSAuthAudience=` | `mrfps` | `mrfps` |
 
 JWTは反射・UPROPERTY・replication・GameUserSettings・コマンドライン・ClientTravel URLへ保存しません。公開鍵ファイルは1024byte、tokenファイルは4096byteまでを開いたファイルハンドルから上限付きで読みます。保持するJWT自体は2048byteまでです。`ClearAccessToken` とSubsystemの終了時に保持領域を消去します。これはプロセス内の他の一時コピーまで完全消去したという保証ではありません。

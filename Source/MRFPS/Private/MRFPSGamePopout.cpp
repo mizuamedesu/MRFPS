@@ -266,6 +266,15 @@ void AMRFPSPlayerController::ClosePlayerVideoWindows()
 #endif
 }
 
+void AMRFPSPlayerController::ClosePlayerVideoWindow(int32 Slot)
+{
+#if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
+    if (Slot<0 || Slot>=2) return;
+    auto Window=PlayerVideoWindows[Slot].Pin(); PlayerVideoWindows[Slot].Reset();
+    if (Window) Window->RequestDestroyWindow();
+#endif
+}
+
 uint8 AMRFPSPlayerController::PlayerVideoWindowMask() const
 {
     uint8 Mask=0;

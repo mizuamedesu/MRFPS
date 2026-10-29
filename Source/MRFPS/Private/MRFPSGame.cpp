@@ -37,6 +37,7 @@
 #include "MRFPSVideoReceiver.h"
 #include "MRFPSGeometryWorld.h"
 #include "MRFPSAuthClientSubsystem.h"
+#include "MRFPSLoginMenu.h"
 #include "MRFPSTransportModule.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
@@ -675,15 +676,19 @@ void AMRFPSPlayerController::BeginPlay()
                 if (auto Window=Viewport->GetWindow()) Window->SetTitle(FText::FromString(WindowName.Left(64)));
 #endif
     }
-#if !PLATFORM_ANDROID
-    FString StartupServer;
+    FString StartupServer,DeviceCodeFile;
+    const auto* StartupInstance=GetGameInstance<UMRFPSGameInstance>();
     if (IsLocalController() && GetNetMode()==NM_Standalone && !FParse::Param(FCommandLine::Get(),TEXT("MRFPSSmoke")) &&
-        !FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),StartupServer) && !UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled()) ToggleMenu();
-#endif
+        !(StartupInstance && StartupInstance->IsAutoReconnectPending()) &&
+        !FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),StartupServer) &&
+        !FParse::Value(FCommandLine::Get(),TEXT("MRFPSDeviceCodeFile="),DeviceCodeFile)) {
+        FTimerHandle Handle;
+        GetWorldTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this]() { OpenDeviceLogin(); }),1.f,false);
+    }
 }
 void AMRFPSPlayerController::EndPlay(const EEndPlayReason::Type Reason)
 {
-    if (IsLocalController()) { ClosePlayerVideoWindows(); CloseInspectorViewWindow(); StopGeometryPublisher(); }
+    if (IsLocalController()) { if (DeviceLogin) DeviceLogin->CloseLogin(); ClosePlayerVideoWindows(); CloseInspectorViewWindow(); StopGeometryPublisher(); }
     Super::EndPlay(Reason);
 }
 void AMRFPSPlayerController::SetupInputComponent()
@@ -715,6 +720,11 @@ void AMRFPSPlayerController::SetupInputComponent()
 }
 bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
+    if (DeviceLogin && DeviceLogin->IsOpen() && Params.Key.GetFName()==FName(TEXT("OculusTouch_Right_Trigger_Click"))) {
+        if (Params.Event==IE_Pressed) DeviceLogin->SetPointerPressed(true);
+        else if (Params.Event==IE_Released) DeviceLogin->SetPointerPressed(false);
+        return true;
+    }
     // UIOnly menus own their events. Only a click delivered by the viewport
     // may reacquire inspection controls; a menu click must not do so.
     if (IsLocalController() && IsInspector() && !(SessionMenu && SessionMenu->IsInViewport()) && !(AdminPanel && AdminPanel->IsInViewport())) {
@@ -924,6 +934,29 @@ void AMRFPSPlayerController::MRFPSReconnect()
 {
     if (IsLocalController()) if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->ReconnectWithFreshToken();
 }
+void AMRFPSPlayerController::OpenDeviceLogin()
+{
+    if (!IsLocalController() || (DeviceLogin && DeviceLogin->IsOpen())) return;
+    if (SessionMenu && SessionMenu->IsInViewport()) SessionMenu->Close();
+    if (GetNetMode()!=NM_Standalone) {
+        if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->RequestLoginScreen();
+        ClientTravel(TEXT("/Game/Maps/MRFPSArena"),TRAVEL_Absolute); return;
+    }
+    DeviceLogin=UMRFPSLoginMenu::CreateFor(this);
+}
+void AMRFPSPlayerController::MRFPSConfigureServer(const FString& Address)
+{
+    OpenDeviceLogin(); if (DeviceLogin && DeviceLogin->IsOpen()) DeviceLogin->SetEndpoint(Address);
+}
+void AMRFPSPlayerController::MRFPSLoginFile(const FString& File,const FString& RequestedRole)
+{
+    OpenDeviceLogin(); if (DeviceLogin && DeviceLogin->IsOpen()) DeviceLogin->LoginCodeFromFile(File,RequestedRole);
+}
+void AMRFPSPlayerController::MRFPSResetIssuerTrust()
+{
+    if (!IsLocalController() || GetNetMode()!=NM_Standalone) return;
+    FString Error; if (auto* Credentials=GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>()) Credentials->ClearIssuerTrust(Error);
+}
 void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FString& RequestedRole)
 {
     // Address may belong to the executing timer's lambda. Clearing that timer
@@ -968,7 +1001,13 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
 void AMRFPSPlayerController::PlayerTick(float Dt)
 {
     Super::PlayerTick(Dt); if (!IsLocalController()) return;
-    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->TickAutoReconnect();
+    TickAutomation();
+    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) {
+        if (Instance->IsLoginScreenRequested() && GetNetMode()==NM_Standalone && GetPawn()) {
+            OpenDeviceLogin(); if (DeviceLogin && DeviceLogin->IsOpen()) Instance->ClearLoginScreenRequest();
+        }
+        if (!(DeviceLogin && DeviceLogin->IsOpen())) Instance->TickAutoReconnect();
+    }
     if (bAdminWallPlacement && !IsAdmin()) SetAdminWallPlacement(false);
     TickAdminPreview();
     TickQuestVideo();
@@ -1103,11 +1142,20 @@ void AMRFPSHUD::DrawHUD()
     if(!PC->ConnectionError.IsEmpty()) Text(TEXT("接続を確認してください"),30,165,15,FLinearColor(1,.4,.4));
 }
 
+bool AMRFPSGameSession::AtCapacity(bool /*bSpectator*/)
+{
+    // AGameSession's generic count treats all of our free-camera inspectors as
+    // players. Real player/admin limits are checked by AMRFPSGameMode after
+    // the signed role is verified; observers have no application-level cap.
+    return false;
+}
+
 AMRFPSGameMode::AMRFPSGameMode()
 {
     PrimaryActorTick.bCanEverTick=true;
     PlayerControllerClass=AMRFPSPlayerController::StaticClass(); PlayerStateClass=AMRFPSPlayerState::StaticClass();
     GameStateClass=AMRFPSGameState::StaticClass(); DefaultPawnClass=AMRFPSPawn::StaticClass(); HUDClass=AMRFPSHUD::StaticClass();
+    GameSessionClass=AMRFPSGameSession::StaticClass();
 }
 AMRFPSGameMode::~AMRFPSGameMode()=default;
 void AMRFPSGameMode::BeginPlay()
@@ -1136,19 +1184,21 @@ void AMRFPSGameMode::BeginPlay()
     MaxAdminWalls=FMath::Clamp(MaxAdminWalls,1,32);
     GetWorld()->SpawnActor<AMRFPSArena>();
     SpawnDefaultStage();
-    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SERVER_READY engine=5.8 widthcm=%.0f lengthcm=%.0f players=2 maxinspectors=%d desktop=%d adminstart=%d"),ArenaWidthCm,ArenaLengthCm,MaxInspectors,bAllowDesktop,bRequireAdminStart);
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SERVER_READY engine=5.8 widthcm=%.0f lengthcm=%.0f players=2 admins=1 inspectors=uncapped desktop=%d adminstart=%d"),ArenaWidthCm,ArenaLengthCm,bAllowDesktop,bRequireAdminStart);
 }
-int32 AMRFPSGameMode::CountFighters() const
+int32 AMRFPSGameMode::CountFighters(const AMRFPSPlayerState* Exclude) const
 {
-    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && !PS->bInspector && PS->Slot>=0) ++N; return N;
+    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && PS!=Exclude && !PS->bInspector && PS->Slot>=0) ++N; return N;
 }
-int32 AMRFPSGameMode::CountInspectors() const
+int32 AMRFPSGameMode::CountAdmins(const AMRFPSPlayerState* Exclude) const
 {
-    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && PS->bInspector && !PS->bAdmin) ++N; return N;
+    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && PS!=Exclude && PS->bAdmin) ++N; return N;
 }
-int32 AMRFPSGameMode::CountAdmins() const
+FString AMRFPSGameMode::RoleCapacityError(const FString& RequestedRole,const AMRFPSPlayerState* Candidate) const
 {
-    int32 N=0; if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base); PS && PS->bAdmin) ++N; return N;
+    if (RequestedRole==TEXT("admin") && CountAdmins(Candidate)>=1) return TEXT("ADMIN_FULL");
+    if (RequestedRole==TEXT("player") && CountFighters(Candidate)>=2) return TEXT("ARENA_FULL");
+    return FString();
 }
 void AMRFPSGameMode::PreLogin(const FString& Options,const FString& Address,const FUniqueNetIdRepl& ID,FString& Error)
 {
@@ -1160,10 +1210,8 @@ void AMRFPSGameMode::PreLogin(const FString& Options,const FString& Address,cons
     }
     const FString BaseOptions=Options.Replace(TEXT("?SpectatorOnly=1"),TEXT("?Inspector=1"),ESearchCase::IgnoreCase);
     Super::PreLogin(BaseOptions,Address,ID,Error); if (!Error.IsEmpty()) return;
-    if (ExpectedRole==TEXT("admin")) { if (CountAdmins()>=MaxAdmins) Error=TEXT("ADMIN_FULL"); }
-    else if (MRFPS::IsInspectorOption(Options)) { if (CountInspectors()>=MaxInspectors) Error=TEXT("INSPECTOR_FULL"); }
-    else if (CountFighters()>=2) Error=TEXT("ARENA_FULL: join with ?Inspector=1 to observe");
-    if (!Error.IsEmpty()) return;
+    Error=RoleCapacityError(ExpectedRole);
+    if (!Error.IsEmpty()) { UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_ROLE_CAPACITY role=%s code=%s"),*ExpectedRole,*Error); return; }
     if (PendingAuthentication.Num()>=128) { Error=TEXT("AUTH_CAPACITY"); return; }
     if (!AuthVerifier->VerifyAndReserve(MRFPS::LoginToken(Options),ExpectedRole,Claims,Error)) {
         UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_REJECT code=%s role=%s"),*Error,*ExpectedRole); return;
@@ -1197,14 +1245,18 @@ FString AMRFPSGameMode::InitNewPlayer(APlayerController* PC,const FUniqueNetIdRe
     auto* PS=PC->GetPlayerState<AMRFPSPlayerState>(); if (!PS) return TEXT("PLAYER_STATE_UNAVAILABLE");
     PS->bAuthenticated=Online;
     PS->AuthSubject=Online?Claims.Subject:TEXT("local-preview"); PS->AuthExpiresAt=Online?Claims.ExpiresAt:0;
-    if (Online) { PS->SetPlayerName(Claims.Subject); UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_ACCEPT role=%s subject=%s expires=%lld"),*Claims.Role,*Claims.Subject,Claims.ExpiresAt); }
+    if (Online) PS->SetPlayerName(Claims.Subject);
     PS->bAdmin=Online && Claims.Role==TEXT("admin");
     PS->bInspector=Online ? Claims.Role!=TEXT("player") : MRFPS::IsInspectorOption(Options);
+    // A second check handles simultaneous pre-login attempts, excluding the
+    // candidate that the engine has already inserted into PlayerArray.
+    const FString CapacityRole=PS->bAdmin?TEXT("admin"):PS->bInspector?TEXT("inspector"):TEXT("player");
+    Error=RoleCapacityError(CapacityRole,PS);
+    if (!Error.IsEmpty()) { UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_ROLE_CAPACITY role=%s code=%s"),*CapacityRole,*Error); return Error; }
+    if (Online) UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_ACCEPT role=%s subject=%s expires=%lld"),*Claims.Role,*Claims.Subject,Claims.ExpiresAt);
     // Inspector is our own pawn role; let UE possess its free camera normally.
     PS->SetIsOnlyASpectator(false); PS->SetIsSpectator(false);
     if (PS->bInspector) {
-        if (PS->bAdmin && CountAdmins()>MaxAdmins) return TEXT("ADMIN_FULL");
-        if (!PS->bAdmin && CountInspectors()>MaxInspectors) return TEXT("INSPECTOR_FULL");
         PS->Slot=-1;
     }
     else {
@@ -1289,7 +1341,7 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(12);
+    FNetworkVersion::SetGameNetworkProtocolVersion(13);
     Super::Init();
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
     // This CVar is marked Cheat in UE 5.8, so setting it in Engine.ini causes
@@ -1300,8 +1352,16 @@ void UMRFPSGameInstance::Init()
 }
 void UMRFPSGameInstance::OnStart()
 {
-    Super::OnStart(); FString Address;
-    if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),Address)) {
+    Super::OnStart(); FString Address,DeviceCodeFile;
+    if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSDeviceCodeFile="),DeviceCodeFile)) {
+        FString Role=TEXT("player"); FParse::Value(FCommandLine::Get(),TEXT("MRFPSRole="),Role);
+        FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),Address);
+        FTimerHandle Handle; GetWorld()->GetTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this,Address,DeviceCodeFile,Role]() {
+            if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) {
+                PC->OpenDeviceLogin(); if (!Address.IsEmpty()) PC->MRFPSConfigureServer(Address); PC->MRFPSLoginFile(DeviceCodeFile,Role);
+            }
+        }),1.f,false);
+    } else if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),Address)) {
         const bool Inspector=FParse::Param(FCommandLine::Get(),TEXT("MRFPSInspector"));
         const bool Admin=FParse::Param(FCommandLine::Get(),TEXT("MRFPSAdmin"));
         FTimerHandle Handle; GetWorld()->GetTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this,Address,Inspector,Admin]() {
@@ -1321,17 +1381,27 @@ void UMRFPSGameInstance::NetworkFailure(UWorld* World,UNetDriver* Driver,ENetwor
     if (auto* Geometry=GetSubsystem<UMRFPSGeometryCaptureSubsystem>()) Geometry->StopCapture();
 #endif
     UE_LOG(LogMRFPS,Error,TEXT("MRFPS_NETWORK_FAILURE %s"),*Error);
+    FString ExplicitTokenFile;
+    const bool bHasExplicitTokenFile=FParse::Value(FCommandLine::Get(),TEXT("MRFPSAuthTokenFile="),ExplicitTokenFile) && !ExplicitTokenFile.IsEmpty();
+    PrepareForNetworkFailure(bHasExplicitTokenFile);
     if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) {
         PC->HandleSessionDisconnected();
-        bReconnectPending=!LastServerAddress.IsEmpty() && !LastServerRole.IsEmpty();
-        NextReconnectCheck=0;
         PC->ConnectionError=TEXT("接続が切れました。新しい認証情報で再接続してください");
     }
 }
 void UMRFPSGameInstance::RememberConnectionAttempt(const FString& Address,const FString& Role)
 {
     LastServerAddress=Address; LastServerRole=Role;
+    bLastConnectionFromDevice=bNextConnectionFromDevice; bNextConnectionFromDevice=false;
     bReconnectPending=false;
+}
+void UMRFPSGameInstance::PrepareForNetworkFailure(bool bHasExplicitTokenFile)
+{
+    // Never replace an explicit user request to open the login screen. A
+    // device-code session cannot refresh a single-use jti without a new code.
+    const bool FileReconnect=!bShowLoginAfterFailure && !bLastConnectionFromDevice && bHasExplicitTokenFile &&
+        !LastServerAddress.IsEmpty() && !LastServerRole.IsEmpty();
+    bReconnectPending=FileReconnect; bShowLoginAfterFailure=!FileReconnect; NextReconnectCheck=0;
 }
 void UMRFPSGameInstance::TickAutoReconnect()
 {

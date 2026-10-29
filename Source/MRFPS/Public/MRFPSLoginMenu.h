@@ -1,0 +1,84 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Blueprint/UserWidget.h"
+#include "Components/Button.h"
+#include "Interfaces/IHttpRequest.h"
+#include "MRFPSLoginMenu.generated.h"
+
+class AMRFPSPlayerController;
+class UEditableTextBox;
+class UTextBlock;
+class UVerticalBox;
+class UWidgetComponent;
+class UWidgetInteractionComponent;
+class UStaticMeshComponent;
+class UMRFPSLoginMenu;
+
+/** An in-world keyboard key, so Quest input doesn't depend on an Android IME. */
+UCLASS()
+class MRFPS_API UMRFPSLoginKey : public UButton
+{
+    GENERATED_BODY()
+public:
+    FString KeyValue;
+    TWeakObjectPtr<UMRFPSLoginMenu> Login;
+    UFUNCTION() void PressedKey();
+};
+
+/** Server setup, followed by role-scoped, one-use device-code exchange. */
+UCLASS()
+class MRFPS_API UMRFPSLoginMenu : public UUserWidget
+{
+    GENERATED_BODY()
+public:
+    static UMRFPSLoginMenu* CreateFor(AMRFPSPlayerController* Owner);
+    /** Named local control channel; Android uses internal app-private files. */
+    static FString ControlPath();
+    void SetPointerPressed(bool bPressed);
+    void SetEndpoint(const FString& Address);
+    void LoginCodeFromFile(const FString& File, const FString& Role);
+    void InsertKey(const FString& Key);
+    void CloseLogin();
+    bool IsOpen() const { return bOpen; }
+    UFUNCTION() void Next();
+    UFUNCTION() void Back();
+    UFUNCTION() void SelectPlayer();
+    UFUNCTION() void SelectInspector();
+    UFUNCTION() void SelectAdmin();
+    UFUNCTION() void Exchange();
+    UFUNCTION() void ResetTrust();
+
+protected:
+    virtual void NativeOnInitialized() override;
+    virtual void NativeConstruct() override;
+    virtual void NativeDestruct() override;
+    virtual void NativeTick(const FGeometry& Geometry,float DeltaTime) override;
+
+private:
+    bool ReadAddress(FString& Out) const;
+    void SelectRole(const FString& InRole);
+    void SetStage(bool bLogin);
+    void SetStatus(const FString& Message, bool bError=false);
+    void HandleExchange(FHttpRequestPtr Request,FHttpResponsePtr Response,bool bSucceeded);
+    void ConnectAfterLogin();
+    void ProcessControlFile();
+    TWeakObjectPtr<AMRFPSPlayerController> Controller;
+    UPROPERTY(Transient) TObjectPtr<UEditableTextBox> AddressBox;
+    UPROPERTY(Transient) TObjectPtr<UEditableTextBox> CodeBox;
+    UPROPERTY(Transient) TObjectPtr<UTextBlock> Heading;
+    UPROPERTY(Transient) TObjectPtr<UTextBlock> Status;
+    UPROPERTY(Transient) TObjectPtr<UTextBlock> RoleLabel;
+    UPROPERTY(Transient) TObjectPtr<UVerticalBox> AddressPage;
+    UPROPERTY(Transient) TObjectPtr<UVerticalBox> LoginPage;
+    UPROPERTY(Transient) TObjectPtr<UButton> TrustButton;
+    UPROPERTY(Transient) TObjectPtr<UWidgetComponent> WorldWidget;
+    UPROPERTY(Transient) TObjectPtr<UWidgetInteractionComponent> Interaction;
+    UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> PointerRay;
+    UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> PointerDot;
+    TSharedPtr<IHttpRequest,ESPMode::ThreadSafe> PendingRequest;
+    FString Role=TEXT("player");
+    FString Destination;
+    bool bVR=false,bOpen=false,bLoginPage=false,bExchanging=false,bClosing=false;
+    double NextControlCheck=0;
+};

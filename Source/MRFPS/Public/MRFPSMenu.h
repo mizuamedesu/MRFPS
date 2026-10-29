@@ -39,6 +39,7 @@ private:
     UFUNCTION() void JoinPlayer();
     UFUNCTION() void JoinInspector();
     UFUNCTION() void JoinAdmin();
+    UFUNCTION() void OpenDeviceLogin();
     UFUNCTION() void Align();
     UFUNCTION() void ConnectHaptics();
     UFUNCTION() void ArmHaptics();

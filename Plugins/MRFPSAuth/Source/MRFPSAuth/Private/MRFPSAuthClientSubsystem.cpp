@@ -4,15 +4,35 @@
 #include "MRFPSAuthLogPrivacy.h"
 #include "MRFPSAuthClientUsePolicy.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "Misc/CommandLine.h"
 #include "Misc/DateTime.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Serialization/Archive.h"
+#if PLATFORM_ANDROID && USE_ANDROID_JNI
+#include "Android/AndroidJavaEnv.h"
+#endif
 
 namespace
 {
+#if PLATFORM_ANDROID && USE_ANDROID_JNI
+FString AndroidInternalFilesDirectory()
+{
+    JNIEnv* Env=AndroidJavaEnv::GetJavaEnv(); jobject Activity=AndroidJavaEnv::GetGameActivityThis();
+    if (!Env || !Activity || Env->PushLocalFrame(8)!=JNI_OK) { if (Env && Env->ExceptionCheck()) Env->ExceptionClear(); return FString(); }
+    struct FLocalFrame { JNIEnv* Env; ~FLocalFrame() { Env->PopLocalFrame(nullptr); } } Frame{Env};
+    const auto Failed=[Env](bool Invalid) { if (Env->ExceptionCheck()) { Env->ExceptionClear(); return true; } return Invalid; };
+    jclass ActivityClass=Env->GetObjectClass(Activity); if (Failed(!ActivityClass)) return FString();
+    jmethodID GetFilesDir=Env->GetMethodID(ActivityClass,"getFilesDir","()Ljava/io/File;"); if (Failed(!GetFilesDir)) return FString();
+    jobject Directory=Env->CallObjectMethod(Activity,GetFilesDir); if (Failed(!Directory)) return FString();
+    jclass FileClass=Env->GetObjectClass(Directory); if (Failed(!FileClass)) return FString();
+    jmethodID GetAbsolutePath=Env->GetMethodID(FileClass,"getAbsolutePath","()Ljava/lang/String;"); if (Failed(!GetAbsolutePath)) return FString();
+    jstring Path=static_cast<jstring>(Env->CallObjectMethod(Directory,GetAbsolutePath)); if (Failed(!Path)) return FString();
+    FString Result=FJavaHelper::FStringFromLocalRef(Env,Path); return Failed(Result.IsEmpty())?FString():Result;
+}
+#endif
 bool ReadAsciiFile(const FString& Path, int64 Limit, FString& Out)
 {
     Out.Empty();
@@ -29,10 +49,34 @@ bool ReadAsciiFile(const FString& Path, int64 Limit, FString& Out)
     Out = FString(Converted.Length(), Converted.Get());
     return true;
 }
+
+FString CanonicalPem(const FString& Pem)
+{
+    FString Result;
+    for (TCHAR C : Pem) if (!FChar::IsWhitespace(C)) Result.AppendChar(C);
+    return Result;
+}
 }
 
 UMRFPSAuthClientSubsystem::UMRFPSAuthClientSubsystem() : ConnectionUses(MakeUnique<FMRFPSAuthClientUseState>()) {}
 UMRFPSAuthClientSubsystem::~UMRFPSAuthClientSubsystem() = default;
+
+FString UMRFPSAuthClientSubsystem::PrivateDirectory()
+{
+#if PLATFORM_ANDROID
+#if USE_ANDROID_JNI
+    const FString Root=AndroidInternalFilesDirectory();
+    return Root.IsEmpty() || FPaths::IsRelative(Root) ? FString() : FPaths::Combine(Root,TEXT("MRFPS"));
+#else
+    return FString();
+#endif
+#elif PLATFORM_WINDOWS
+    const FString Root=FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+    return Root.IsEmpty() || FPaths::IsRelative(Root) ? FString() : FPaths::Combine(Root,TEXT("MRFPS/Auth"));
+#else
+    return FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("Auth"));
+#endif
+}
 
 void UMRFPSAuthClientSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -41,13 +85,9 @@ void UMRFPSAuthClientSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     Verifier = MakeUnique<FMRFPSAuthVerifier>();
     Audience = TEXT("mrfps");
     FParse::Value(FCommandLine::Get(), TEXT("MRFPSAuthAudience="), Audience);
-#if PLATFORM_ANDROID
-    const FString Directory = FPaths::Combine(FPaths::ProjectPersistentDownloadDir(), TEXT("MRFPS"));
-#else
-    const FString Directory = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Auth"));
-#endif
-    PublicKeyPath = FPaths::Combine(Directory, TEXT("issuer-public.pem"));
-    TokenPath = FPaths::Combine(Directory, TEXT("access.jwt"));
+    const FString Directory = PrivateDirectory();
+    PublicKeyPath = Directory.IsEmpty()?FString():FPaths::Combine(Directory, TEXT("issuer-public.pem"));
+    TokenPath = Directory.IsEmpty()?FString():FPaths::Combine(Directory, TEXT("access.jwt"));
     FParse::Value(FCommandLine::Get(), TEXT("MRFPSAuthPublicKeyFile="), PublicKeyPath);
     FParse::Value(FCommandLine::Get(), TEXT("MRFPSAuthTokenFile="), TokenPath);
     FString Error;
@@ -102,6 +142,47 @@ bool UMRFPSAuthClientSubsystem::SetAccessToken(const FString& Token, FString& Sa
     CachedClaims = MoveTemp(Parsed);
     SafeError.Empty();
     LastSafeError.Empty();
+    return true;
+}
+
+bool UMRFPSAuthClientSubsystem::AcceptDeviceExchange(const FString& Token,const FString& PublicKeyPem,const FString& ExpectedRole,FString& SafeError)
+{
+    SafeError=TEXT("AUTH_INVALID");
+    if (PublicKeyPath.IsEmpty()) { SafeError=TEXT("AUTH_KEY_FILE"); return false; }
+    if (Token.Len()>2048 || PublicKeyPem.Len()>1024 ||
+        (ExpectedRole!=TEXT("player") && ExpectedRole!=TEXT("inspector") && ExpectedRole!=TEXT("admin"))) return false;
+    // Verify the role/profile/signature before changing either the pinned key
+    // or current credential. The TLS endpoint is the first-use trust source.
+    auto Candidate=MakeUnique<FMRFPSAuthVerifier>();
+    FMRFPSAuthClaims Claims;
+    if (!Candidate->InitializeFromPublicKeyPem(PublicKeyPem,Audience,SafeError) ||
+        !Candidate->VerifyOnly(Token,ExpectedRole,Claims,SafeError) ||
+        Claims.ExpiresAt<=FDateTime::UtcNow().ToUnixTimestamp()) return false;
+    FString Existing;
+    if (IFileManager::Get().FileExists(*PublicKeyPath)) {
+        if (!ReadAsciiFile(PublicKeyPath,1024,Existing)) { SafeError=TEXT("AUTH_KEY_FILE"); return false; }
+        if (CanonicalPem(Existing)!=CanonicalPem(PublicKeyPem)) { SafeError=TEXT("AUTH_KEY_CHANGED"); return false; }
+    } else {
+        if (!IFileManager::Get().MakeDirectory(*FPaths::GetPath(PublicKeyPath),true)) { SafeError=TEXT("AUTH_KEY_FILE"); return false; }
+        // Several spectator processes can first log in concurrently. Never
+        // overwrite a key that another process has pinned in the meantime.
+        if (!FFileHelper::SaveStringToFile(PublicKeyPem,*PublicKeyPath,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM,
+            &IFileManager::Get(),FILEWRITE_NoReplaceExisting)) {
+            if (!ReadAsciiFile(PublicKeyPath,1024,Existing)) { SafeError=TEXT("AUTH_KEY_FILE"); return false; }
+            if (CanonicalPem(Existing)!=CanonicalPem(PublicKeyPem)) { SafeError=TEXT("AUTH_KEY_CHANGED"); return false; }
+        }
+    }
+    Verifier=MoveTemp(Candidate);
+    return SetAccessToken(Token,SafeError);
+}
+
+bool UMRFPSAuthClientSubsystem::ClearIssuerTrust(FString& SafeError)
+{
+    SafeError=TEXT("AUTH_KEY_FILE");
+    if (IFileManager::Get().FileExists(*PublicKeyPath) && !IFileManager::Get().Delete(*PublicKeyPath,false,true)) return false;
+    ClearAccessToken();
+    if (Verifier) Verifier->Reset();
+    SafeError.Empty();
     return true;
 }
 

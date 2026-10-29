@@ -1,0 +1,5 @@
+**
+!.dockerignore
+!Flash.Dockerfile
+!flash-entrypoint.sh
+!flash-healthcheck.sh

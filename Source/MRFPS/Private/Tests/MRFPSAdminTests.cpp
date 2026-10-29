@@ -103,6 +103,31 @@ struct FAdminWorld
 };
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSRoleCapacityTest,"MRFPS.Admin.RoleCapacity",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSRoleCapacityTest::RunTest(const FString& Parameters)
+{
+    FAdminWorld F; if (!TestTrue(TEXT("Role capacity authority fixture starts"),F.Create())) return false;
+    TestEqual(TEXT("The two fighter slots are full"),F.Mode->RoleCapacityError(TEXT("player")),FString(TEXT("ARENA_FULL")));
+    TestEqual(TEXT("One administrator occupies the sole slot"),F.Mode->RoleCapacityError(TEXT("admin")),FString(TEXT("ADMIN_FULL")));
+    TestTrue(TEXT("The existing administrator is excluded when checking its own admission"),
+        F.Mode->RoleCapacityError(TEXT("admin"),F.Admin->GetPlayerState<AMRFPSPlayerState>()).IsEmpty());
+    for (int32 Index=0;Index<64;++Index) {
+        F.Controller(false);
+        if (!F.Mode->RoleCapacityError(TEXT("inspector")).IsEmpty()) {
+            AddError(TEXT("An observer was rejected by a role count limit")); return false;
+        }
+    }
+    auto* SecondAdmin=F.Controller(true);
+    TestEqual(TEXT("A concurrently admitted second admin is rejected"),
+        F.Mode->RoleCapacityError(TEXT("admin"),SecondAdmin->GetPlayerState<AMRFPSPlayerState>()),FString(TEXT("ADMIN_FULL")));
+    TestTrue(TEXT("Many inspectors do not consume fighter slots"),
+        F.Mode->RoleCapacityError(TEXT("player"),F.Players[0]->GetPlayerState<AMRFPSPlayerState>()).IsEmpty());
+    TestTrue(TEXT("Generic engine session uses role-aware session class"),
+        F.Mode->GetGameSessionClass()==AMRFPSGameSession::StaticClass());
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSAdminAuthorityTest,"MRFPS.Admin.AuthorityAndFixedCalibration",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
 bool FMRFPSAdminAuthorityTest::RunTest(const FString& Parameters)
@@ -263,6 +288,37 @@ bool FMRFPSDefaultStageTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Remaining objects survive floor adjustment"),F.Walls(),3);
     for (TActorIterator<AMRFPSBarrier> It(F.World);It;++It) if (It->bDefaultStageObject)
         TestTrue(TEXT("A stage object follows its floor-local anchor"),It->GetActorLocation().Equals(F.State->Layout.ToWorld(It->MapLocalPosition),.1));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSAutomationBuildTest,"MRFPS.Admin.AutomationDesiredState",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSAutomationBuildTest::RunTest(const FString& Parameters)
+{
+    FAdminWorld F; if(!TestTrue(TEXT("Automation authority fixture"),F.Create())) return false;
+    FString Error; const FVector Surface(0,0,0),Origin(0,0,1000),Down(0,0,-1);
+    TestFalse(TEXT("Observer cannot create an automation object"),F.Mode->EnsureAutomationObject(F.Observer,EMRFPSBuildKind::Wall,Surface,Origin,Down,0,Error));
+    TestTrue(TEXT("Admin creates the requested snapped wall"),F.Mode->EnsureAutomationObject(F.Admin,EMRFPSBuildKind::Wall,Surface,Origin,Down,0,Error));
+    TestEqual(TEXT("The first request creates exactly one object"),F.Walls(),1);
+    TestTrue(TEXT("Repeating the desired object is a no-op"),F.Mode->EnsureAutomationObject(F.Admin,EMRFPSBuildKind::Wall,Surface,Origin,Down,0,Error));
+    TestEqual(TEXT("Repeated request reports the existing object"),Error,FString(TEXT("AUTOMATION_ALREADY")));
+    TestEqual(TEXT("Repeated placement creates no stacked duplicate"),F.Walls(),1);
+    AMRFPSBarrier* Wall=nullptr; for(TActorIterator<AMRFPSBarrier> It(F.World);It;++It) if(It->bAdminPlaced) Wall=*It;
+    if(!TestNotNull(TEXT("Automation wall exists"),Wall)) return false;
+    const FMRFPSWallShape Original=Wall->WallShape;
+    FMRFPSWallShape Open=Original; Open.SolidCells &= ~(1u<<4); Open.HeightRows=5;
+    TestFalse(TEXT("Observer cannot change wall shape"),F.Mode->SetAutomationWall(F.Observer,Wall,Original,Open,Error));
+    TestTrue(TEXT("Admin sets explicit cell and height"),F.Mode->SetAutomationWall(F.Admin,Wall,Original,Open,Error));
+    TestTrue(TEXT("Desired shape is applied"),Wall->WallShape.SolidCells==Open.SolidCells && Wall->WallShape.HeightRows==Open.HeightRows);
+    TestTrue(TEXT("Reusing the old expected shape with the same desired shape is safe"),F.Mode->SetAutomationWall(F.Admin,Wall,Original,Open,Error));
+    TestEqual(TEXT("Unchanged desired shape reports no-op"),Error,FString(TEXT("AUTOMATION_ALREADY")));
+    FMRFPSWallShape Other=Open; Other.SolidCells &= ~(1u<<3);
+    TestFalse(TEXT("A stale expected shape cannot overwrite a concurrent edit"),F.Mode->SetAutomationWall(F.Admin,Wall,Original,Other,Error));
+    TestEqual(TEXT("Stale shape reports a revision error"),Error,FString(TEXT("ADMIN_STALE_STATE")));
+    TestFalse(TEXT("An observer cannot remove the actor"),F.Mode->RemoveAutomationObject(F.Observer,Wall,Open,Error));
+    TestFalse(TEXT("Deletion with stale shape is rejected"),F.Mode->RemoveAutomationObject(F.Admin,Wall,Original,Error));
+    TestTrue(TEXT("Deletion with current shape removes exactly the selected actor"),F.Mode->RemoveAutomationObject(F.Admin,Wall,Open,Error));
+    TestEqual(TEXT("No object survives deletion"),F.Walls(),0);
     return true;
 }
 namespace

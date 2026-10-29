@@ -489,4 +489,40 @@ bool FMRFPSAuthorityCombatTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSReconnectOriginTest,"MRFPS.Auth.ReconnectOrigin",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMRFPSReconnectOriginTest::RunTest(const FString& Parameters)
+{
+    auto* Legacy=NewObject<UMRFPSGameInstance>();
+    Legacy->RememberConnectionAttempt(TEXT("example.test:7777"),TEXT("inspector"));
+    Legacy->PrepareForNetworkFailure(true);
+    TestTrue(TEXT("An explicitly provisioned token file retains automatic fresh-token reconnect"),Legacy->IsAutoReconnectPending());
+    TestFalse(TEXT("File reconnect does not prematurely force a login screen"),Legacy->IsLoginScreenRequested());
+    Legacy->RequestLoginScreen(); Legacy->PrepareForNetworkFailure(true);
+    TestTrue(TEXT("An explicit request to change server still opens login"),Legacy->IsLoginScreenRequested());
+    TestFalse(TEXT("An explicit login request cancels file reconnect"),Legacy->IsAutoReconnectPending());
+
+    auto* Device=NewObject<UMRFPSGameInstance>();
+    Device->MarkNextConnectionAsDeviceLogin();
+    Device->RememberConnectionAttempt(TEXT("example.test:7777"),TEXT("player"));
+    Device->PrepareForNetworkFailure(true);
+    TestTrue(TEXT("Device-code login requests a fresh code even when an old file path exists"),Device->IsLoginScreenRequested());
+    TestFalse(TEXT("Device-code sessions never replay a file credential automatically"),Device->IsAutoReconnectPending());
+
+    auto* NoFile=NewObject<UMRFPSGameInstance>();
+    NoFile->RememberConnectionAttempt(TEXT("example.test:7777"),TEXT("player"));
+    NoFile->PrepareForNetworkFailure(false);
+    TestTrue(TEXT("Without an explicit token file, login is requested"),NoFile->IsLoginScreenRequested());
+    TestFalse(TEXT("No missing file is polled as a refresh source"),NoFile->IsAutoReconnectPending());
+
+    auto* Cancelled=NewObject<UMRFPSGameInstance>();
+    Cancelled->MarkNextConnectionAsDeviceLogin(); Cancelled->CancelNextDeviceConnection();
+    Cancelled->RememberConnectionAttempt(TEXT("example.test:7777"),TEXT("player"));
+    Cancelled->PrepareForNetworkFailure(true);
+    TestTrue(TEXT("A cancelled device login does not misclassify a later file connection"),Cancelled->IsAutoReconnectPending());
+    auto* NoAttempt=NewObject<UMRFPSGameInstance>(); NoAttempt->PrepareForNetworkFailure(true);
+    TestTrue(TEXT("A file without a prior destination still requests login"),NoAttempt->IsLoginScreenRequested());
+    return true;
+}
+
 #endif

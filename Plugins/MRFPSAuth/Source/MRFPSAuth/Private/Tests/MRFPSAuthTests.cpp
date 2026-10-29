@@ -246,4 +246,33 @@ bool FMRFPSAuthClientCredentialTest::RunTest(const FString& Parameters)
     IFileManager::Get().DeleteDirectory(*Directory, false, false);
     return true;
 }
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSDeviceExchangeTrustTest,"MRFPS.Auth.DeviceExchangeTrust",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMRFPSDeviceExchangeTrustTest::RunTest(const FString& Parameters)
+{
+    using namespace MRFPSAuthTests;
+    Signer First,Second;
+    if (!TestTrue(TEXT("Two independent test issuers"),First.Ready() && Second.Ready())) return false;
+    const FString Directory=FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("Automation/DeviceExchange"),FGuid::NewGuid().ToString(EGuidFormats::Digits));
+    const FString PublicPath=FPaths::Combine(Directory,TEXT("issuer-public.pem"));
+    const FString TokenPath=FPaths::Combine(Directory,TEXT("access.jwt"));
+    const FScopedAuthCommandLine CommandLine(FString::Printf(TEXT("-MRFPSAuthPublicKeyFile=\"%s\" -MRFPSAuthTokenFile=\"%s\" -MRFPSAuthAudience=mrfps"),*PublicPath,*TokenPath));
+    TStrongObjectPtr<UGameInstance> Instance(NewObject<UGameInstance>());
+    TStrongObjectPtr<UMRFPSAuthClientSubsystem> Credentials(NewObject<UMRFPSAuthClientSubsystem>(Instance.Get()));
+    FSubsystemCollection<UGameInstanceSubsystem> Collection; Credentials->Initialize(Collection);
+    TokenSpec Spec(FDateTime::UtcNow().ToUnixTimestamp()); FString Error;
+    TestFalse(TEXT("Invalid signature cannot pin a public key"),Credentials->AcceptDeviceExchange(U(First.Sign(Spec)),U(Second.PublicPem()),TEXT("player"),Error));
+    TestFalse(TEXT("Wrong signed role cannot pin a public key"),Credentials->AcceptDeviceExchange(U(First.Sign(Spec)),U(First.PublicPem()),TEXT("admin"),Error));
+    TestFalse(TEXT("Failed verification left no key file"),IFileManager::Get().FileExists(*PublicPath));
+    TestTrue(TEXT("Valid player exchange installs first trust anchor"),Credentials->AcceptDeviceExchange(U(First.Sign(Spec)),U(First.PublicPem()),TEXT("player"),Error));
+    TestTrue(TEXT("Verified exchange retains the signed DTLS pin"),Credentials->HasAccessToken() && Credentials->GetServerFingerprint()==U(Spec.Fingerprint));
+    TestFalse(TEXT("A newly presented issuer is not silently trusted"),Credentials->AcceptDeviceExchange(U(Second.Sign(Spec)),U(Second.PublicPem()),TEXT("player"),Error));
+    TestEqual(TEXT("Changed issuer has explicit diagnostic"),Error,FString(TEXT("AUTH_KEY_CHANGED")));
+    TestTrue(TEXT("Rejecting a changed issuer preserves the existing session"),Credentials->HasAccessToken());
+    TestTrue(TEXT("Explicit trust reset is permitted"),Credentials->ClearIssuerTrust(Error));
+    TestTrue(TEXT("Trust reset is idempotent"),Credentials->ClearIssuerTrust(Error));
+    TestTrue(TEXT("After reset, a different verified issuer can be pinned"),Credentials->AcceptDeviceExchange(U(Second.Sign(Spec)),U(Second.PublicPem()),TEXT("player"),Error));
+    Credentials->Deinitialize(); IFileManager::Get().Delete(*PublicPath); IFileManager::Get().DeleteDirectory(*Directory,false,false);
+    return true;
+}
 #endif

@@ -219,6 +219,49 @@ bool AMRFPSGameMode::PlaceAdminObject(AMRFPSPlayerController* Admin,EMRFPSBuildK
     Error.Empty();return true;
 }
 
+bool AMRFPSGameMode::EnsureAutomationObject(AMRFPSPlayerController* Admin,EMRFPSBuildKind Kind,const FVector& Surface,const FVector& Origin,const FVector& Direction,float Yaw,FString& Error)
+{
+    Error=TEXT("ADMIN_REQUIRED"); const auto* GS=GetGameState<AMRFPSGameState>();
+    if(!AdminAuthorized(Admin)||!GS) return false;
+    FTransform Wanted;
+    Error=TEXT("ADMIN_WALL_OUTSIDE_LAYOUT");
+    if(Surface.ContainsNaN()||!FMath::IsFinite(Yaw)||!MRFPSBuild::Valid(Kind)||!MRFPSBuild::Snap(GS->Layout,Kind,Surface,Yaw,Wanted)) return false;
+    for(TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if(It->bAdminPlaced&&!It->bPlacementPreview && It->BuildKind==Kind &&
+        It->GetActorLocation().Equals(Wanted.GetLocation(),1) && FMath::Abs(FRotator::NormalizeAxis(It->GetActorRotation().Yaw-Wanted.Rotator().Yaw))<1) {
+        Error=TEXT("AUTOMATION_ALREADY"); return true;
+    }
+    FVector Actual; AActor* Support=nullptr; FTransform Hit;
+    Error=TEXT("ADMIN_WALL_INVALID_RAY");
+    if(!BuildSurface(GetWorld(),GS->Layout,Origin,Direction,Actual,Support) || !MRFPSBuild::Snap(GS->Layout,Kind,Actual,Yaw,Hit) ||
+       !Hit.GetLocation().Equals(Wanted.GetLocation(),1) || FMath::Abs(FRotator::NormalizeAxis(Hit.Rotator().Yaw-Wanted.Rotator().Yaw))>=1) return false;
+    return PlaceAdminObject(Admin,Kind,Origin,Direction,Yaw,Error);
+}
+
+bool AMRFPSGameMode::SetAutomationWall(AMRFPSPlayerController* Admin,AMRFPSBarrier* Target,const FMRFPSWallShape& Expected,const FMRFPSWallShape& Desired,FString& Error)
+{
+    Error=TEXT("ADMIN_REQUIRED"); const auto* GS=GetGameState<AMRFPSGameState>();
+    if(!AdminAuthorized(Admin)||!GS) return false;
+    Error=TEXT("ADMIN_NO_OBJECT");
+    if(!IsValid(Target)||Target->GetWorld()!=GetWorld()||!Target->bAdminPlaced||Target->bPlacementPreview||Target->BuildKind!=EMRFPSBuildKind::Wall) return false;
+    Error=TEXT("ADMIN_WALL_INVALID_SHAPE"); if(!Expected.IsSane()||!Desired.IsSane()) return false;
+    if(Target->WallShape.HeightRows==Desired.HeightRows && Target->WallShape.SolidCells==Desired.SolidCells) { Error=TEXT("AUTOMATION_ALREADY"); return true; }
+    Error=TEXT("ADMIN_STALE_STATE");
+    if(Target->WallShape.HeightRows!=Expected.HeightRows||Target->WallShape.SolidCells!=Expected.SolidCells) return false;
+    Error=TEXT("ADMIN_WALL_OUTSIDE_LAYOUT"); if(!MRFPSBuild::FitsWall(GS->Layout,Target->GetActorTransform(),Desired)) return false;
+    Error=TEXT("ADMIN_WALL_OCCUPIED"); if(!AddedCellsAreClear(GetWorld(),Target,Desired)) return false;
+    Target->WallShape=Desired; Target->ApplyBuildKind(); Target->ForceNetUpdate(); Error.Empty(); return true;
+}
+
+bool AMRFPSGameMode::RemoveAutomationObject(AMRFPSPlayerController* Admin,AMRFPSBarrier* Target,const FMRFPSWallShape& Expected,FString& Error)
+{
+    Error=TEXT("ADMIN_REQUIRED"); if(!AdminAuthorized(Admin)) return false;
+    Error=TEXT("ADMIN_NO_OBJECT");
+    if(!IsValid(Target)||Target->GetWorld()!=GetWorld()||!Target->bAdminPlaced||Target->bPlacementPreview) return false;
+    Error=TEXT("ADMIN_STALE_STATE");
+    if(Target->WallShape.HeightRows!=Expected.HeightRows||Target->WallShape.SolidCells!=Expected.SolidCells) return false;
+    Target->Destroy(); Error.Empty(); return true;
+}
+
 void AMRFPSGameMode::SpawnDefaultStage()
 {
     auto* GS=GetGameState<AMRFPSGameState>();

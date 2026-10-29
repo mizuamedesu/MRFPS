@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MRFPS 管理</title><link rel="stylesheet" href="/panel.css"><script type="module" src="/panel.js"></script></head>
+<body><main><header><div><span class="brand">MRFPS</span><h1>管理パネル</h1></div><span id="state" role="status">準備中</span></header>
+<section><div class="section-heading"><h2>署名鍵</h2><span id="key-status">未作成</span></div>
+<p>秘密鍵はこのブラウザ内に保存されます。バックアップは暗号化されます。</p>
+<div class="actions"><button id="key-generate">鍵を作成</button><button id="key-download" disabled>バックアップ</button><button id="key-restore">復元</button><input id="backup-file" type="file" accept="application/json,.json" hidden></div>
+<label for="public-key">サーバー用公開鍵</label><textarea id="public-key" readonly rows="4" spellcheck="false"></textarea><div class="actions"><button id="key-copy" disabled>公開鍵をコピー</button><button id="key-b64" disabled>環境変数用をコピー</button></div>
+</section><section><h2>接続先の証明書</h2><label for="fingerprint">DTLS SHA-256 指紋</label><input id="fingerprint" spellcheck="false" placeholder="サーバーの起動ログに表示される64桁"><p>サーバーの再起動で変わる場合は更新してください。</p><div class="actions"><button id="fingerprint-save">保存</button></div></section>
+<section><div class="section-heading"><h2>デバイスコード</h2><div class="actions"><button id="codes-start">発行開始</button><button id="codes-takeover">他端末から切替</button><button id="codes-stop">停止</button></div></div><p>各コードは30秒以内・1回限り。発行中はこの画面を開いたままにしてください。</p>
+<div class="codes"><article><span>プレイヤー</span><strong id="code-player">------</strong><small id="time-player"></small></article><article><span>観戦</span><strong id="code-inspector">------</strong><small id="time-inspector"></small></article><article><span>管理者</span><strong id="code-admin">------</strong><small id="time-admin"></small></article></div></section>
+<p id="message" class="message" role="status"></p></main></body></html>

@@ -1,0 +1,128 @@
+name: Publish approved Linux server image
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Reviewed source commit (full 40-character SHA)
+        required: true
+        type: string
+      release_tag:
+        description: Draft release containing linux-server.tar.gz
+        required: true
+        type: string
+      bundle_sha256:
+        description: Approved compressed archive SHA256
+        required: true
+        type: string
+      server_sha256:
+        description: Approved fresh MRFPSServer ELF SHA256
+        required: true
+        type: string
+permissions:
+  # GitHub draft releases require repository push access, including downloads.
+  contents: write
+  packages: write
+concurrency:
+  group: mrfps-ghcr-${{ inputs.bundle_sha256 }}-${{ inputs.source_commit }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
+      SERVER_SHA256: ${{ inputs.server_sha256 }}
+    steps:
+      - name: Validate immutable input identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$SERVER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RELEASE_TAG" == "server-artifacts-${BUNDLE_SHA256:0:12}-${SOURCE_COMMIT:0:12}" ]]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, inspected 2026-10-30
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - name: Download approved package from this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mrfps-package"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern linux-server.tar.gz --dir "$RUNNER_TEMP/mrfps-package"
+          python3 tools/cloud/server_bundle.py verify \
+            --archive "$RUNNER_TEMP/mrfps-package/linux-server.tar.gz" \
+            --bundle-sha256 "$BUNDLE_SHA256" --server-sha256 "$SERVER_SHA256" \
+            --destination "$GITHUB_WORKSPACE"
+      - name: Authenticate to GHCR with this job's scoped token
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Build, audit and publish the immutable server image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mrfps-server"
+          TAG="linux-${BUNDLE_SHA256:0:12}-${SOURCE_COMMIT:0:12}"
+          # Refuse to send an image to an already-public package. No visibility
+          # setting is ever changed by this workflow.
+          PACKAGE_API="/users/$GITHUB_REPOSITORY_OWNER/packages/container/mrfps-server"
+          set +e
+          gh api --include "$PACKAGE_API" > "$RUNNER_TEMP/package-before.txt" 2>/dev/null
+          package_result=$?
+          set -e
+          if [[ "$package_result" == 0 ]]; then
+            grep -Eq '"visibility"[[:space:]]*:[[:space:]]*"private"' "$RUNNER_TEMP/package-before.txt"
+          else
+            grep -Eq '^HTTP/[0-9.]+ 404' "$RUNNER_TEMP/package-before.txt"
+          fi
+          if docker manifest inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+            docker pull --platform linux/amd64 "$IMAGE:$TAG"
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.server.sha256" }}' "$IMAGE:$TAG")" == "$SERVER_SHA256" ]]
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.bundle.sha256" }}' "$IMAGE:$TAG")" == "$BUNDLE_SHA256" ]]
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$TAG")" == "$SOURCE_COMMIT" ]]
+          else
+            docker build --platform linux/amd64 -f Deploy/Linux/Dockerfile \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
+              --label "app.mrfps.server.sha256=$SERVER_SHA256" \
+              --label "app.mrfps.bundle.sha256=$BUNDLE_SHA256" -t mrfps-base:approved .
+            docker build --platform linux/amd64 -f Deploy/Cloud/Flash.Dockerfile \
+              --build-arg MRFPS_BASE_IMAGE=mrfps-base:approved -t "$IMAGE:$TAG" Deploy/Cloud
+          fi
+          # No credentials: both image-user and Flash-forced-root startup must
+          # drop to the existing fail-closed public-key validator.
+          for uid in 10001 0; do
+            set +e
+            docker run --rm --user "$uid" --memory 128m --cpus 1 \
+              --security-opt no-new-privileges:true "$IMAGE:$TAG" \
+              >"$RUNNER_TEMP/mrfps-negative-$uid.log" 2>&1
+            result=$?
+            set -e
+            [[ "$result" -ne 0 ]]
+            grep -q '^MRFPS_FLASH_RUNTIME uid=10001 ' "$RUNNER_TEMP/mrfps-negative-$uid.log"
+            grep -q '^AUTH_CONFIG:' "$RUNNER_TEMP/mrfps-negative-$uid.log"
+          done
+          docker push "$IMAGE:$TAG"
+          gh api "$PACKAGE_API" --jq .visibility | grep -qx private
+          docker buildx imagetools inspect "$IMAGE:$TAG" > "$RUNNER_TEMP/mrfps-image.txt"
+          DIGEST=$(awk '$1 == "Digest:" { print $2; exit }' "$RUNNER_TEMP/mrfps-image.txt")
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '{"image":"%s@%s","tag":"%s","server_sha256":"%s","bundle_sha256":"%s","source_commit":"%s"}\n' \
+            "$IMAGE" "$DIGEST" "$TAG" "$SERVER_SHA256" "$BUNDLE_SHA256" "$SOURCE_COMMIT" > "$RUNNER_TEMP/ghcr-publication.json"
+          cat "$RUNNER_TEMP/ghcr-publication.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Logout of the ephemeral runner registry session
+        if: always()
+        shell: bash
+        run: docker logout ghcr.io

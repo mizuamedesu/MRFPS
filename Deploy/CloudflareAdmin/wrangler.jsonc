@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "mrfps-admin",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-23",
+  "routes": [{ "pattern": "mrfps-admin.mizuame.app", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "rules": [{ "type": "Text", "globs": ["**/*.html", "**/*.css", "**/*.browser.js"], "fallthrough": true }],
+  "durable_objects": { "bindings": [{ "name": "DEVICE_CODES", "class_name": "DeviceCodes" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DeviceCodes"] }],
+  "observability": { "enabled": false }
+}

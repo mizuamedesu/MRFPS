@@ -5,6 +5,7 @@
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/GameModeBase.h"
+#include "GameFramework/GameSession.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/HUD.h"
 #include "Engine/GameInstance.h"
@@ -31,6 +32,7 @@ class UTextureRenderTarget2D;
 class UMRFPSHapticsComponent;
 class UVRNotificationsComponent;
 class UMRFPSMenu;
+class UMRFPSLoginMenu;
 class UTexture2D;
 class UMRFPSAdminPanel;
 class UMRFPSAvatarComponent;
@@ -346,6 +348,10 @@ public:
     UFUNCTION(Exec) void MRFPSConnect(const FString& Address, bool Inspector = false);
     UFUNCTION(Exec) void MRFPSConnectAdmin(const FString& Address);
     UFUNCTION(Exec) void MRFPSReconnect();
+    UFUNCTION(Exec) void MRFPSConfigureServer(const FString& Address);
+    UFUNCTION(Exec) void MRFPSLoginFile(const FString& File,const FString& RequestedRole);
+    UFUNCTION(Exec) void MRFPSResetIssuerTrust();
+    void OpenDeviceLogin();
     void HandleSessionDisconnected();
     UFUNCTION(Exec) void MRFPSView(int32 Slot);
     UFUNCTION(Exec) void MRFPSReady();
@@ -354,11 +360,13 @@ public:
     UTexture2D* GetQuestVideoTexture(int32 Slot) const;
     FString GetQuestVideoStatus(int32 Slot) const;
     void OpenPlayerVideoWindow(int32 Slot);
+    void ClosePlayerVideoWindow(int32 Slot);
     bool TryOpenInspectorWindowAtCursor();
     void ClosePlayerVideoWindows();
     uint8 PlayerVideoWindowMask() const;
     void OpenInspectorViewWindow();
     void CloseInspectorViewWindow();
+    void TickAutomation();
     USceneCaptureComponent2D* GetInspectorWindowCamera() const { return InspectorWindowCamera; }
     UTextureRenderTarget2D* GetInspectorWindowTarget() const { return InspectorWindowTarget; }
     void ServiceVideoRelay();
@@ -368,10 +376,18 @@ public:
     UPROPERTY() TArray<TObjectPtr<USceneCaptureComponent2D>> Captures;
     UPROPERTY() TArray<TObjectPtr<UTextureRenderTarget2D>> ViewTextures;
     UPROPERTY() TObjectPtr<UMRFPSMenu> SessionMenu;
+    UPROPERTY(Transient) TObjectPtr<UMRFPSLoginMenu> DeviceLogin;
     bool bMultiView = true;
     int32 ViewSlot = -1;
     FString ConnectionError;
 private:
+    UFUNCTION(Server,Reliable) void ServerAutomationCommand(FGuid OperationId,const FString& Operation,const FString& Parameters,AMRFPSBarrier* Target,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
+    UFUNCTION(Client,Reliable) void ClientAutomationResult(FGuid OperationId,const FString& Code);
+    FString AutomationDirectory() const;
+    bool WriteAutomationResult(const FString& Folder,const FGuid& Id,const FString& Status,const FString& Code,const TSharedPtr<class FJsonObject>& Data=nullptr) const;
+    TMap<FGuid,TWeakObjectPtr<AMRFPSBarrier>> AutomationTargets;
+    TMap<FGuid,FString> AutomationPending;
+    double NextAutomationAt=0;
     TWeakPtr<SWindow> PlayerVideoWindows[2];
     TWeakPtr<SWindow> InspectorViewWindow;
     UPROPERTY(Transient) TObjectPtr<USceneCaptureComponent2D> InspectorWindowCamera;
@@ -481,6 +497,16 @@ public:
     virtual void DrawHUD() override;
 };
 
+// The game mode performs role-aware admission. The engine's generic player
+// count includes inspectors, so it must not impose another shared limit.
+UCLASS()
+class MRFPS_API AMRFPSGameSession : public AGameSession
+{
+    GENERATED_BODY()
+public:
+    virtual bool AtCapacity(bool bSpectator) override;
+};
+
 UCLASS(Config=Game)
 class MRFPS_API AMRFPSGameMode : public AGameModeBase
 {
@@ -499,11 +525,15 @@ public:
     bool HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdminAction Action,FVector2D Dimensions,FString& SafeError);
     bool PlaceAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
     bool PlaceAdminObject(AMRFPSPlayerController* Admin,EMRFPSBuildKind Kind,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
+    bool EnsureAutomationObject(AMRFPSPlayerController* Admin,EMRFPSBuildKind Kind,const FVector& Surface,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
+    bool SetAutomationWall(AMRFPSPlayerController* Admin,AMRFPSBarrier* Target,const FMRFPSWallShape& Expected,const FMRFPSWallShape& Desired,FString& SafeError);
+    bool RemoveAutomationObject(AMRFPSPlayerController* Admin,AMRFPSBarrier* Target,const FMRFPSWallShape& Expected,FString& SafeError);
+    TMap<FGuid,TPair<FString,FString>> AutomationReceipts;
     bool EditAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,EMRFPSWallEdit Edit,FString& SafeError);
     bool RemoveAdminObject(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,FString& SafeError);
     void InvalidateSharedFloor();
-    UPROPERTY(Config) int32 MaxInspectors = 32;
-    UPROPERTY(Config) int32 MaxAdmins=4;
+    // Candidate may already be in PlayerArray during InitNewPlayer.
+    FString RoleCapacityError(const FString& RequestedRole,const AMRFPSPlayerState* Candidate=nullptr) const;
     UPROPERTY(Config) int32 ScoreToWin = 10;
     UPROPERTY(Config) float ArenaWidthCm=450;
     UPROPERTY(Config) float ArenaLengthCm=700;
@@ -522,9 +552,8 @@ private:
     TWeakObjectPtr<AMRFPSPawn> RegisteredPlayers[2];
     double CombatPausedAt=0;
     TMap<TWeakObjectPtr<AMRFPSBarrier>,float> PausedWallLifetimes;
-    int32 CountFighters() const;
-    int32 CountInspectors() const;
-    int32 CountAdmins() const;
+    int32 CountFighters(const AMRFPSPlayerState* Exclude=nullptr) const;
+    int32 CountAdmins(const AMRFPSPlayerState* Exclude=nullptr) const;
     void ResetMatch();
     TUniquePtr<FMRFPSAuthVerifier> AuthVerifier;
     TMap<FString,FMRFPSAuthClaims> PendingAuthentication;
@@ -547,9 +576,21 @@ public:
     void RememberConnectionAttempt(const FString& Address,const FString& Role);
     void ReconnectWithFreshToken();
     void TickAutoReconnect();
+    /** Device-code sessions return to login; explicit file sessions can wait
+     * for a freshly provisioned one-use token after disconnect. */
+    void MarkNextConnectionAsDeviceLogin() { bNextConnectionFromDevice=true; }
+    void CancelNextDeviceConnection() { bNextConnectionFromDevice=false; }
+    void PrepareForNetworkFailure(bool bHasExplicitTokenFile);
+    bool IsAutoReconnectPending() const { return bReconnectPending; }
+    void RequestLoginScreen() { bShowLoginAfterFailure=true; bReconnectPending=false; }
+    bool IsLoginScreenRequested() const { return bShowLoginAfterFailure; }
+    void ClearLoginScreenRequest() { bShowLoginAfterFailure=false; }
 private:
     FString LastServerAddress;
     FString LastServerRole;
     bool bReconnectPending=false;
+    bool bShowLoginAfterFailure=false;
+    bool bNextConnectionFromDevice=false;
+    bool bLastConnectionFromDevice=false;
     double NextReconnectCheck=0;
 };

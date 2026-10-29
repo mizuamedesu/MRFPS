@@ -22,6 +22,12 @@ public:
     virtual void Deinitialize() override;
 
     bool SetAccessToken(const FString& Token, FString& SafeError);
+    /** Verify the exchange before pinning its public key locally. A changed key
+     * requires the user to explicitly clear the existing trust anchor. */
+    bool AcceptDeviceExchange(const FString& Token, const FString& PublicKeyPem, const FString& ExpectedRole, FString& SafeError);
+    bool ClearIssuerTrust(FString& SafeError);
+    /** App-private auth directory; never Android external storage. */
+    static FString PrivateDirectory();
     bool HasAccessToken() const;
     bool ValidateForRole(const FString& ExpectedRole, FString& SafeError);
     /** A new connection needs a locally unattempted, still-valid signed jti. */

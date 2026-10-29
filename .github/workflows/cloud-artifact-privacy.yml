@@ -22,9 +22,9 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^mrfps-privacy-probe-[a-f0-9]{16}$ ]]
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft >"$RUNNER_TEMP/result.json" 2>/dev/null; then
-            echo 'contents_read_draft_visible=true' >> "$GITHUB_STEP_SUMMARY"
+            echo 'contents_read_draft_visible=true' | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            echo 'contents_read_draft_visible=false' >> "$GITHUB_STEP_SUMMARY"
+            echo 'contents_read_draft_visible=false' | tee -a "$GITHUB_STEP_SUMMARY"
           fi
   write-token:
     runs-on: ubuntu-24.04
@@ -43,4 +43,4 @@ jobs:
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern privacy-fixture.txt --dir "$RUNNER_TEMP/mrfps-privacy"
           grep -qx 'MRFPS non-secret draft-access fixture' "$RUNNER_TEMP/mrfps-privacy/privacy-fixture.txt"
-          echo 'contents_write_draft_download=true' >> "$GITHUB_STEP_SUMMARY"
+          echo 'contents_write_draft_download=true' | tee -a "$GITHUB_STEP_SUMMARY"
