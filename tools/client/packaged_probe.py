@@ -8,6 +8,7 @@ actual GUI client; an ambiguous submission is never retried automatically.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -63,17 +64,67 @@ def server_join_matches(log,expected_hash,role="inspector"):
     return any(hashlib.sha256(subject.encode("ascii")).hexdigest()==expected_hash for subject in accepted & joined)
 
 
-def issuer_identity(state_dir,code_path,fingerprint,role="inspector"):
+@contextmanager
+def issuer_lock(state_dir,timeout=5):
+    """Use admin-cli's exclusive PID lock; never reclaim another owner's lock."""
+    directory=state_dir.resolve(strict=True)
+    if not directory.is_dir(): raise RuntimeError("issuer directory is unavailable")
+    lock=directory/"lock"; deadline=time.monotonic()+timeout
+    while True:
+        try:
+            fd=os.open(lock,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+            break
+        except FileExistsError:
+            if time.monotonic()>=deadline: raise RuntimeError("issuer state is locked; no code was sent")
+            time.sleep(.05)
+    owner=str(os.getpid()).encode("ascii"); identity=None
+    try:
+        identity=os.fstat(fd)
+        if os.write(fd,owner)!=len(owner): raise RuntimeError("cannot initialize issuer lock")
+        os.fsync(fd)
+        yield
+    finally:
+        os.close(fd)
+        if identity is not None:
+            try:
+                current=lock.stat()
+                if (lock.is_symlink() or current.st_size!=len(owner) or
+                    (current.st_dev,current.st_ino)!=(identity.st_dev,identity.st_ino) or lock.read_bytes()!=owner):
+                    raise RuntimeError("issuer lock changed unexpectedly")
+                lock.unlink()
+            except FileNotFoundError:
+                raise RuntimeError("issuer lock disappeared unexpectedly") from None
+        # If fstat failed, leave the unverified lock for admin-cli's stale-lock recovery.
+
+
+def issuer_snapshot(state_dir,code_path,fingerprint,role="inspector"):
+    """Caller holds issuer_lock. Code bytes remain in memory only."""
     if role not in ROLES: raise ValueError("invalid client role")
-    state=json.loads((state_dir/"state.json").read_text(encoding="utf-8"))
-    record=state.get("roles",{}).get(role,{})
-    code=client.read_code(code_path).decode("ascii")
-    subject=record.get("subject","")
-    if (state.get("stopped") or state.get("fingerprint")!=fingerprint or record.get("pending") or
+    directory=state_dir.resolve(strict=True); state_path=directory/"state.json"
+    if (state_path.is_symlink() or not state_path.is_file() or state_path.stat().st_size>1024*1024 or
+        code_path.is_symlink() or code_path.resolve(strict=True).parent!=directory):
+        raise RuntimeError("issuer snapshot files are invalid")
+    state=json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(state,dict) or not isinstance(state.get("roles"),dict):
+        raise RuntimeError("issuer snapshot state is invalid")
+    record=state["roles"].get(role,{})
+    if not isinstance(record,dict): raise RuntimeError("issuer snapshot state is invalid")
+    marker,code=client.submission(code_path)
+    subject=record.get("subject",""); owner=state.get("owner",""); issued_id=record.get("id","")
+    if (state.get("version")!=1 or state.get("registered") is not True or state.get("stopped") or state.get("stop_pending") or
+        not isinstance(owner,str) or not isinstance(issued_id,str) or not isinstance(subject,str) or
+        not re.fullmatch(SUBJECT_SUFFIX,owner) or not re.fullmatch(SUBJECT_SUFFIX,issued_id) or
+        state.get("fingerprint")!=fingerprint or "pending" in record or
         record.get("code")!=code or not re.fullmatch(role+"-"+SUBJECT_SUFFIX,subject) or
         type(record.get("expires_at")) is not int or record["expires_at"]<=int(time.time())):
         raise RuntimeError("issuer state does not match a fresh published role code")
-    return hashlib.sha256(subject.encode("ascii")).hexdigest()
+    return {"marker":marker,"code":code,"subject_hash":hashlib.sha256(subject.encode("ascii")).hexdigest(),
+            "owner":state["owner"],"id":record["id"],"expires_at":record["expires_at"],"fingerprint":fingerprint,"role":role}
+
+
+def issuer_identity(state_dir,code_path,fingerprint,role="inspector"):
+    with issuer_lock(state_dir):
+        return issuer_snapshot(state_dir,code_path,fingerprint,role)["subject_hash"]
 
 
 def verify_packaged_binary(path,expected):
@@ -127,10 +178,10 @@ def window_process(name,guard_pid,guard_created):
     return {"pid":owner.value,"image":str(process_image(owner.value)),"title":name}
 
 
-def client_args(state,show_settings=False,code_file=None):
+def client_args(state,show_settings=False,code_file=None,expected_marker=None,expected_code=None,before_submit=None):
     return argparse.Namespace(server=state["server"],role=state.get("role","inspector"),name=state["name"],
         executable=Path(state["executable"]),editor=False,code_file=code_file,show_settings=show_settings,
-        replace=False,auth_test_url="")
+        replace=False,auth_test_url="",expected_marker=expected_marker,expected_code=expected_code,before_submit=before_submit)
 
 
 def save(run,state):
@@ -227,10 +278,9 @@ def configure(run,state):
 def login(run,state):
     if state.get("login_submitted"): return {"status":"already_submitted"}
     if state.get("login_intent"):
-        previous=client.load_state(ROOT/"Saved"/"DeviceAuth"/("windows-"+state["name"]+".json"))
-        if previous.get("submitted")!=state.get("code_marker") or previous.get("submission_inflight"):
-            raise RuntimeError("code submission outcome is unknown; do not reuse this code")
-        state["login_submitted"]=True; save(run,state); return {"status":"already_submitted"}
+        # A prior process may have stopped before it checked the issuer again.
+        # The launcher marker alone cannot prove that later check completed.
+        raise RuntimeError("code submission outcome is unknown; do not reuse this code")
     if not inspect(run,state)["checks"].get("settings_applied"): raise RuntimeError("settings have not been applied by the client")
     admin=Path(state["admin_dir"]); issuer=Path(state["issuer_dir"])
     role=state.get("role","inspector")
@@ -239,10 +289,27 @@ def login(run,state):
     run_safe([node,str(ADMIN_CLI),"ensure","--role",role,"--key-file",str(admin/"issuer.encrypted.json"),
               "--passphrase-file",str(admin/"issuer-passphrase.txt"),"--credentials-file",str(admin/"basic-credentials.json"),
               "--state-dir",str(issuer),"--fingerprint",state["fingerprint"]])
-    code=issuer/(role+".code"); state["subject_hash"]=issuer_identity(issuer,code,state["fingerprint"],role)
-    state["code_marker"],_=client.submission(code); state["login_intent"]=True; save(run,state)
-    result=client.windows(client_args(state,code_file=code))
-    if result["status"] not in ("login_queued","already_running"): raise RuntimeError("code submission outcome is unknown")
+    code=issuer/(role+".code")
+    with issuer_lock(issuer):
+        snapshot=issuer_snapshot(issuer,code,state["fingerprint"],role)
+        state["subject_hash"]=snapshot["subject_hash"]; state["code_marker"]=snapshot["marker"]
+        state["login_intent"]=True; save(run,state)
+        def validate_snapshot():
+            if issuer_snapshot(issuer,code,state["fingerprint"],role)!=snapshot:
+                raise RuntimeError("issuer state changed before submission; no new code was sent")
+        result=client.windows(client_args(state,code_file=code,expected_marker=snapshot["marker"],
+                                          expected_code=snapshot["code"],before_submit=validate_snapshot))
+        if result["status"] not in ("login_queued","already_running"): raise RuntimeError("code submission outcome is unknown")
+        # A launcher result cannot be evidence for a different submission.
+        previous=client.load_submission_state(ROOT/"Saved"/"DeviceAuth"/("windows-"+state["name"]+".json"),"Windows")
+        if previous.get("submitted")!=snapshot["marker"] or previous.get("submission_inflight"):
+            raise RuntimeError("code submission outcome is unknown; do not reuse this code")
+        try:
+            validate_snapshot()
+        except (OSError,ValueError,RuntimeError) as exc:
+            raise RuntimeError("issuer state changed after submission; outcome is unknown; do not reuse this code") from exc
+    # The lock must also have been released without any identity mismatch;
+    # only then record that the submission and final issuer check completed.
     state["login_submitted"]=True; state["actions"]["login"]=result["status"]; save(run,state)
     return {"status":result["status"]}
 

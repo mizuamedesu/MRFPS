@@ -477,6 +477,14 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     wanted = {"server": address, "role": args.role, "name": args.name, "auth_test_url": args.auth_test_url or "",
               "binary":str(binary), "editor":args.editor}
     marker, code = submission(args.code_file)
+    expected_marker = getattr(args, "expected_marker", None)
+    expected_code = getattr(args, "expected_code", None)
+    before_submit = getattr(args, "before_submit", None)
+    if expected_marker is not None or expected_code is not None:
+        if not isinstance(expected_marker,dict) or not isinstance(expected_code,str) or marker != expected_marker or code != expected_code:
+            raise RuntimeError("issued code changed before submission; no code was sent")
+    if before_submit is not None and not callable(before_submit):
+        raise ValueError("invalid submission validator")
     old = load_submission_state(state_path, "Windows")
     history = submission_history(old, "Windows")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -534,6 +542,10 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
         raise RuntimeError("Windows code was already submitted or its outcome is unknown; use a new code")
 
     def submit_control(guard_pid: int | None, guard_created: int | None) -> None:
+        # An internal caller can validate an issuer snapshot immediately before
+        # publication while it holds the issuer's cross-process lock.
+        if before_submit is not None:
+            before_submit()
         if marker is not None:
             if len(history) >= 16384:
                 raise RuntimeError("Windows submission journal is full; no code was sent")

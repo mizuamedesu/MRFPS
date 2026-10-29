@@ -166,6 +166,52 @@ class DeviceLoginControlTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"journal"): module.status(argparse.Namespace(name=args.name))
                 with self.assertRaisesRegex(RuntimeError,"journal"): module.stop_windows(argparse.Namespace(name=args.name))
 
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_rejects_changed_expected_code_before_control_or_launch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_text("000123",encoding="ascii")
+            marker,value=module.submission(code)
+            code.write_text("000456",encoding="ascii")
+            os.utime(code,ns=(code.stat().st_atime_ns,marker["modified_ns"]+1_000_000_000))
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,role="player",name="MRFPS-fixture",
+                executable=Path(sys.executable),editor=True,code_file=code,show_settings=False,
+                replace=False,auth_test_url="",expected_marker=marker,expected_code=value,before_submit=None)
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"windows_control") as control, \
+                 mock.patch.object(module.subprocess,"Popen") as launch:
+                with self.assertRaisesRegex(RuntimeError,"changed before submission"): module.windows(args)
+                control.assert_not_called(); launch.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_rejects_changed_code_even_if_its_mtime_is_restored(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_text("000123",encoding="ascii")
+            marker,value=module.submission(code); stat=code.stat()
+            code.write_text("000456",encoding="ascii")
+            os.utime(code,ns=(stat.st_atime_ns,marker["modified_ns"]))
+            self.assertEqual(module.submission(code)[0],marker)
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,role="player",name="MRFPS-fixture",
+                executable=Path(sys.executable),editor=True,code_file=code,show_settings=False,
+                replace=False,auth_test_url="",expected_marker=marker,expected_code=value,before_submit=None)
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"windows_control") as control, \
+                 mock.patch.object(module.subprocess,"Popen") as launch:
+                with self.assertRaisesRegex(RuntimeError,"changed before submission"): module.windows(args)
+                control.assert_not_called(); launch.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_validator_runs_before_journal_or_control_publication(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_text("000123",encoding="ascii")
+            marker,value=module.submission(code)
+            def invalidated(): raise RuntimeError("issuer state changed before submission")
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,role="player",name="MRFPS-fixture",
+                executable=Path(sys.executable),editor=True,code_file=code,show_settings=False,
+                replace=False,auth_test_url="",expected_marker=marker,expected_code=value,before_submit=invalidated)
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"windows_control") as control, \
+                 mock.patch.object(module.subprocess,"Popen") as launch:
+                with self.assertRaisesRegex(RuntimeError,"issuer state changed"): module.windows(args)
+                control.assert_not_called(); launch.assert_not_called()
+                self.assertFalse((root/"Saved"/"DeviceAuth"/"windows-MRFPS-fixture.json").exists())
+
     def test_endpoint_and_code_validation(self):
         self.assertEqual(module.endpoint("mrfps.mizuame.app:7777"), "mrfps.mizuame.app:7777")
         self.assertEqual(module.endpoint("[2001:db8::1]:7777"), "[2001:db8::1]:7777")
