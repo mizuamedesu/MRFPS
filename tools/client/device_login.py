@@ -177,6 +177,48 @@ def load_state(path: Path) -> dict:
         return {}
 
 
+def load_quest_state(path: Path) -> dict:
+    """Never discard an unreadable journal and accidentally reuse a code."""
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (ValueError, OSError) as exc:
+        raise RuntimeError("Quest submission journal is unreadable; no code was sent") from exc
+    if not isinstance(state, dict):
+        raise RuntimeError("Quest submission journal is invalid; no code was sent")
+    return state
+
+
+def quest_submission_history(state: dict) -> list[dict]:
+    """Migrate legacy last-submission records and retain every attempted marker."""
+    history = state.get("submission_history", [])
+    if not isinstance(history, list):
+        raise RuntimeError("Quest submission journal is invalid; no code was sent")
+    history = list(history)
+    if any(entry is None for entry in history):
+        raise RuntimeError("Quest submission journal is invalid; no code was sent")
+    for entry in history + [state.get("submitted"), state.get("submission_inflight")]:
+        if entry is None:
+            continue
+        if (not isinstance(entry, dict) or set(entry) != {"path", "modified_ns"} or
+                not isinstance(entry["path"], str) or not entry["path"] or
+                type(entry["modified_ns"]) is not int or entry["modified_ns"] < 0):
+            raise RuntimeError("Quest submission journal is invalid; no code was sent")
+    # Previously only the most recent successful submission was recorded.
+    old = state.get("submitted")
+    if old is not None and old not in history:
+        history.append(old)
+    inflight = state.get("submission_inflight")
+    if inflight is not None and inflight not in history:
+        raise RuntimeError("Quest submission journal is inconsistent; no code was sent")
+    if old is not None:
+        state.setdefault("submitted_config", state.get("config"))
+        state.setdefault("submitted_pid", state.get("pid"))
+    state["submission_history"] = history
+    return history
+
+
 def save_state(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -239,11 +281,38 @@ def quest_control(args: argparse.Namespace, address: str, code: str | None) -> N
 def quest(args: argparse.Namespace) -> dict:
     address = endpoint(args.server)
     serial = args.serial
-    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", serial):
-        raise ValueError("invalid serial")
-    state_path = ROOT / "Saved" / "DeviceAuth" / ("quest-" + serial + ".json")
+    state_path = quest_state_path(serial)
     with state_lock(state_path):
         return quest_locked(args, address, state_path)
+
+
+def quest_state_path(serial: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", serial):
+        raise ValueError("invalid serial")
+    return ROOT / "Saved" / "DeviceAuth" / ("quest-" + serial + ".json")
+
+
+def stop_quest(args: argparse.Namespace) -> dict:
+    """Stop only this package on the specified device; repeated calls are safe."""
+    state_path = quest_state_path(args.serial)
+    with state_lock(state_path):
+        previous = load_state(state_path)
+        was_running = bool(quest_pid(args.adb, args.serial))
+        was_pending = bool(previous.get("pending"))
+        # Even without a PID, an Activity launch may still be queued by Android.
+        # force-stop is limited to the fixed app package and specified serial.
+        run_adb(args.adb, args.serial, ["shell", "am", "force-stop", PACKAGE])
+        for _ in range(8):
+            if not quest_pid(args.adb, args.serial):
+                break
+            time.sleep(.25)
+        else:
+            raise RuntimeError("Quest app still has a process after force-stop")
+        if previous and (previous.get("pid") is not None or previous.get("pending")):
+            previous["pid"] = None
+            previous["pending"] = False
+            save_state(state_path, previous)
+        return {"status": "stopped" if was_running or was_pending else "already_stopped", "serial": args.serial, "package": PACKAGE}
 
 
 def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> dict:
@@ -251,23 +320,54 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     wanted = {"server": address, "role": args.role}
     marker, code = submission(args.code_file)
     current_pid = quest_pid(args.adb, serial)
-    previous = load_state(state_path)
+    previous = load_quest_state(state_path)
+    history = quest_submission_history(previous)
     previous_pids = set(str(previous.get("pid") or "").split())
     same_process = bool(previous_pids.intersection(current_pid.split()))
     known = same_process or previous.get("pending") or getattr(args, "adopt", False)
+    if marker is not None and marker in history:
+        submitted_pids = set(str(previous.get("submitted_pid") or "").split())
+        launched_pending = bool(previous.get("pending") and not previous_pids and not submitted_pids)
+        if (current_pid and known and not args.replace and marker == previous.get("submitted") and
+                not previous.get("submission_inflight") and previous.get("config") == wanted and
+                previous.get("submitted_config") == wanted and
+                (launched_pending or submitted_pids.intersection(current_pid.split()))):
+            if launched_pending:
+                previous["pid"] = current_pid
+                previous["pending"] = False
+                previous["submitted_pid"] = current_pid
+                save_state(state_path, previous)
+            return {"status": "already_running", "pid": current_pid, "config": wanted}
+        raise RuntimeError("Quest code was already submitted or its outcome is unknown; use a new code")
+
+    def submit_control(pid: str | None) -> None:
+        if marker is not None:
+            # Reserve before any ADB command can publish the code. An interrupted
+            # submission is unknown and must never be silently retried.
+            if len(history) >= 16384:
+                raise RuntimeError("Quest submission journal is full; no code was sent")
+            history.append(marker)
+            previous["submission_inflight"] = marker
+            save_state(state_path, previous)
+        quest_control(args, address, code)
+        previous["config"] = wanted
+        if marker is not None:
+            previous["submitted"] = marker
+            previous["submitted_config"] = wanted
+            previous["submitted_pid"] = pid
+            previous["submission_inflight"] = None
+        save_state(state_path, previous)
+
     if current_pid and known and not args.replace:
         if not same_process:
             previous["pid"] = current_pid
             previous["pending"] = False
             save_state(state_path, previous)
-        if previous.get("config") == wanted and (marker is None or marker == previous.get("submitted")):
+        if previous.get("config") == wanted and marker is None:
             return {"status": "already_running", "pid": current_pid, "config": wanted}
-        quest_control(args, address, code)
-        previous["config"] = wanted
-        previous["submitted"] = marker
-        save_state(state_path, previous)
+        submit_control(current_pid)
         return {"status": "login_queued" if marker else "settings_queued", "pid": current_pid, "config": wanted}
-    if current_pid and same_process and previous.get("config") == wanted and (marker is None or marker == previous.get("submitted")):
+    if current_pid and same_process and previous.get("config") == wanted and marker is None:
         return {"status": "already_running", "pid": current_pid, "config": wanted}
     if current_pid and not args.replace:
         raise RuntimeError("Quest app is running with unknown or different settings; use --replace to restart this app")
@@ -282,10 +382,12 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     clear_orphaned_quest_share(args.adb, serial)
     if quest_pid(args.adb, serial):
         raise RuntimeError("Quest app restarted before launch; no dialog was closed")
-    quest_control(args, address, code)
+    submit_control(None)
     if quest_pid(args.adb, serial):
         raise RuntimeError("Quest app restarted before launch")
-    save_state(state_path, {"pid": None, "pending": True, "config": wanted, "submitted": marker})
+    previous["pid"] = None
+    previous["pending"] = True
+    save_state(state_path, previous)
     cmdline = "/Game/Maps/MRFPSArena -vr -log"
     run_adb(args.adb, serial, ["shell", "am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-n", PACKAGE + "/com.epicgames.unreal.GameActivity", "--es", "cmdline", "'" + cmdline + "'"])
     current_pid = ""
@@ -295,7 +397,11 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
             break
         time.sleep(.25)
     if current_pid:
-        save_state(state_path, {"pid": current_pid, "pending": False, "config": wanted, "submitted": marker})
+        previous["pid"] = current_pid
+        previous["pending"] = False
+        if marker is not None:
+            previous["submitted_pid"] = current_pid
+        save_state(state_path, previous)
     return {"status": "launched" if current_pid else "launch_pending", "pid": current_pid or None, "config": wanted}
 
 
@@ -582,9 +688,14 @@ def main() -> int:
     p.add_argument("--name", default="MRFPS-Client")
     p = sub.add_parser("stop-windows")
     p.add_argument("--name", default="MRFPS-Client")
+    p = sub.add_parser("stop-quest")
+    p.add_argument("--adb", default="adb")
+    p.add_argument("--serial", required=True)
     args = parser.parse_args()
     try:
-        result = windows(args) if args.command == "windows" else quest(args) if args.command == "quest" else reset(args) if args.command == "reset-trust" else status(args) if args.command == "status" else stop_windows(args)
+        result = (windows(args) if args.command == "windows" else quest(args) if args.command == "quest" else
+                  reset(args) if args.command == "reset-trust" else status(args) if args.command == "status" else
+                  stop_quest(args) if args.command == "stop-quest" else stop_windows(args))
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:

@@ -130,6 +130,140 @@ class DeviceLoginControlTests(unittest.TestCase):
             self.assertEqual(sum(1 for _cmd, kwargs in calls if kwargs.get("data") is not None), 2)
             self.assertFalse(any("000123" in str(cmd) for cmd, _kwargs in calls))
 
+    def test_quest_never_reuses_a_code_after_stop_or_a_later_submission(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first, second = root / "first.txt", root / "second.txt"
+            first.write_text("000123", encoding="ascii")
+            second.write_text("000456", encoding="ascii")
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player",
+                                      adb="adb", replace=False, code_file=first)
+            pid = {"value": "", "next": 4321}
+            adb_calls = []
+            def fake_adb(_adb, _serial, cmd, **_kwargs):
+                adb_calls.append(cmd)
+                if cmd[:3] == ["shell", "am", "start"]:
+                    pid["value"] = str(pid["next"])
+                    pid["next"] += 1
+                if cmd == ["shell", "am", "force-stop", module.PACKAGE]:
+                    pid["value"] = ""
+                return ""
+            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", fake_adb), \
+                 mock.patch.object(module, "quest_pid", side_effect=lambda *_: pid["value"]), \
+                 mock.patch.object(module, "clear_orphaned_quest_share"), \
+                 mock.patch.object(module, "quest_control") as control:
+                self.assertEqual(module.quest(args)["status"], "launched")
+                self.assertEqual(module.stop_quest(args)["status"], "stopped")
+                with self.assertRaisesRegex(RuntimeError, "already submitted or its outcome is unknown"):
+                    module.quest(args)
+                self.assertEqual(control.call_count, 1)
+                # A code-less restart must not erase the earlier submission.
+                args.code_file = None
+                self.assertEqual(module.quest(args)["status"], "launched")
+                args.code_file = second
+                self.assertEqual(module.quest(args)["status"], "login_queued")
+                args.code_file = first
+                args.replace = True
+                before = list(adb_calls)
+                with self.assertRaisesRegex(RuntimeError, "already submitted or its outcome is unknown"):
+                    module.quest(args)
+                self.assertEqual(adb_calls, before)  # --replace must not stop the live app.
+                self.assertEqual(control.call_count, 3)
+            state = module.load_quest_state(root / "Saved" / "DeviceAuth" / "quest-fixture.json")
+            self.assertEqual(len(state["submission_history"]), 2)
+            self.assertNotIn("000123", json.dumps(state))
+            self.assertNotIn("000456", json.dumps(state))
+
+    def test_quest_interrupted_submission_is_not_replayed(self):
+        for running in (False, True):
+            with self.subTest(running=running), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                code = root / "code.txt"
+                code.write_text("000123", encoding="ascii")
+                args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player",
+                                          adb="adb", replace=False, code_file=code)
+                state_path = root / "Saved" / "DeviceAuth" / "quest-fixture.json"
+                if running:
+                    module.save_state(state_path, {"pid": "4321", "pending": False,
+                                                  "config": {"server": args.server, "role": args.role}})
+                with mock.patch.object(module, "ROOT", root), \
+                     mock.patch.object(module, "quest_pid", return_value="4321" if running else ""), \
+                     mock.patch.object(module, "clear_orphaned_quest_share"), \
+                     mock.patch.object(module, "quest_control", side_effect=TimeoutError("lost result")) as control:
+                    with self.assertRaises(TimeoutError):
+                        module.quest(args)
+                    with self.assertRaisesRegex(RuntimeError, "outcome is unknown"):
+                        module.quest(args)
+                    self.assertEqual(control.call_count, 1)
+                saved = module.load_quest_state(state_path)
+                self.assertEqual(saved["submission_inflight"], saved["submission_history"][0])
+                self.assertNotIn("000123", json.dumps(saved))
+
+    def test_quest_interrupted_launch_cannot_resend_the_written_code(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            code, replacement = root / "code.txt", root / "replacement.txt"
+            code.write_text("000123", encoding="ascii")
+            replacement.write_text("000456", encoding="ascii")
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player",
+                                      adb="adb", replace=False, code_file=code)
+            def launch_interrupted(_adb, _serial, cmd, **_kwargs):
+                if cmd[:3] == ["shell", "am", "start"]:
+                    raise TimeoutError("launch result lost")
+                return ""
+            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", launch_interrupted), \
+                 mock.patch.object(module, "quest_pid", return_value=""), \
+                 mock.patch.object(module, "clear_orphaned_quest_share"), \
+                 mock.patch.object(module, "quest_control") as control, mock.patch.object(module.time, "sleep"):
+                with self.assertRaises(TimeoutError):
+                    module.quest(args)
+                with self.assertRaisesRegex(RuntimeError, "already submitted"):
+                    module.quest(args)
+                self.assertEqual(control.call_count, 1)
+                # A newly issued code can still be submitted after that failure.
+                args.code_file = replacement
+                with self.assertRaises(TimeoutError):
+                    module.quest(args)
+                self.assertEqual(control.call_count, 2)
+
+    def test_quest_pending_launch_may_be_observed_without_resubmitting_code(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            code = root / "code.txt"
+            code.write_text("000123", encoding="ascii")
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player",
+                                      adb="adb", replace=False, code_file=code)
+            pid = {"value": ""}
+            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", return_value=""), \
+                 mock.patch.object(module, "quest_pid", side_effect=lambda *_: pid["value"]), \
+                 mock.patch.object(module, "clear_orphaned_quest_share"), mock.patch.object(module.time, "sleep"), \
+                 mock.patch.object(module, "quest_control") as control:
+                self.assertEqual(module.quest(args)["status"], "launch_pending")
+                pid["value"] = "4321"
+                self.assertEqual(module.quest(args)["status"], "already_running")
+                self.assertEqual(control.call_count, 1)
+            saved = module.load_quest_state(root / "Saved" / "DeviceAuth" / "quest-fixture.json")
+            self.assertFalse(saved["pending"])
+            self.assertEqual(saved["submitted_pid"], "4321")
+
+    def test_quest_corrupt_submission_journal_fails_closed(self):
+        for contents in ('{', '[]', '{"submission_history":"bad"}', '{"submission_history":[null]}',
+                         '{"submission_inflight":{"path":"x","modified_ns":1}}'):
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                state = root / "Saved" / "DeviceAuth" / "quest-fixture.json"
+                state.parent.mkdir(parents=True)
+                state.write_text(contents, encoding="utf-8")
+                code = root / "code.txt"
+                code.write_text("000123", encoding="ascii")
+                args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player",
+                                          adb="adb", replace=False, code_file=code)
+                with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "quest_pid", return_value=""), \
+                     mock.patch.object(module, "quest_control") as control:
+                    with self.assertRaisesRegex(RuntimeError, "journal"):
+                        module.quest(args)
+                    control.assert_not_called()
+
     def test_quest_pid_distinguishes_absence_from_adb_failure(self):
         def result(code, out=b"", err=b""):
             return __import__("subprocess").CompletedProcess([], code, out, err)
@@ -249,6 +383,77 @@ class DeviceLoginControlTests(unittest.TestCase):
             self.assertIn(remove, calls)
             self.assertLess(calls.index(force), calls.index(remove))
             self.assertLess(calls.index(remove), next(i for i, cmd in enumerate(calls) if cmd[:3] == ["shell", "am", "start"]))
+
+    def test_stop_quest_targets_only_named_device_and_package_and_is_repeatable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args = argparse.Namespace(serial="quest-serial", adb="adb-fixture")
+            state_path = root / "Saved" / "DeviceAuth" / "quest-quest-serial.json"
+            module.save_state(state_path, {"pid":"4321", "pending":False, "config":{"role":"player"},
+                                           "submitted":{"path":"private-code", "modified_ns":123}})
+            calls = []
+            def fake_adb(adb, serial, cmd, **_kwargs):
+                calls.append((adb,serial,cmd))
+                return ""
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb",fake_adb), \
+                 mock.patch.object(module,"quest_pid",side_effect=["4321","4321","","",""]), \
+                 mock.patch.object(module.time,"sleep"):
+                first=module.stop_quest(args)
+                second=module.stop_quest(args)
+            self.assertEqual(first["status"],"stopped")
+            self.assertEqual(second["status"],"already_stopped")
+            self.assertEqual(calls,[("adb-fixture","quest-serial",["shell","am","force-stop",module.PACKAGE])]*2)
+            state=module.load_state(state_path)
+            self.assertIsNone(state["pid"])
+            self.assertFalse(state["pending"])
+            self.assertEqual(state["submitted"]["modified_ns"],123)
+            self.assertEqual(state["config"],{"role":"player"})
+
+    def test_stop_quest_cancels_pending_start_even_without_a_process(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            args=argparse.Namespace(serial="fixture",adb="adb")
+            state=root/"Saved"/"DeviceAuth"/"quest-fixture.json"
+            module.save_state(state,{"pid":None,"pending":True})
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb",return_value="") as adb, \
+                 mock.patch.object(module,"quest_pid",return_value=""):
+                self.assertEqual(module.stop_quest(args)["status"],"stopped")
+            adb.assert_called_once_with("adb","fixture",["shell","am","force-stop",module.PACKAGE])
+            self.assertFalse(module.load_state(state)["pending"])
+
+    def test_stop_quest_fails_closed_for_invalid_serial_adb_error_or_unstopped_app(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            args=argparse.Namespace(serial="invalid;device",adb="adb")
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb") as adb:
+                with self.assertRaises(ValueError): module.stop_quest(args)
+                adb.assert_not_called()
+            args.serial="fixture"
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb") as adb, \
+                 mock.patch.object(module,"quest_pid",side_effect=RuntimeError("cannot inspect")):
+                with self.assertRaises(RuntimeError): module.stop_quest(args)
+                adb.assert_not_called()
+            state=root/"Saved"/"DeviceAuth"/"quest-fixture.json"
+            module.save_state(state,{"pid":"123", "pending":True})
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb",side_effect=RuntimeError("adb failed")), \
+                 mock.patch.object(module,"quest_pid",return_value="123"):
+                with self.assertRaisesRegex(RuntimeError,"adb failed"): module.stop_quest(args)
+            self.assertEqual(module.load_state(state)["pid"],"123")
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb",return_value=""), \
+                 mock.patch.object(module,"quest_pid",return_value="123"), mock.patch.object(module.time,"sleep"):
+                with self.assertRaisesRegex(RuntimeError,"still has a process"): module.stop_quest(args)
+            self.assertEqual(module.load_state(state)["pid"],"123")
+
+    def test_stop_quest_shares_the_launch_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            args=argparse.Namespace(serial="fixture",adb="adb")
+            path=root/"Saved"/"DeviceAuth"/"quest-fixture.json"
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb") as adb, \
+                 mock.patch.object(module,"quest_pid") as pid, module.state_lock(path):
+                with self.assertRaisesRegex(RuntimeError,"another command"): module.stop_quest(args)
+                adb.assert_not_called()
+                pid.assert_not_called()
 
     def test_key_reset_is_idempotent(self):
         with tempfile.TemporaryDirectory() as folder:
