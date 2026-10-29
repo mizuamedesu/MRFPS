@@ -177,46 +177,56 @@ def load_state(path: Path) -> dict:
         return {}
 
 
-def load_quest_state(path: Path) -> dict:
+def load_submission_state(path: Path, platform: str) -> dict:
     """Never discard an unreadable journal and accidentally reuse a code."""
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (ValueError, OSError) as exc:
-        raise RuntimeError("Quest submission journal is unreadable; no code was sent") from exc
+        raise RuntimeError(platform + " submission journal is unreadable; no code was sent") from exc
     if not isinstance(state, dict):
-        raise RuntimeError("Quest submission journal is invalid; no code was sent")
+        raise RuntimeError(platform + " submission journal is invalid; no code was sent")
     return state
 
 
-def quest_submission_history(state: dict) -> list[dict]:
+def load_quest_state(path: Path) -> dict:
+    return load_submission_state(path, "Quest")
+
+
+def submission_history(state: dict, platform: str) -> list[dict]:
     """Migrate legacy last-submission records and retain every attempted marker."""
     history = state.get("submission_history", [])
     if not isinstance(history, list):
-        raise RuntimeError("Quest submission journal is invalid; no code was sent")
+        raise RuntimeError(platform + " submission journal is invalid; no code was sent")
     history = list(history)
     if any(entry is None for entry in history):
-        raise RuntimeError("Quest submission journal is invalid; no code was sent")
+        raise RuntimeError(platform + " submission journal is invalid; no code was sent")
     for entry in history + [state.get("submitted"), state.get("submission_inflight")]:
         if entry is None:
             continue
         if (not isinstance(entry, dict) or set(entry) != {"path", "modified_ns"} or
                 not isinstance(entry["path"], str) or not entry["path"] or
                 type(entry["modified_ns"]) is not int or entry["modified_ns"] < 0):
-            raise RuntimeError("Quest submission journal is invalid; no code was sent")
+            raise RuntimeError(platform + " submission journal is invalid; no code was sent")
     # Previously only the most recent successful submission was recorded.
     old = state.get("submitted")
     if old is not None and old not in history:
         history.append(old)
     inflight = state.get("submission_inflight")
     if inflight is not None and inflight not in history:
-        raise RuntimeError("Quest submission journal is inconsistent; no code was sent")
+        raise RuntimeError(platform + " submission journal is inconsistent; no code was sent")
     if old is not None:
         state.setdefault("submitted_config", state.get("config"))
         state.setdefault("submitted_pid", state.get("pid"))
+        if platform == "Windows":
+            state.setdefault("submitted_created", state.get("created"))
     state["submission_history"] = history
     return history
+
+
+def quest_submission_history(state: dict) -> list[dict]:
+    return submission_history(state, "Quest")
 
 
 def save_state(path: Path, value: dict) -> None:
@@ -447,7 +457,8 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     wanted = {"server": address, "role": args.role, "name": args.name, "auth_test_url": args.auth_test_url or "",
               "binary":str(binary), "editor":args.editor}
     marker, code = submission(args.code_file)
-    old = load_state(state_path)
+    old = load_submission_state(state_path, "Windows")
+    history = submission_history(old, "Windows")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
@@ -461,23 +472,67 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     kernel.TerminateProcess.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     def creation_time(pid: int) -> int | None:
+        ctypes.set_last_error(0)
         handle = kernel.OpenProcess(0x1000, False, pid)
         if not handle:
-            return None
+            if ctypes.get_last_error() == 87:  # ERROR_INVALID_PARAMETER: no such PID.
+                return None
+            raise RuntimeError("cannot inspect the Windows guard process")
         try:
             exit_code = wintypes.DWORD()
-            if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)) or exit_code.value != 259:
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                raise RuntimeError("cannot inspect the Windows guard process")
+            if exit_code.value != 259:
                 return None
             created, exited, system, user = (wintypes.FILETIME() for _ in range(4))
             if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(system), ctypes.byref(user)):
-                return None
+                raise RuntimeError("cannot verify the Windows guard identity")
             return (created.dwHighDateTime << 32) | created.dwLowDateTime
         finally:
             kernel.CloseHandle(handle)
-    pid = old.get("pid", 0)
-    active = bool(pid and creation_time(pid) == old.get("created"))
+    pid = old.get("pid") or 0
+    if type(pid) is not int or pid < 0:
+        raise RuntimeError("Windows guard state is invalid; no client was launched")
+    if pid and (type(old.get("created")) is not int or old["created"] <= 0):
+        raise RuntimeError("Windows guard identity is incomplete; no client was launched")
+    running_creation = creation_time(pid) if pid else None
+    if running_creation is not None and running_creation != old.get("created"):
+        raise RuntimeError("Windows guard process identity changed; no client was launched")
+    active = running_creation is not None
+    if old.get("launch_pending"):
+        raise RuntimeError("previous Windows launch outcome is unknown; no client was launched")
     prior = old.get("config", {})
+    if not isinstance(prior, dict):
+        raise RuntimeError("Windows guard state is invalid; no client was launched")
     same_binary = all(prior.get(key) == wanted.get(key) for key in ("name", "auth_test_url", "binary", "editor"))
+    if marker is not None and marker in history:
+        if (active and not args.replace and old.get("configured", True) and old.get("config") == wanted and
+                old.get("submitted") == marker and not old.get("submission_inflight") and
+                old.get("submitted_config") == wanted and old.get("submitted_pid") == pid and
+                old.get("submitted_created") == running_creation):
+            return {"status": "already_running", "guard_pid": pid, "config": wanted}
+        raise RuntimeError("Windows code was already submitted or its outcome is unknown; use a new code")
+
+    def submit_control(guard_pid: int | None, guard_created: int | None) -> None:
+        if marker is not None:
+            if len(history) >= 16384:
+                raise RuntimeError("Windows submission journal is full; no code was sent")
+            # Persist the intent before the private control file can be visible.
+            # An interruption at any later point must not send this code again.
+            history.append(marker)
+            old["submission_inflight"] = marker
+            save_state(state_path, old)
+        windows_control(args.name, address, args.role, code)
+        old["config"] = wanted
+        old["configured"] = True
+        if marker is not None:
+            old["submitted"] = marker
+            old["submitted_config"] = wanted
+            old["submitted_pid"] = guard_pid
+            old["submitted_created"] = guard_created
+            old["submission_inflight"] = None
+        save_state(state_path, old)
+
     if active and not args.replace:
         if args.show_settings:
             if old.get("config") != wanted or old.get("configured", True):
@@ -485,13 +540,9 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
             return {"status": "already_running", "guard_pid": pid, "config": wanted}
         if not same_binary:
             raise RuntimeError("a client with this name already runs with different settings; use --replace")
-        if old.get("config") == wanted and old.get("configured", True) and (marker is None or marker == old.get("submitted")):
+        if old.get("config") == wanted and old.get("configured", True) and marker is None:
             return {"status": "already_running", "guard_pid": pid, "config": wanted}
-        windows_control(args.name, address, args.role, code)
-        old["config"] = wanted
-        old["submitted"] = marker
-        old["configured"] = True
-        save_state(state_path, old)
+        submit_control(pid, running_creation)
         return {"status": "login_queued" if marker else "settings_queued", "guard_pid": pid, "config": wanted}
     if active:
         if not args.replace:
@@ -518,13 +569,18 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
         # Remove only its stale command so startup remains on server settings.
         (Path(local)/"MRFPS"/"DeviceLogin"/"controls"/(args.name+".json")).unlink(missing_ok=True)
     else:
-        windows_control(args.name, address, args.role, code)
+        submit_control(None, None)
     run_id = uuid.uuid4().hex
     report = ROOT / "Saved" / "Validation" / "DeviceLogin" / args.name / run_id / "report.json"
     launch_config = state_path.parent / ("windows-" + args.name + "-launch-" + run_id + ".json")
     save_state(launch_config, {"binary":str(binary), "editor":args.editor, "name":args.name,
                                "test_url":args.auth_test_url or "", "report":str(report), "python":sys.executable})
     guard = ROOT / "Scripts" / "Start-DeviceLoginGuarded.ps1"
+    # Save before spawning: a crash between Popen and process identity capture
+    # must not produce a second, untracked client on retry.
+    old.update({"pid":None, "created":None, "config":wanted, "launch_pending":True,
+                "configured":not args.show_settings, "report":str(report), "launch_config":str(launch_config)})
+    save_state(state_path, old)
     # The guard owns a Windows Job Object and monitors system memory; no UE
     # process can escape the 10 GB / 75% constraints used for the build.
     process = subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(guard), "-ConfigPath", str(launch_config)],
@@ -533,8 +589,11 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     created = creation_time(process.pid)
     if not created:
         raise RuntimeError("unable to verify client process identity")
-    save_state(state_path, {"pid": process.pid, "created": created, "config": wanted, "submitted": marker,
-                            "configured": not args.show_settings, "report":str(report)})
+    old.update({"pid":process.pid, "created":created, "launch_pending":False})
+    if marker is not None:
+        old["submitted_pid"] = process.pid
+        old["submitted_created"] = created
+    save_state(state_path, old)
     return {"status": "launching", "guard_pid": process.pid, "report":str(report), "config": wanted}
 
 
@@ -555,9 +614,13 @@ def reset(args: argparse.Namespace) -> dict:
 def status(args: argparse.Namespace) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", args.name):
         raise ValueError("invalid window name")
-    state = load_state(ROOT / "Saved" / "DeviceAuth" / ("windows-" + args.name + ".json"))
+    state = load_submission_state(ROOT / "Saved" / "DeviceAuth" / ("windows-" + args.name + ".json"), "Windows")
     if not state:
         return {"status": "not_started", "name": args.name}
+    if state.get("launch_pending"):
+        return {"status":"launch_unknown", "name":args.name,
+                "guard_pid":state.get("pid"), "guard_report":state.get("report"),
+                "launch_config":state.get("launch_config"), "events":[]}
     report_path = Path(state.get("report", ""))
     report = load_state(report_path) if report_path.is_file() else {}
     log = report_path.parent / "engine.log"
@@ -583,8 +646,10 @@ def stop_windows(args: argparse.Namespace) -> dict:
     from ctypes import wintypes
     path = ROOT / "Saved" / "DeviceAuth" / ("windows-" + args.name + ".json")
     with state_lock(path):
-        state = load_state(path)
-        pid = int(state.get("pid", 0))
+        state = load_submission_state(path, "Windows")
+        if state.get("launch_pending"):
+            raise RuntimeError("previous Windows launch outcome is unknown; guard identity is unavailable")
+        pid = int(state.get("pid") or 0)
         if not pid:
             return {"status":"already_stopped", "name":args.name}
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -597,9 +662,12 @@ def stop_windows(args: argparse.Namespace) -> dict:
         kernel.GetExitCodeProcess.restype = wintypes.BOOL
         kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel.WaitForSingleObject.restype = wintypes.DWORD
+        ctypes.set_last_error(0)
         handle = kernel.OpenProcess(0x1000 | 0x00100000, False, pid)
         if not handle:
-            return {"status":"already_stopped", "name":args.name}
+            if ctypes.get_last_error() == 87:
+                return {"status":"already_stopped", "name":args.name}
+            raise RuntimeError("cannot inspect the owned guard process")
         try:
             created, exited, system, user = (wintypes.FILETIME() for _ in range(4))
             code = wintypes.DWORD()
@@ -607,7 +675,9 @@ def stop_windows(args: argparse.Namespace) -> dict:
                 raise RuntimeError("cannot verify guard identity")
             if ((created.dwHighDateTime << 32) | created.dwLowDateTime) != state.get("created"):
                 raise RuntimeError("guard process identity changed")
-            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                raise RuntimeError("cannot inspect the owned guard process")
+            if code.value != 259:
                 return {"status":"already_stopped", "name":args.name}
             user32 = ctypes.WinDLL("user32", use_last_error=True)
             user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]

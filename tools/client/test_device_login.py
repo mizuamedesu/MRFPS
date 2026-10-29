@@ -63,6 +63,109 @@ class DeviceLoginControlTests(unittest.TestCase):
                     module.windows(args)
                 self.assertEqual(launch.call_count, 1)
 
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_never_reuses_code_after_restart_or_another_submission(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            first,second=root/"first.txt",root/"second.txt"
+            first.write_text("000123",encoding="ascii"); second.write_text("000456",encoding="ascii")
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,role="player",name="MRFPS-fixture",
+                executable=Path(sys.executable),editor=True,code_file=first,show_settings=False,
+                replace=False,auth_test_url="")
+            state_path=root/"Saved"/"DeviceAuth"/"windows-MRFPS-fixture.json"
+            with mock.patch.object(module,"ROOT",root), mock.patch.dict(module.os.environ,{"LOCALAPPDATA":str(root)}), \
+                 mock.patch.object(module,"windows_control") as control, \
+                 mock.patch.object(module.subprocess,"Popen") as launch:
+                launch.return_value.pid=os.getpid()  # Verify an existing process without spawning UE.
+                self.assertEqual(module.windows(args)["status"],"launching")
+                self.assertEqual(module.windows(args)["status"],"already_running")
+                args.replace=True
+                with self.assertRaisesRegex(RuntimeError,"already submitted"):
+                    module.windows(args)  # Must refuse before opening a handle to terminate.
+                args.replace=False
+                stopped=module.load_submission_state(state_path,"Windows")
+                stopped.update({"pid":None,"created":None})  # A previously stopped guard.
+                module.save_state(state_path,stopped)
+                with self.assertRaisesRegex(RuntimeError,"already submitted"):
+                    module.windows(args)
+                self.assertEqual(control.call_count,1)
+                args.code_file=None
+                self.assertEqual(module.windows(args)["status"],"launching")
+                args.code_file=second
+                self.assertEqual(module.windows(args)["status"],"login_queued")
+                args.code_file=first
+                with self.assertRaisesRegex(RuntimeError,"already submitted"):
+                    module.windows(args)
+                self.assertEqual(control.call_count,3)
+            saved=module.load_submission_state(state_path,"Windows")
+            self.assertEqual(len(saved["submission_history"]),2)
+            self.assertNotIn("000123",json.dumps(saved))
+            self.assertNotIn("000456",json.dumps(saved))
+
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_interrupted_code_transfer_never_retries_that_marker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_text("000123",encoding="ascii")
+            replacement=root/"new.txt"; replacement.write_text("000456",encoding="ascii")
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,role="player",name="MRFPS-fixture",
+                executable=Path(sys.executable),editor=True,code_file=None,show_settings=True,
+                replace=False,auth_test_url="")
+            state_path=root/"Saved"/"DeviceAuth"/"windows-MRFPS-fixture.json"
+            with mock.patch.object(module,"ROOT",root), mock.patch.dict(module.os.environ,{"LOCALAPPDATA":str(root)}), \
+                 mock.patch.object(module,"windows_control") as control, \
+                 mock.patch.object(module.subprocess,"Popen") as launch:
+                launch.return_value.pid=os.getpid()
+                self.assertEqual(module.windows(args)["status"],"launching")
+                args.show_settings=False; args.code_file=code
+                control.side_effect=TimeoutError("control outcome lost")
+                with self.assertRaises(TimeoutError): module.windows(args)
+                with self.assertRaisesRegex(RuntimeError,"outcome is unknown"): module.windows(args)
+                self.assertEqual(control.call_count,1)
+                saved=module.load_submission_state(state_path,"Windows")
+                self.assertEqual(saved["submission_inflight"],saved["submission_history"][0])
+                args.code_file=replacement; control.side_effect=None
+                self.assertEqual(module.windows(args)["status"],"login_queued")
+                args.code_file=code
+                with self.assertRaisesRegex(RuntimeError,"already submitted"): module.windows(args)
+                self.assertEqual(control.call_count,2)
+
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_interrupted_launch_never_starts_a_second_untracked_guard(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_text("000123",encoding="ascii")
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,role="player",name="MRFPS-fixture",
+                executable=Path(sys.executable),editor=True,code_file=code,show_settings=False,
+                replace=False,auth_test_url="")
+            with mock.patch.object(module,"ROOT",root), mock.patch.dict(module.os.environ,{"LOCALAPPDATA":str(root)}), \
+                 mock.patch.object(module,"windows_control") as control, \
+                 mock.patch.object(module.subprocess,"Popen",side_effect=OSError("lost launch")) as launch:
+                with self.assertRaises(OSError): module.windows(args)
+                with self.assertRaisesRegex(RuntimeError,"launch outcome is unknown"): module.windows(args)
+                args.code_file=None
+                with self.assertRaisesRegex(RuntimeError,"launch outcome is unknown"): module.windows(args)
+                self.assertEqual(control.call_count,1); self.assertEqual(launch.call_count,1)
+                self.assertEqual(module.status(argparse.Namespace(name=args.name))["status"],"launch_unknown")
+                with self.assertRaisesRegex(RuntimeError,"guard identity is unavailable"):
+                    module.stop_windows(argparse.Namespace(name=args.name))
+
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_corrupt_submission_journal_fails_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_text("000123",encoding="ascii")
+            state=root/"Saved"/"DeviceAuth"/"windows-MRFPS-fixture.json"
+            state.parent.mkdir(parents=True); state.write_text('{"submission_history":[null]}',encoding="utf-8")
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,role="player",name="MRFPS-fixture",
+                executable=Path(sys.executable),editor=True,code_file=code,show_settings=False,
+                replace=False,auth_test_url="")
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"windows_control") as control, \
+                 mock.patch.object(module.subprocess,"Popen") as launch:
+                with self.assertRaisesRegex(RuntimeError,"journal"): module.windows(args)
+                control.assert_not_called(); launch.assert_not_called()
+            state.write_text('{',encoding="utf-8")
+            with mock.patch.object(module,"ROOT",root):
+                with self.assertRaisesRegex(RuntimeError,"journal"): module.status(argparse.Namespace(name=args.name))
+                with self.assertRaisesRegex(RuntimeError,"journal"): module.stop_windows(argparse.Namespace(name=args.name))
+
     def test_endpoint_and_code_validation(self):
         self.assertEqual(module.endpoint("mrfps.mizuame.app:7777"), "mrfps.mizuame.app:7777")
         self.assertEqual(module.endpoint("[2001:db8::1]:7777"), "[2001:db8::1]:7777")

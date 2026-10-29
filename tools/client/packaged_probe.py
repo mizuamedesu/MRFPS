@@ -228,7 +228,7 @@ def login(run,state):
     if state.get("login_submitted"): return {"status":"already_submitted"}
     if state.get("login_intent"):
         previous=client.load_state(ROOT/"Saved"/"DeviceAuth"/("windows-"+state["name"]+".json"))
-        if previous.get("submitted")!=state.get("code_marker"):
+        if previous.get("submitted")!=state.get("code_marker") or previous.get("submission_inflight"):
             raise RuntimeError("code submission outcome is unknown; do not reuse this code")
         state["login_submitted"]=True; save(run,state); return {"status":"already_submitted"}
     if not inspect(run,state)["checks"].get("settings_applied"): raise RuntimeError("settings have not been applied by the client")

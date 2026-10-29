@@ -50,6 +50,8 @@ $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\p
 
 Quest のコード投入は、ファイルのパスと更新時刻を送信前に記録します。アプリ停止・再起動やコードなし起動を挟んでも同じ記録のコードは再送しません。転送中に失敗して結果が不明になった場合も再送せず、新しく発行したコードを使用してください。記録にはコード自体を保存せず、壊れた記録は自動消去しません。履歴の上限 16,384 件に達すると送信を停止します。履歴は端末ごとの `Saved/DeviceAuth/quest-<serial>.json` にあります。
 
+Windows も名前ごとの `Saved/DeviceAuth/windows-<name>.json` に投入前の記録を残し、同じコードの再投入を防ぎます。転送中断時は新しいコードを使用してください。ガードの起動途中でプロセスの識別情報を確定できなかった場合は `status` が `launch_unknown` を返し、重複起動や別プロセスの停止を避けるため自動復旧しません。表示される `launch_config` と `guard_report` を使って対象ガードの状態を調べ、稼働中のプロセスを誤って停止しないようにしてください。コードの値は記録されません。
+
 Windows クライアントは毎回、空き RAM 10 GB 以上・コミット率 75% 以下の既存のメモリガードの子プロセスとして起動します。制限を超えた場合、ガードは自身のジョブだけを停止します。公開鍵の Windows 保存先は `%LOCALAPPDATA%\MRFPS\Auth` です。
 
 開発版の UE コンソールでは `MRFPSConfigureServer <host:port>`、`MRFPSLoginFile <path> <player|inspector|admin>`、`MRFPSResetIssuerTrust` を使用できます。ファイルによる起動パラメータは `-MRFPSServer=... -MRFPSRole=... -MRFPSDeviceCodeFile="..."` です。コードそのものを引数にしないでください。

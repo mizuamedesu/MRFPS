@@ -115,6 +115,15 @@ class PackagedProbeTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"outcome is unknown"): probe.login(Path(folder),state)
                 windows.assert_not_called()
 
+    def test_inflight_even_with_matching_old_marker_is_not_claimed_submitted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            marker={"path":"code","modified_ns":1}
+            state={"name":"fixture","login_intent":True,"code_marker":marker,"checks":{},"actions":{}}
+            with mock.patch.object(probe.client,"load_state",return_value={"submitted":marker,"submission_inflight":marker}), \
+                 mock.patch.object(probe.client,"windows") as windows:
+                with self.assertRaisesRegex(RuntimeError,"outcome is unknown"): probe.login(Path(folder),state)
+                windows.assert_not_called()
+
     def test_stop_records_a_clean_close_and_a_safe_repeat(self):
         with tempfile.TemporaryDirectory() as folder:
             run=Path(folder); state={"name":"fixture","issuer_dir":str(run/"unused"),"checks":{},"actions":{}}
