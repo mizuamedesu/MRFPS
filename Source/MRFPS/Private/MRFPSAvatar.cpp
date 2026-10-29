@@ -132,7 +132,7 @@ void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSAr
     SetVisibility(Pose.bHeadTracked && Fresh);
     if(!Pose.bHeadTracked || !Fresh) { R.Initialized=false;return; }
     const FVector RawHead=Pose.Head;
-    const FQuat Rotations[]={Pose.HeadRotation.Quaternion(),Pose.LeftRotation.Quaternion(),Pose.RightRotation.Quaternion()};
+    const FQuat Rotations[]={Pose.HeadRotation.Quaternion(),Pose.LeftRotation.Quaternion(),Pose.RightHandRotation.Quaternion()};
     const FVector Hands[]={FVector(Pose.Left),FVector(Pose.Right)};
     const bool Reset=!R.Initialized || Calibration!=R.Calibration || Layout.Revision!=R.LayoutRevision ||
         FVector::DistSquared(R.SmoothHead,RawHead)>FMath::Square(120.);
@@ -209,9 +209,9 @@ void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSAr
     }
     // World motion is measured by the headset, not animation root motion.
     BoneSpaceTransforms[0]=R.Reference[0];
-    const float Crouch=FMath::Clamp(float((R.RefEyeHeight*BodyScale-(R.SmoothHead.Z-BodyGround))/BodyScale),0.f,85.f);
+    const float Crouch=FMath::Clamp(float((R.RefEyeHeight*BodyScale-(R.SmoothHead.Z-BodyGround))/BodyScale),0.f,120.f);
     const int32 Pelvis=Ref.FindBoneIndex(TEXT("pelvis"));
-    if(Pelvis>=0) BoneSpaceTransforms[Pelvis].AddToTranslation(FVector(-Crouch*.12,0,-Crouch*.8));
+    if(Pelvis>=0) BoneSpaceTransforms[Pelvis].AddToTranslation(FVector(-Crouch*.12,0,-Crouch*.95));
     for(int32 I=0;I<Ref.GetNum();++I) {
         const int32 Parent=Ref.GetParentIndex(I);
         R.Global[I]=Parent<0?BoneSpaceTransforms[I]:BoneSpaceTransforms[I]*R.Global[Parent];

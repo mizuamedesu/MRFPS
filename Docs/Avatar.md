@@ -10,6 +10,6 @@ UE5.8標準テンプレートの`SKM_Manny_Simple`を表示します。`Content/
 
 Quest単体の頭・手の3点追跡では、腰・膝・足先の実際の動作を一意に復元できません。踏み出す足や体重移動は推定です。全身の実測一致には追加の身体トラッカーとその校正が必要です。
 
-実装: `Source/MRFPS/Private/MRFPSAvatar.cpp`。検証: `MRFPS.Avatar.MannyTrackedIKAndLocomotion`。2026-10-29のUE自動試験では、前進中の最大足移動が修正前の41.17/38.20 cmから5.93/5.89 cm／フレームになり、30 Hzで届く横移動でも両足が動き、最大6.04 cm／フレームでした（描画更新60 Hz）。実機の観戦画面で最終的な見た目・遅延も確認します。
+実装: `Source/MRFPS/Private/MRFPSAvatar.cpp`。検証: `MRFPS.Avatar.MannyTrackedIKAndLocomotion`、`MRFPS.Avatar.RenderedAnatomy`。立位から低い姿勢へ移る場合も骨盤を下げ、頭の位置をHMDの測定値に近づけます。後者の試験は実際に描画される頭、胸、骨盤の骨位置を確認します。2026-10-29のUE自動試験では、前進中の最大足移動が修正前の41.17/38.20 cmから5.93/5.89 cm／フレームになり、30 Hzで届く横移動でも両足が動き、最大6.04 cm／フレームでした（描画更新60 Hz）。実機の観戦画面で最終的な見た目・遅延も確認します。
 
 参考: [Epic Full Body IK](https://dev.epicgames.com/documentation/en-us/unreal-engine/control-rig-full-body-ik-in-unreal-engine)、[Blend Spaces](https://dev.epicgames.com/documentation/en-us/unreal-engine/blend-spaces-in-unreal-engine)。

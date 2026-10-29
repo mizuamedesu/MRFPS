@@ -4,7 +4,7 @@ UE **5.8.1** のC++製、オンライン1対1のMR FPSです。Questをプレイ
 
 床は既定 **X4.5m × Y7m** の固定長方形です。管理者が「床の位置調整」を押した瞬間の二人のXY中点を床の中心、P1→P2を+Y方向として計算します。歩行への追従、二人の間隔による伸縮、頭の高さによる床の上下移動は行いません。
 
-プレイヤー表示には**UE5標準Manny**、方向別の歩行・走行BlendSpace、PBIKによる全身IKを使います。頭・両手は計測、腰・足は推定です。しゃがみで体を縮尺変更せず、足の接地を補正します。[身体の仕組みと制限](Docs/Avatar.md)を参照してください。管理者は壁・床・階段・箱を、半透明プレビューとグリッド吸着で配置・回転・削除できます。UIは日本語の短い表示にしています。[操作](Docs/Controls.md)
+プレイヤー表示には**UE5標準Manny**、方向別の歩行・走行BlendSpace、PBIKによる全身IKを使います。頭・両手は計測、腰・足は推定です。しゃがみで体を縮尺変更せず、足の接地を補正します。[身体の仕組みと制限](Docs/Avatar.md)を参照してください。管理者は壁を配置・回転し、壁面のマスを開口・復元して高さを調整できます。UIは日本語の短い表示にしています。[操作](Docs/Controls.md)
 
 全クライアントはrole付きEd25519署名JWTと、稼働サーバーのDTLS証明書pinが必要です。発行者の秘密鍵はホストに保持し、コンテナのenvには公開鍵のみを渡します。JWTは1接続で1回使用でき、再接続には新規発行が必要です。鍵・JWT・部屋の映像はGitに含めません。
 
@@ -114,7 +114,7 @@ $playerToken = Join-Path $PWD '.local\access\player-two.jwt'
 - 左手を開くと小型盾。保持と被弾でエネルギーを消費し、閉じて回復します。
 - HP100、胴体20／頭30ダメージ、復活3秒。既定は先に10回倒すと勝利。次の試合は管理者が「試合リセット」から進めます。
 - 設定された長方形の床の外、追跡消失、未校正、死亡中、戦闘の一時停止中は攻撃できません。ヘッドセットを外す、再センタリング、追跡原点変更で校正を解除します。
-- 管理者の一時停止は戦闘だけを止め、追跡・映像・通信・認証期限の処理は続けます。建築はB、壁・床・階段・箱を1〜4、Rで回転、Delで削除します。
+- 管理者の一時停止は戦闘だけを止め、追跡・映像・通信・認証期限の処理は続けます。Bで壁編集、壁のマスをクリックして開口・復元、ホイールで高さを変更、Rで回転、Delで削除します。
 - MoBitsはアプリ側で装着者の校正を済ませ、右A／グローブ右A／H／メニューで明示的にARMします。右B／グローブ右B／EscapeでSTOPします。
 
 キーボード、観戦カメラ、接続メニューの操作は [Controls](Docs/Controls.md) に記載しています。
@@ -148,5 +148,6 @@ Multiplayerではserverの盾・壁・被弾・死亡、全3観戦者の2プレ�
 - [ContactGlove 2](Docs/ContactGlove.md)：実DivingStation OSC、PC→Quest relay、実SteamVR tracker、床座標・装着offset校正。指屈曲と位置追跡の有効性・鮮度を別々に扱います。
 - [MoBits](Docs/MoBits.md)：公式UE SDK 0.5.0、認証付きloopback WebSocket、Quest用ADBトンネル、手動ARM／STOP。発射・被弾・復活のサーバー確定イベントを所有者だけに出力します。
 - [Passthrough](Docs/Passthrough.md)：`XR_FB_passthrough` のnative underlay。Meta XRプラグインには依存しません。
+- [壁の編集](Docs/WallEditing.md)：管理者による壁の配置、開口、高さ調整。
 - [認証の運用](Docs/Auth.md)、[native検証仕様と証拠](Docs/Authentication.md)：全接続の署名JWT、公開鍵env、単回使用、DTLS証明書pin、資格情報の非表示。
 - [実機確認](Docs/DeviceValidation.md)、[実装と未達項目](Docs/ImplementationStatus.md)。

@@ -152,16 +152,16 @@ Automated success is kept at its actual scope. The summarizer checks the current
 Open independent inspector windows against the same dedicated server:
 
 ```powershell
-.\Scripts\Start-Inspector.ps1 -Server 127.0.0.1 -Count 4 -UseEditor `
+.\Scripts\Start-Inspector.ps1 -Server 127.0.0.1 -Count 1 -UseEditor `
   -PublicKeyFile .local\auth-issuer\issuer-public.pem -TokenDirectory .local\access\inspectors
 # Or use the packaged Windows client:
-.\Scripts\Start-Inspector.ps1 -Server 192.168.1.20 -Count 4 `
+.\Scripts\Start-Inspector.ps1 -Server 192.168.1.20 -Count 1 `
   -PublicKeyFile .local\auth-issuer\issuer-public.pem -TokenDirectory .local\access\inspectors
 ```
 
-The URL includes `?Inspector=1` so observer connections do not claim the two player slots. Each process has its own camera/input state. Windows inspectors also receive `-MRFPSInspector -MRFPSDesktop`. `-Count` is a launch convenience (1–64), not a network observer-capacity claim.
+The URL includes `?Inspector=1` so observer connections do not claim the two player slots. Press Esc to release the mouse, then click **P1 別窓**, **P2 別窓**, and **観戦 別窓**. Together with the original free camera, these create four separately capturable windows from one authenticated inspector process. The second observer window has its own camera: click it, move with WASD/E/Q, and hold right mouse to look. Closing a player window stops its extra subscription when no other view needs that source. All three detached windows reuse the owning inspector's connection and do not create additional Quest uploads. Additional independent inspector processes or PCs are also supported; each needs its own fresh signed token. Keep the windows open rather than minimized. The desktop client disables the foreground idle throttle so a visible window continues updating when another window has focus.
 
-Those player cameras currently rerender the virtual scene from replicated pose. The requested actual Quest display stream, including real passthrough, needs additional capture/transport/display work and is in progress/unverified. Network snapshots or a3D player-view screenshot do not establish that stream.
+The detached player windows display the Quest's shared display stream, including passthrough when the headset compositor supplies it and the user has granted sharing. They show a waiting message if no fresh stream is available; they do not substitute the pose-based reconstructed camera. The existing capture implementation does not include audio. Prior single-Quest passthrough observations do not prove simultaneous two-Quest, two-observer operation or sustained frame rate; validate those on the intended network and hardware.
 
 ## UE automation
 

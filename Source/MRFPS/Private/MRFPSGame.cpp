@@ -8,11 +8,13 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Engine/Canvas.h"
 #include "CanvasItem.h"
 #include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/Texture2D.h"
 #include "Engine/StaticMesh.h"
@@ -53,6 +55,7 @@
 #include "MRFPSXRModule.h"
 #include "MRFPSViewCaptureSubsystem.h"
 #include "GeometryCaptureSubsystem.h"
+#include "Widgets/SWindow.h"
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogMRFPS, Log, All);
@@ -116,7 +119,7 @@ namespace MRFPS
 bool FMRFPSPose::IsSane() const
 {
     if (Head.ContainsNaN() || Left.ContainsNaN() || Right.ContainsNaN() ||
-        HeadRotation.ContainsNaN() || LeftRotation.ContainsNaN() || RightRotation.ContainsNaN() ||
+        HeadRotation.ContainsNaN() || LeftRotation.ContainsNaN() || RightRotation.ContainsNaN() || RightHandRotation.ContainsNaN() ||
         !FMath::IsFinite(LeftOpenness) || LeftOpenness < 0 || LeftOpenness > 1) return false;
     if (FMath::Abs(Head.X)>MRFPSArenaLimits::MaxCoordinateCm || FMath::Abs(Head.Y)>MRFPSArenaLimits::MaxCoordinateCm || Head.Z < -1000 || Head.Z > 4000) return false;
     return (!bLeftTracked || FVector::Dist(Head, Left) <= 180) &&
@@ -173,10 +176,11 @@ AMRFPSBarrier::AMRFPSBarrier()
     Collision = CreateDefaultSubobject<UBoxComponent>(TEXT("WallCollision")); SetRootComponent(Collision);
     Collision->InitBoxExtent(FVector(8,80,100)); MRFPS::QueryOnly(Collision);
     Visual = MRFPS::Mesh(this, Collision, TEXT("Wall"), TEXT("/Engine/BasicShapes/Cube.Cube"), FVector(.16,1.6,2),TEXT("SM_MRWall"));
-    for(int32 I=0;I<8;++I) {
-        auto* Step=MRFPS::Mesh(this,Collision,*FString::Printf(TEXT("Step%d"),I),TEXT("/Engine/BasicShapes/Cube.Cube"),FVector::OneVector);
-        Step->SetVisibility(false);MRFPS::QueryOnly(Step);Step->SetCollisionEnabled(ECollisionEnabled::NoCollision);BuildSteps.Add(Step);
-    }
+    WallCells=CreateDefaultSubobject<UInstancedStaticMeshComponent>(TEXT("EditableWallCells"));
+    WallCells->SetupAttachment(Collision);
+    static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube.Cube"));
+    WallCells->SetStaticMesh(Cube.Object);WallCells->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    WallCells->SetMobility(EComponentMobility::Movable);WallCells->SetVisibility(false);WallCells->SetCastShadow(false);
 }
 void AMRFPSBarrier::BeginPlay()
 {
@@ -195,6 +199,7 @@ void AMRFPSBarrier::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     Super::GetLifetimeReplicatedProps(OutLifetimeProps); DOREPLIFETIME(AMRFPSBarrier, Health); DOREPLIFETIME(AMRFPSBarrier, OwnerSlot);
     DOREPLIFETIME(AMRFPSBarrier,bAdminPlaced);
     DOREPLIFETIME(AMRFPSBarrier,BuildKind);
+    DOREPLIFETIME(AMRFPSBarrier,WallShape);
 }
 AMRFPSArena::AMRFPSArena()
 {
@@ -416,6 +421,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     Camera->bLockToHmd=IsXR();
     if (IsXR()) Camera->SetRelativeLocation(FVector::ZeroVector);
     float IndexCurl = 0; bool bGloveTrigger = false;
+    bool bRightPalmPose = false;
     if (IsXR()) {
         FXRHMDData HMD; UHeadMountedDisplayFunctionLibrary::GetHMDData(this,HMD);
         Next.bHeadTracked = HMD.bValid && HMD.TrackingStatus == ETrackingStatus::Tracked;
@@ -433,8 +439,8 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
                 const FTransform EngineToTracking=UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(this).Inverse();
                 if (Side==EControllerHand::Right) {
                     FVector HandPosition; FRotator HandRotation;
-                    if (MRFPSHandPose::RightPalmWeaponPose(H,EngineToTracking,T,HandPosition,HandRotation)) {
-                        Tracked=true; P=HandPosition; R=HandRotation;
+                    if (MRFPSHandPose::RightPalmPose(H,EngineToTracking,T,HandPosition,HandRotation)) {
+                        Tracked=true; P=HandPosition; R=HandRotation; bRightPalmPose=true;
                     }
                 } else {
                     const FQuat Palm=T.TransformRotation(EngineToTracking.TransformRotation(H.HandKeyRotations[0]));
@@ -490,9 +496,16 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             if (G.bPoseValid) {
                 const FTransform T=XROrigin->GetComponentTransform();
                 if (I==0) { Next.Left=T.TransformPosition(G.TrackingTransform.GetLocation()); const FQuat Palm=T.TransformRotation(G.TrackingTransform.GetRotation()); Next.LeftRotation=FRotationMatrix::MakeFromXZ(-Palm.GetAxisZ(),Palm.GetAxisX()).Rotator(); Next.bLeftTracked=true; }
-                else { Next.Right=T.TransformPosition(G.TrackingTransform.GetLocation()); Next.RightRotation=T.TransformRotation(G.TrackingTransform.GetRotation()).Rotator(); Next.bRightTracked=true; }
+                else { Next.Right=T.TransformPosition(G.TrackingTransform.GetLocation()); Next.RightRotation=T.TransformRotation(G.TrackingTransform.GetRotation()).Rotator(); Next.bRightTracked=true; bRightPalmPose=true; }
             }
             if (G.bFlexValid) TrackingDescription=TEXT("ContactGlove 2 + XR tracking");
+        }
+    }
+    if (Next.bRightTracked) {
+        Next.RightHandRotation=Next.RightRotation;
+        if (IsXR()) {
+            if (bRightPalmPose) Next.RightRotation=MRFPSHandPose::WeaponFromHand(Next.RightHandRotation.Quaternion()).Rotator();
+            else Next.RightHandRotation=MRFPSHandPose::HandFromWeapon(Next.RightRotation.Quaternion()).Rotator();
         }
     }
     if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) InvalidateCalibration();
@@ -588,6 +601,12 @@ void AMRFPSPlayerController::BeginPlay()
     if (IsLocalController()) {
         bShowMouseCursor=false; SetInputMode(FInputModeGameOnly());
         if (auto* Receiver=GetGameInstance()->GetSubsystem<UMRFPSVideoReceiver>()) Receiver->ResetAll();
+#if !UE_SERVER
+        FString WindowName;
+        if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSWindowName="),WindowName) && !WindowName.IsEmpty())
+            if (auto* Viewport=GetGameInstance()->GetGameViewportClient())
+                if (auto Window=Viewport->GetWindow()) Window->SetTitle(FText::FromString(WindowName.Left(64)));
+#endif
     }
 #if !PLATFORM_ANDROID
     FString StartupServer;
@@ -597,7 +616,7 @@ void AMRFPSPlayerController::BeginPlay()
 }
 void AMRFPSPlayerController::EndPlay(const EEndPlayReason::Type Reason)
 {
-    if (IsLocalController()) StopGeometryPublisher();
+    if (IsLocalController()) { ClosePlayerVideoWindows(); CloseInspectorViewWindow(); StopGeometryPublisher(); }
     Super::EndPlay(Reason);
 }
 void AMRFPSPlayerController::SetupInputComponent()
@@ -637,10 +656,8 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
             if(Params.Event==IE_Pressed) {
                 if(Params.Key==EKeys::R) { AdminWallYaw=FMath::Fmod(AdminWallYaw+90,360.f);return true; }
                 if(Params.Key==EKeys::Delete) { RemoveSelectedBuild();return true; }
-                const FKey Choices[]={EKeys::One,EKeys::Two,EKeys::Three,EKeys::Four};
-                for(int32 I=0;I<4;++I) if(Params.Key==Choices[I]) { AdminBuildKind=EMRFPSBuildKind(I);return true; }
-                if(Params.Key==EKeys::MouseScrollUp||Params.Key==EKeys::MouseScrollDown) {
-                    AdminBuildKind=EMRFPSBuildKind((int32(AdminBuildKind)+(Params.Key==EKeys::MouseScrollUp?1:3))%4);return true;
+                if(Params.Key==EKeys::MouseScrollUp||Params.Key==EKeys::MouseScrollDown||Params.Key==EKeys::Up||Params.Key==EKeys::Down) {
+                    AdjustSelectedWallHeight((Params.Key==EKeys::MouseScrollUp||Params.Key==EKeys::Up)?1:-1);return true;
                 }
             }
         }
@@ -649,10 +666,22 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
             return true;
         }
         if (Params.Key==EKeys::LeftMouseButton) {
+            if (bConsumePlayerVideoClick) {
+                if (Params.Event==IE_Released) { bConsumePlayerVideoClick=false; return true; }
+                // Opening a new native window can take focus before mouse-up.
+                // Do not swallow the next click when focus returns here.
+                if (Params.Event==IE_Pressed || Params.Event==IE_DoubleClick) bConsumePlayerVideoClick=false;
+                else return true;
+            }
+            if (bInspectorMouseReleased && !bAdminWallPlacement &&
+                (Params.Event==IE_Pressed || Params.Event==IE_DoubleClick) && TryOpenInspectorWindowAtCursor()) {
+                bConsumePlayerVideoClick=true;
+                return true;
+            }
             if (bAdminWallPlacement && IsAdmin()) {
                 if (Params.Event==IE_Pressed || Params.Event==IE_DoubleClick) {
-                    bConsumeAdminPlacementClick=true;
-                    PlaceSelectedBuild();
+                    bConsumeAdminPlacementClick=!ToggleSelectedWallCell();
+                    if(bConsumeAdminPlacementClick) PlaceSelectedBuild();
                 }
                 if (Params.Event==IE_Released) bConsumeAdminPlacementClick=false;
                 return true;
@@ -946,6 +975,15 @@ void AMRFPSHUD::DrawHUD()
     };
     if(Inspector&&PC->ViewSlot>=0&&!PC->bReconstructedViews) { auto* Frame=PC->GetQuestVideoTexture(PC->ViewSlot);Video(Frame,0,0,Canvas->SizeX,Canvas->SizeY);if(!Frame) Text(TEXT("映像を待っています"),32,Canvas->SizeY*.45,18); }
     DrawRect(FLinearColor(.015,.025,.045,.9),18,18,260,104);
+    if(Inspector && FPlatformProperties::SupportsWindowedMode() && !PC->IsAdminWallPlacement()) for(int32 I=0;I<2;++I) {
+        const float X=300+I*100;
+        DrawRect(FLinearColor(.04,.20,.36,.95),X,24,92,30);
+        Text(FString::Printf(TEXT("P%d 別窓"),I+1),X+8,29,14,FLinearColor(.8,.9,1));
+    }
+    if(Inspector && FPlatformProperties::SupportsWindowedMode() && !PC->IsAdminWallPlacement()) {
+        DrawRect(FLinearColor(.04,.20,.36,.95),500,24,112,30);
+        Text(TEXT("観戦 別窓"),508,29,14,FLinearColor(.8,.9,1));
+    }
     const FString RoleLabel=PC->IsAdmin()?TEXT("管理者"):Inspector?TEXT("観戦"):TEXT("プレイ");
     Text(TEXT("MRFPS  /  ")+RoleLabel,30,26,19,FLinearColor(.5,.8,1));
     FString Phase=TEXT("準備中");
@@ -965,14 +1003,11 @@ void AMRFPSHUD::DrawHUD()
         else { auto* Frame=PC->GetQuestVideoTexture(I);Video(Frame,X,Y,W,H);if(!Frame) Text(TEXT("共有待ち"),X+12,Y+H*.45,14); }
     }
     if(PC->IsAdminWallPlacement()) {
-        const float Left=Canvas->SizeX*.5f-158,Top=Canvas->SizeY-112;
-        for(int32 I=0;I<4;++I) {
-            const float X=Left+I*80;const bool Selected=int32(PC->AdminBuildKind)==I;
-            DrawRect(Selected?FLinearColor(.04,.38,.8,.95):FLinearColor(.025,.045,.08,.95),X,Top,74,63);
-            Text(FString::FromInt(I+1),X+7,Top+4,11,FLinearColor(.6,.8,1));Text(MRFPSBuild::Label(EMRFPSBuildKind(I)),X+13,Top+27,19);
-        }
-        Text(TEXT("クリック 設置   R 回転   Del 削除   右クリック 終了"),Left-30,Top+72,13);
-    } else if(Inspector) Text(PC->IsAdmin()?TEXT("B 建築   F2 管理   F1 メニュー"):TEXT("1 / 2 視点   Tab 自由   F1 メニュー"),24,Canvas->SizeY-35,13,FLinearColor(.65,.78,.9));
+        const float Left=Canvas->SizeX*.5f-250,Top=Canvas->SizeY-92;
+        DrawRect(FLinearColor(.025,.045,.08,.95),Left,Top,500,70);
+        Text(PC->SelectedWallHeightCm>0?FString::Printf(TEXT("壁 %.1f m   ホイール / ↑↓ 高さ"),PC->SelectedWallHeightCm/100.f):TEXT("壁   R 回転   ホイール / ↑↓ 高さ"),Left+12,Top+8,15,FLinearColor(.7,.9,1));
+        Text(TEXT("クリック 設置 / 穴・復元   Del 削除   右クリック 終了"),Left+12,Top+39,13);
+    } else if(Inspector) Text(PC->IsAdmin()?TEXT("Esc マウス  B 建築  F2 管理"):TEXT("Esc マウス  1 / 2 視点  Tab 自由"),24,Canvas->SizeY-35,13,FLinearColor(.65,.78,.9));
     else if(auto* Pawn=PC->GetPawn<AMRFPSPawn>();Pawn&&!Pawn->bCalibrated) Text(TEXT("C / Y で位置調整"),30,133,16);
     if(PC->IsAdmin()) Text(PC->AdminFeedback(),30,138,15,FLinearColor(.7,.95,.85));
     if(!PC->ConnectionError.IsEmpty()) Text(TEXT("接続を確認してください"),30,165,15,FLinearColor(1,.4,.4));
@@ -1163,8 +1198,14 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(6);
-    Super::Init(); if (GEngine) GEngine->OnNetworkFailure().AddUObject(this,&UMRFPSGameInstance::NetworkFailure);
+    FNetworkVersion::SetGameNetworkProtocolVersion(8);
+    Super::Init();
+#if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
+    // This CVar is marked Cheat in UE 5.8, so setting it in Engine.ini causes
+    // cook to fail. Set it in the desktop app instead, including direct launch.
+    if (auto* Idle=IConsoleManager::Get().FindConsoleVariable(TEXT("t.IdleWhenNotForeground"))) Idle->Set(0,ECVF_SetByCode);
+#endif
+    if (GEngine) GEngine->OnNetworkFailure().AddUObject(this,&UMRFPSGameInstance::NetworkFailure);
 }
 void UMRFPSGameInstance::OnStart()
 {

@@ -25,6 +25,14 @@ namespace MRFPSVideo
     constexpr int32 MaxHeight = 720;
     constexpr double FrameLifetime = 0.75;
 
+    // A detached player window remains subscribed even when the main window
+    // switches to reconstructed 3D, hides thumbnails, or follows the other slot.
+    inline uint8 ObserverSubscription(bool Reconstructed,bool MultiView,int32 ViewSlot,uint8 DetachedMask)
+    {
+        const uint8 Main=Reconstructed ? 0 : MultiView ? 3 : ViewSlot>=0 && ViewSlot<2 ? (1u<<ViewSlot) : 0;
+        return (Main | DetachedMask) & 3;
+    }
+
     struct FPublisherRateCheck
     {
         double DecayedBytes = 0;

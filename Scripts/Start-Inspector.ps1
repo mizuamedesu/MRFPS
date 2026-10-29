@@ -24,7 +24,7 @@ if ($UseEditor) {
 }
 if (-not (Test-Path -LiteralPath $Executable)) { throw "Executable not found: $Executable. Build -Target Windows or specify -UseEditor." }
 for ($i = 0; $i -lt $Count; $i++) {
-    $arguments = $projectArgument + "/Game/Maps/MRFPSArena -MRFPSServer=$($Server):$Port -MRFPSInspector -MRFPSDesktop -MRFPSAuthTokenFile=`"$($TokenFiles[$i])`" -MRFPSAuthPublicKeyFile=`"$PublicKeyFile`" -MRFPSAuthAudience=$Audience -nohmd -windowed -ResX=1280 -ResY=720 -WinX=$((($i % 2) * 80) + 40) -WinY=$(([Math]::Floor($i / 2) * 60) + 40) -log"
+    $arguments = $projectArgument + "/Game/Maps/MRFPSArena -MRFPSServer=$($Server):$Port -MRFPSInspector -MRFPSDesktop -MRFPSWindowName=MRFPS-Inspector-$($i+1) -MRFPSAuthTokenFile=`"$($TokenFiles[$i])`" -MRFPSAuthPublicKeyFile=`"$PublicKeyFile`" -MRFPSAuthAudience=$Audience -nohmd -windowed -ResX=1280 -ResY=720 -WinX=$((($i % 2) * 80) + 40) -WinY=$(([Math]::Floor($i / 2) * 60) + 40) -ExecCmds=`"t.MaxFPS 60,t.IdleWhenNotForeground 0`" -log"
     # These are visible interactive windows requested for operating inspectors.
     if ($DryRun) { Write-Host "$Executable $arguments" }
     else { Start-Process -FilePath $Executable -ArgumentList $arguments -WorkingDirectory $root }

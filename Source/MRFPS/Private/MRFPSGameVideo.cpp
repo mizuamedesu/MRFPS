@@ -220,7 +220,7 @@ void AMRFPSPlayerController::TickQuestVideo()
     if (Publisher && CaptureFresh && VideoPublisherQueue.HasData() && !GetNetConnection()->IsNetReady()) ++VideoBackpressureTicks;
     if (Inspector && Now>=NextVideoSubscriptionAt) {
         NextVideoSubscriptionAt=Now+.25;
-        const uint8 Desired=bReconstructedViews ? 0 : bMultiView ? 3 : ViewSlot>=0 ? (1<<ViewSlot) : 0;
+        const uint8 Desired=MRFPSVideo::ObserverSubscription(bReconstructedViews,bMultiView,ViewSlot,PlayerVideoWindowMask());
         if (Desired!=LastVideoSubscriptionSent) { ServerSubscribeQuestVideo(Desired); LastVideoSubscriptionSent=Desired; }
     }
     if (Publisher || Inspector) LogVideoDiagnostics(Publisher?TEXT("publisher"):TEXT("viewer"));

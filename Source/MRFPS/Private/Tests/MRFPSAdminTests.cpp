@@ -3,6 +3,7 @@
 #include "MRFPSHapticsComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -148,38 +149,74 @@ bool FMRFPSAdminAuthorityTest::RunTest(const FString& Parameters)
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSBuildingTest,"MRFPS.Admin.BuildGridKindsAndRemoval",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSBuildingTest,"MRFPS.Admin.EditableWallAndRemoval",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
 bool FMRFPSBuildingTest::RunTest(const FString& Parameters)
 {
     FMRFPSArenaLayout Layout;Layout.Center=FVector(300,-200,20);Layout.YawDegrees=35;
     FTransform Snapped;
-    TestTrue(TEXT("Grid coordinates are floor local even after rotated calibration"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Crate,Layout.ToWorld(FVector(71,-119,0)),89,Snapped));
-    TestTrue(TEXT("Fifty centimetre grid does not alter the configured floor"),Layout.ToLocal(Snapped.GetLocation()).Equals(FVector(50,-100,50),.01));
+    TestTrue(TEXT("Grid coordinates are floor local even after rotated calibration"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Wall,Layout.ToWorld(FVector(71,-119,0)),89,Snapped));
+    TestTrue(TEXT("Fifty centimetre grid does not alter the configured floor"),Layout.ToLocal(Snapped.GetLocation()).Equals(FVector(50,-100,100),.01));
     TestTrue(TEXT("Rotation snaps to floor-relative quarter turns"),FMath::IsNearlyEqual(Snapped.Rotator().Yaw,125.,.01));
     TestFalse(TEXT("Invalid object kind cannot allocate a preview or server actor"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind(255),Layout.Center,0,Snapped));
     TestFalse(TEXT("NaN yaw is rejected"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Wall,Layout.Center,std::numeric_limits<float>::quiet_NaN(),Snapped));
-    TestFalse(TEXT("High stacks are bounded"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Crate,Layout.ToWorld(FVector(0,0,600)),0,Snapped));
+    TestFalse(TEXT("High stacks are bounded"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Wall,Layout.ToWorld(FVector(0,0,600)),0,Snapped));
+    TestTrue(TEXT("A wall can sit exactly on a 2.5 metre wall"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Wall,Layout.ToWorld(FVector(0,0,250)),0,Snapped) &&
+        FMath::IsNearlyEqual(Layout.ToLocal(Snapped.GetLocation()).Z,350.,.01));
+    TestFalse(TEXT("Floor, stair and crate identifiers are rejected"),MRFPSBuild::Valid(EMRFPSBuildKind(1)) || MRFPSBuild::Valid(EMRFPSBuildKind(2)) || MRFPSBuild::Valid(EMRFPSBuildKind(3)));
     FAdminWorld F;if(!TestTrue(TEXT("Isolated authority world"),F.Create())) return false;
     FString Error;
-    for(int32 Kind=0;Kind<4;++Kind) {
-        const FVector Origin(-150+Kind*100,0,1000);
-        TestFalse(TEXT("Observers cannot place any kind"),F.Mode->PlaceAdminObject(F.Observer,EMRFPSBuildKind(Kind),Origin,FVector(0,0,-1),0,Error));
-        TestTrue(TEXT("Admin can place each kind"),F.Mode->PlaceAdminObject(F.Admin,EMRFPSBuildKind(Kind),Origin,FVector(0,0,-1),0,Error));
-    }
-    TestEqual(TEXT("Four server actors are replicated"),F.Walls(),4);
-    AMRFPSBarrier* Stairs=nullptr;
-    for(TActorIterator<AMRFPSBarrier> It(F.World);It;++It) {
-        TestTrue(TEXT("All build objects have their actual kind replicated"),It->GetIsReplicated()&&It->bAdminPlaced);
-        if(It->BuildKind==EMRFPSBuildKind::Stairs) Stairs=*It;
-    }
-    if(TestNotNull(TEXT("Stair actor"),Stairs)) {
-        TestEqual(TEXT("Stair body is not an invisible solid box"),Stairs->Collision->GetCollisionEnabled(),ECollisionEnabled::NoCollision);
-        for(const auto& Step:Stairs->BuildSteps) TestTrue(TEXT("Each visible stair step has real bullet collision"),Step&&Step->IsVisible()&&Step->GetCollisionResponseToChannel(ECC_GameTraceChannel1)==ECR_Block);
-    }
-    TestFalse(TEXT("Observers cannot delete an object"),F.Mode->RemoveAdminObject(F.Observer,FVector(-150,0,1000),FVector(0,0,-1),Error));
-    TestTrue(TEXT("Admin ray deletes the selected object"),F.Mode->RemoveAdminObject(F.Admin,FVector(-150,0,1000),FVector(0,0,-1),Error));
-    TestEqual(TEXT("Deletion leaves the other kinds intact"),F.Walls(),3);
+    const FVector FloorRay(0,0,1000),Down(0,0,-1);
+    TestFalse(TEXT("Observers cannot place a wall"),F.Mode->PlaceAdminObject(F.Observer,EMRFPSBuildKind::Wall,FloorRay,Down,0,Error));
+    TestFalse(TEXT("Admin cannot place a removed object kind"),F.Mode->PlaceAdminObject(F.Admin,EMRFPSBuildKind(1),FloorRay,Down,0,Error));
+    TestTrue(TEXT("Admin can place a wall"),F.Mode->PlaceAdminObject(F.Admin,EMRFPSBuildKind::Wall,FloorRay,Down,0,Error));
+    TestEqual(TEXT("One replicated wall was created"),F.Walls(),1);
+    AMRFPSBarrier* Wall=nullptr;for(TActorIterator<AMRFPSBarrier> It(F.World);It;++It) if(It->bAdminPlaced) Wall=*It;
+    if(!TestNotNull(TEXT("Editable wall actor"),Wall)) return false;
+    TestTrue(TEXT("Default wall is replicated and two metres high"),Wall->GetIsReplicated() && Wall->WallShape.IsSane() && Wall->WallShape.HeightRows==4);
+    TestEqual(TEXT("The full rectangular root cannot invisibly block openings"),Wall->Collision->GetCollisionEnabled(),ECollisionEnabled::NoCollision);
+    TestEqual(TEXT("Twelve visible cells form the default wall"),Wall->WallCells->GetInstanceCount(),12);
+    auto HitsWall=[&](double Y,double Z) {
+        FHitResult Hit;FCollisionQueryParams Query;for(auto* Player:F.Players) Query.AddIgnoredActor(Player);
+        return F.World->LineTraceSingleByChannel(Hit,FVector(-250,Y,Z),FVector(250,Y,Z),ECC_GameTraceChannel1,Query) && Hit.GetActor()==Wall;
+    };
+    const FVector MidRay(-250,0,75),Across(1,0,0);
+    TestTrue(TEXT("A projectile hits the original solid cell"),HitsWall(0,75));
+    TestFalse(TEXT("An observer cannot edit a wall"),F.Mode->EditAdminWall(F.Observer,MidRay,Across,EMRFPSWallEdit::ToggleCell,Error));
+    TestTrue(TEXT("Admin opens the selected cell"),F.Mode->EditAdminWall(F.Admin,MidRay,Across,EMRFPSWallEdit::ToggleCell,Error));
+    TestFalse(TEXT("A projectile passes through the real opening"),HitsWall(0,75));
+    TestTrue(TEXT("An adjacent solid cell still blocks projectiles"),HitsWall(-55,75));
+    TestEqual(TEXT("Opening removes one rendered cell"),Wall->WallCells->GetInstanceCount(),11);
+    auto* Blocker=F.World->SpawnActor<AActor>();
+    auto* BlockerBox=NewObject<UBoxComponent>(Blocker);Blocker->SetRootComponent(BlockerBox);Blocker->AddInstanceComponent(BlockerBox);
+    BlockerBox->InitBoxExtent(FVector(2,10,10));BlockerBox->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+    BlockerBox->SetCollisionResponseToAllChannels(ECR_Ignore);BlockerBox->SetCollisionResponseToChannel(ECC_GameTraceChannel1,ECR_Block);
+    BlockerBox->RegisterComponent();Blocker->SetActorLocation(FVector(5,0,75));
+    TestFalse(TEXT("A cell cannot be restored into an occupied space"),F.Mode->EditAdminWall(F.Admin,MidRay,Across,EMRFPSWallEdit::ToggleCell,Error));
+    TestEqual(TEXT("Occupied-cell rejection is reported"),Error,FString(TEXT("ADMIN_WALL_OCCUPIED")));
+    TestFalse(TEXT("Rejected restore leaves the opening"),Wall->WallShape.IsSolid(1,1));
+    Blocker->Destroy();
+    TestTrue(TEXT("The same ray can select and restore an empty cell"),F.Mode->EditAdminWall(F.Admin,MidRay,Across,EMRFPSWallEdit::ToggleCell,Error));
+    TestTrue(TEXT("Restored cell blocks projectiles again"),HitsWall(0,75));
+    const FVector LowRay(-250,0,25);
+    TestFalse(TEXT("The area above the original wall is open"),HitsWall(0,225));
+    TestTrue(TEXT("Admin increases height by one row"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::Taller,Error));
+    TestTrue(TEXT("The added row actually blocks projectiles"),Wall->WallShape.HeightRows==5 && HitsWall(0,225));
+    const FVector HighRay(-250,0,225);
+    TestTrue(TEXT("An upper cell can be opened"),F.Mode->EditAdminWall(F.Admin,HighRay,Across,EMRFPSWallEdit::ToggleCell,Error));
+    TestTrue(TEXT("Admin reduces height by one row"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::Shorter,Error));
+    TestFalse(TEXT("The removed row no longer blocks projectiles"),HitsWall(0,225));
+    TestTrue(TEXT("Raising the wall restores the upper row"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::Taller,Error));
+    TestFalse(TEXT("The upper opening survives shortening and raising"),HitsWall(0,225));
+    TestTrue(TEXT("The preserved upper opening can be restored"),F.Mode->EditAdminWall(F.Admin,HighRay,Across,EMRFPSWallEdit::ToggleCell,Error) && HitsWall(0,225));
+    for(int32 Row=5;Row<MRFPSBuild::WallMaxRows;++Row) TestTrue(TEXT("Wall height can increase within its limit"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::Taller,Error));
+    TestFalse(TEXT("Wall height cannot exceed eight rows"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::Taller,Error));
+    for(int32 Row=MRFPSBuild::WallMaxRows;Row>1;--Row) TestTrue(TEXT("Wall height can decrease to its minimum"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::Shorter,Error));
+    TestFalse(TEXT("Wall height cannot drop below one row"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::Shorter,Error));
+    TestFalse(TEXT("Observers cannot delete a wall"),F.Mode->RemoveAdminObject(F.Observer,MidRay,Across,Error));
+    TestTrue(TEXT("Admin opens a cell again before deleting"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::ToggleCell,Error));
+    TestTrue(TEXT("A wall can be deleted through its opening"),F.Mode->RemoveAdminObject(F.Admin,LowRay,Across,Error));
+    TestEqual(TEXT("Deleting the wall removes its actor"),F.Walls(),0);
     return true;
 }
 namespace

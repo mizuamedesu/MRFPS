@@ -103,20 +103,26 @@ bool FMRFPSHandWeaponAimTest::RunTest(const FString& Parameters)
     const FTransform EngineToTracking(FRotator(0,-25,0),FVector(5,10,0));
     const FTransform TrackingToArena(FRotator(0,55,0),FVector(-15,8,0));
     FVector Position; FRotator Rotation;
-    TestTrue(TEXT("A tracked palm yields a weapon pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
+    TestTrue(TEXT("A tracked palm yields a hand pose"),MRFPSHandPose::RightPalmPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
     const FQuat Expected=TrackingToArena.TransformRotation(EngineToTracking.TransformRotation(Hand.HandKeyRotations[Palm])).GetNormalized();
-    TestTrue(TEXT("Weapon forward follows the hand rather than its back"),FVector::DotProduct(Rotation.Vector(),Expected.GetAxisX())>.9999 &&
-        FMath::Abs(FVector::DotProduct(Rotation.Vector(),Expected.GetAxisZ()))<.001);
+    TestTrue(TEXT("Tracked hand forward follows the palm"),FVector::DotProduct(Rotation.Vector(),Expected.GetAxisX())>.9999);
+    const FQuat Weapon=MRFPSHandPose::WeaponFromHand(Rotation.Quaternion());
+    TestTrue(TEXT("The weapon barrel is 90 degrees from the hand's length"),FMath::Abs(FVector::DotProduct(Weapon.GetAxisX(),Expected.GetAxisX()))<.001);
+    TestTrue(TEXT("The weapon barrel points across the palm, not out of the back of the hand"),
+        FVector::DotProduct(Weapon.GetAxisX(),Expected.GetAxisY())>.9999 && FMath::Abs(FVector::DotProduct(Weapon.GetAxisX(),Expected.GetAxisZ()))<.001);
+    TestTrue(TEXT("The downward grip points toward the wrist"),FVector::DotProduct(-Weapon.GetAxisZ(),-Expected.GetAxisX())>.9999);
+    TestTrue(TEXT("A controller's existing aim ray can infer the holding hand without changing the ray"),
+        MRFPSHandPose::HandFromWeapon(Weapon).Equals(Expected,.0001));
     TestTrue(TEXT("Palm position is transformed into the calibrated arena once"),FVector::Dist(Position,
         TrackingToArena.TransformPosition(EngineToTracking.TransformPosition(Hand.HandKeyLocations[Palm])))<.001);
     Hand.HandKeyLocations[IndexTip]=FVector(-100,-200,-300);
     FVector CurledPosition; FRotator CurledRotation;
-    TestTrue(TEXT("A curled finger retains a valid palm pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,CurledPosition,CurledRotation));
+    TestTrue(TEXT("A curled finger retains a valid palm pose"),MRFPSHandPose::RightPalmPose(Hand,EngineToTracking,TrackingToArena,CurledPosition,CurledRotation));
     TestTrue(TEXT("Curling the trigger finger does not turn the gun"),FVector::DotProduct(Rotation.Vector(),CurledRotation.Vector())>.9999);
     Hand.TrackingStatus=ETrackingStatus::NotTracked;
-    TestFalse(TEXT("Lost hand tracking cannot override a controller pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
+    TestFalse(TEXT("Lost hand tracking cannot override a controller pose"),MRFPSHandPose::RightPalmPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
     Hand.TrackingStatus=ETrackingStatus::Tracked; Hand.HandKeyRotations[Palm]=FQuat(0,0,0,0);
-    TestFalse(TEXT("An invalid palm rotation cannot produce a weapon pose"),MRFPSHandPose::RightPalmWeaponPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
+    TestFalse(TEXT("An invalid palm rotation cannot produce a weapon pose"),MRFPSHandPose::RightPalmPose(Hand,EngineToTracking,TrackingToArena,Position,Rotation));
     return true;
 }
 
@@ -363,7 +369,7 @@ private:
         Pawn->Pose.bDesktop=true;
         Pawn->Pose.Head = Head;
         const FRotator Rotation(0, Yaw, 0);
-        Pawn->Pose.HeadRotation = Pawn->Pose.LeftRotation = Pawn->Pose.RightRotation = Rotation;
+        Pawn->Pose.HeadRotation = Pawn->Pose.LeftRotation = Pawn->Pose.RightRotation = Pawn->Pose.RightHandRotation = Rotation;
         Pawn->Pose.Left = Head + Rotation.RotateVector(FVector(40, 0, -40));
         Pawn->Pose.Right = Head + Rotation.RotateVector(FVector(40, 0, -40));
         Pawn->bCalibrated = true;

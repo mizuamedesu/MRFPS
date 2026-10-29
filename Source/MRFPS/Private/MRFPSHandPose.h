@@ -6,10 +6,9 @@
 namespace MRFPSHandPose
 {
 // Unreal's OpenXR hand-joint palm basis has +X along the hand toward the
-// fingers and +Z out of the back of the hand. The pistol mesh also points
-// along +X. In particular, do not use the index fingertip as the weapon axis:
-// it turns toward the palm when the player curls their finger to shoot.
-inline bool RightPalmWeaponPose(const FXRHandTrackingState& Hand,const FTransform& EngineToTracking,
+// fingers and +Z out of the back of the hand. Retain this as the hand pose;
+// finger curls must not rotate the wrist or the attached weapon.
+inline bool RightPalmPose(const FXRHandTrackingState& Hand,const FTransform& EngineToTracking,
     const FTransform& TrackingToArena,FVector& OutPosition,FRotator& OutRotation)
 {
     const int32 Palm=static_cast<int32>(EHandKeypoint::Palm);
@@ -22,5 +21,22 @@ inline bool RightPalmWeaponPose(const FXRHandTrackingState& Hand,const FTransfor
     OutPosition=Position;
     OutRotation=Rotation.GetNormalized().Rotator();
     return !OutRotation.ContainsNaN();
+}
+
+// Palm +X runs toward the fingers and +Z out of the back of the hand. A
+// right-handed pistol points across the palm (+Y), not out of its back; its
+// downward grip (-Z) runs toward the wrist. This also fixes the model roll.
+inline FQuat WeaponFromHand(const FQuat& HandRotation)
+{
+    const FQuat Hand=HandRotation.GetNormalized();
+    return FRotationMatrix::MakeFromXZ(Hand.GetAxisY(),Hand.GetAxisX()).ToQuat().GetNormalized();
+}
+
+// A controller aim pose is already an aiming ray. Infer the hand orientation
+// that holds this weapon, rather than rotating that ray a second time.
+inline FQuat HandFromWeapon(const FQuat& WeaponRotation)
+{
+    const FQuat Offset=WeaponFromHand(FQuat::Identity);
+    return (WeaponRotation.GetNormalized()*Offset.Inverse()).GetNormalized();
 }
 }

@@ -107,4 +107,56 @@ bool FMRFPSMannyTrackingTest::RunTest(const FString& Parameters)
     Pose.bHeadTracked=false;Update(1);TestFalse(TEXT("Lost tracking hides the inferred body"),Avatar->IsVisible());
     World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSRenderedAnatomyTest,"MRFPS.Avatar.RenderedAnatomy",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSRenderedAnatomyTest::RunTest(const FString& Parameters)
+{
+    const auto Init=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false).CreateNavigation(false)
+        .CreateAISystem(false).ShouldSimulatePhysics(false).CreateFXSystem(false).SetTransactional(false);
+    UWorld* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Init);
+    if(!TestNotNull(TEXT("Anatomy world"),World)) return false;
+    GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
+    auto* Owner=World->SpawnActor<AActor>(); auto* Avatar=NewObject<UMRFPSAvatarComponent>(Owner);
+    Owner->SetRootComponent(Avatar);Owner->AddInstanceComponent(Avatar);Avatar->RegisterComponent();
+    if(!TestTrue(TEXT("Real mannequin initializes"),Avatar->InitializeAvatar())) {
+        World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return false;
+    }
+    const auto* Mesh=Cast<USkeletalMesh>(Avatar->GetSkinnedAsset());
+    if(!Mesh || !TestTrue(TEXT("Head, chest and pelvis bones exist"),Mesh->GetRefSkeleton().FindBoneIndex(TEXT("head"))>=0 &&
+        Mesh->GetRefSkeleton().FindBoneIndex(TEXT("spine_04"))>=0 && Mesh->GetRefSkeleton().FindBoneIndex(TEXT("pelvis"))>=0)) {
+        World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return false;
+    }
+    FMRFPSArenaLayout Layout;FMRFPSPose Pose;Pose.bHeadTracked=true;
+    auto Check=[&](const TCHAR* Name,double Height,double Pitch,bool Hands) {
+        Pose.Head=FVector(0,0,Height);Pose.HeadRotation=FRotator(Pitch,0,0);
+        Pose.Left=FVector(30,-28,Height-45);Pose.Right=FVector(35,28,Height-40);
+        Pose.bLeftTracked=Pose.bRightTracked=Hands;
+        for(int32 Frame=0;Frame<45;++Frame) { ++Pose.Sequence;Avatar->UpdateTracking(Pose,Layout,1,1.f/60,false); }
+        const FVector Head=Avatar->GetBoneLocationByName(TEXT("head"),EBoneSpaces::WorldSpace);
+        const FVector Chest=Avatar->GetBoneLocationByName(TEXT("spine_04"),EBoneSpaces::WorldSpace);
+        const FVector Pelvis=Avatar->GetBoneLocationByName(TEXT("pelvis"),EBoneSpaces::WorldSpace);
+        const FVector Expected=FVector(Pose.Head)-Pose.HeadRotation.Quaternion().RotateVector(FVector(0,0,8*Avatar->GetBodyScale()));
+        AddInfo(FString::Printf(TEXT("%s rendered Z: HMD %.2f head %.2f chest %.2f pelvis %.2f; head target error %.2f cm; rendered/solver %.2f cm"),
+            Name,Height,Head.Z,Chest.Z,Pelvis.Z,FVector::Dist(Head,Expected),FVector::Dist(Head,Avatar->SolvedWorldPosition(TEXT("head")))));
+        TestTrue(FString::Printf(TEXT("%s: rendered head follows the headset"),Name),FVector::Dist(Head,Expected)<10);
+        TestTrue(FString::Printf(TEXT("%s: chest stays below head"),Name),Chest.Z<Head.Z-3);
+        TestTrue(FString::Printf(TEXT("%s: pelvis stays below chest"),Name),Pelvis.Z<Chest.Z-10);
+        TestTrue(FString::Printf(TEXT("%s: renderer matches the IK head"),Name),FVector::Dist(Head,Avatar->SolvedWorldPosition(TEXT("head")))<1);
+    };
+    Check(TEXT("upright"),170,0,true);
+    Check(TEXT("look down"),170,-75,true);
+    Check(TEXT("look up"),170,75,true);
+    Check(TEXT("hands absent"),170,0,false);
+    Check(TEXT("crouch"),105,0,true);
+    Check(TEXT("very low headset"),70,0,true);
+    Avatar->DestroyComponent();
+    Avatar=NewObject<UMRFPSAvatarComponent>(Owner);
+    Owner->SetRootComponent(Avatar);Owner->AddInstanceComponent(Avatar);Avatar->RegisterComponent();
+    if(TestTrue(TEXT("A fresh mannequin initializes when the first tracked sample is low"),Avatar->InitializeAvatar())) {
+        Check(TEXT("initial low headset"),90,0,true);
+        Check(TEXT("standing after low initial sample"),170,0,true);
+    }
+    World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
+}
 #endif

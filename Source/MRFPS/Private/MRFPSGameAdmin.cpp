@@ -114,6 +114,7 @@ void AMRFPSPlayerController::SetAdminWallPlacement(bool Enabled)
     if(!bAdminWallPlacement) {
         bConsumeAdminPlacementClick=false;
         if(AdminPreview) { AdminPreview->Destroy();AdminPreview=nullptr; }
+        if(AdminCellPreview) { AdminCellPreview->DestroyComponent();AdminCellPreview=nullptr; }
     }
     if (WasEnabled && !bAdminWallPlacement) bMultiView=bAdminPlacementWasMultiView;
     if (bAdminWallPlacement) {

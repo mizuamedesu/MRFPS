@@ -19,6 +19,7 @@
 class UCameraComponent;
 class UMotionControllerComponent;
 class UStaticMeshComponent;
+class UInstancedStaticMeshComponent;
 class UBoxComponent;
 class UCapsuleComponent;
 class USphereComponent;
@@ -32,6 +33,7 @@ class UMRFPSMenu;
 class UTexture2D;
 class UMRFPSAdminPanel;
 class UMRFPSAvatarComponent;
+class SWindow;
 
 UENUM()
 enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFloor,CalibrateFloor,SetDimensions,ClearAdminWalls };
@@ -50,7 +52,10 @@ struct FMRFPSPose
     UPROPERTY() FVector_NetQuantize10 Right = FVector(40,25,130);
     UPROPERTY() FRotator HeadRotation = FRotator::ZeroRotator;
     UPROPERTY() FRotator LeftRotation = FRotator::ZeroRotator;
+    // RightRotation is the corrected weapon aim; the separate hand rotation
+    // keeps the avatar wrist independent of the weapon grip offset.
     UPROPERTY() FRotator RightRotation = FRotator::ZeroRotator;
+    UPROPERTY() FRotator RightHandRotation = FRotator::ZeroRotator;
     UPROPERTY() float LeftOpenness = 0;
     UPROPERTY() bool bHeadTracked = false;
     UPROPERTY() bool bLeftTracked = false;
@@ -122,11 +127,13 @@ public:
     void ApplyShot(float Damage);
     UPROPERTY(VisibleAnywhere) TObjectPtr<UBoxComponent> Collision;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> Visual;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UInstancedStaticMeshComponent> WallCells;
     UPROPERTY(Replicated) float Health = 120;
     UPROPERTY(Replicated) int32 OwnerSlot = -1;
-    UPROPERTY(Replicated) bool bAdminPlaced=false;
+    UPROPERTY(ReplicatedUsing=ApplyBuildKind) bool bAdminPlaced=false;
     UPROPERTY(ReplicatedUsing=ApplyBuildKind) EMRFPSBuildKind BuildKind=EMRFPSBuildKind::Wall;
-    UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> BuildSteps;
+    UPROPERTY(ReplicatedUsing=ApplyBuildKind) FMRFPSWallShape WallShape;
+    UPROPERTY(Transient) TArray<TObjectPtr<UBoxComponent>> WallCollisionParts;
     bool bPlacementPreview=false;
     UFUNCTION() void ApplyBuildKind();
     void SetPreviewColor(bool Valid);
@@ -284,8 +291,8 @@ public:
     FString AdminStatus;
     UPROPERTY() TObjectPtr<UMRFPSAdminPanel> AdminPanel;
     float AdminWallYaw=0;
-    EMRFPSBuildKind AdminBuildKind=EMRFPSBuildKind::Wall;
     bool bAdminPreviewValid=false;
+    float SelectedWallHeightCm=0;
     FString AdminFeedback() const;
     void SetAdminFeedback(FName Code);
     UFUNCTION(Exec) void MRFPSConnect(const FString& Address, bool Inspector = false);
@@ -298,6 +305,14 @@ public:
     UFUNCTION(Exec) void MRFPSReconstructedViews();
     UTexture2D* GetQuestVideoTexture(int32 Slot) const;
     FString GetQuestVideoStatus(int32 Slot) const;
+    void OpenPlayerVideoWindow(int32 Slot);
+    bool TryOpenInspectorWindowAtCursor();
+    void ClosePlayerVideoWindows();
+    uint8 PlayerVideoWindowMask() const;
+    void OpenInspectorViewWindow();
+    void CloseInspectorViewWindow();
+    USceneCaptureComponent2D* GetInspectorWindowCamera() const { return InspectorWindowCamera; }
+    UTextureRenderTarget2D* GetInspectorWindowTarget() const { return InspectorWindowTarget; }
     void ServiceVideoRelay();
     void ServiceGeometryRelay();
     void ResetGeometryForLayout();
@@ -309,10 +324,16 @@ public:
     int32 ViewSlot = -1;
     FString ConnectionError;
 private:
+    TWeakPtr<SWindow> PlayerVideoWindows[2];
+    TWeakPtr<SWindow> InspectorViewWindow;
+    UPROPERTY(Transient) TObjectPtr<USceneCaptureComponent2D> InspectorWindowCamera;
+    UPROPERTY(Transient) TObjectPtr<UTextureRenderTarget2D> InspectorWindowTarget;
+    bool bConsumePlayerVideoClick=false;
     void ConnectWithRole(const FString& Address,const FString& RequestedRole);
     UFUNCTION(Server,Reliable) void ServerAdminAction(EMRFPSAdminAction Action,FVector2D Dimensions,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminPlaceWall(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminPlaceObject(EMRFPSBuildKind Kind,FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
+    UFUNCTION(Server,Reliable) void ServerAdminEditWall(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,EMRFPSWallEdit Edit,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminRemoveObject(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Client,Reliable) void ClientAdminResult(FName SafeCode);
     bool bAdminWallPlacement=false;
@@ -323,8 +344,11 @@ private:
     double LastAdminWallAt=-100;
     double LastAdminFeedbackAt=-100,NextAdminRepeatAt=0;
     UPROPERTY(Transient) TObjectPtr<AMRFPSBarrier> AdminPreview;
+    UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> AdminCellPreview;
     void TickAdminPreview();
     void PlaceSelectedBuild();
+    bool ToggleSelectedWallCell();
+    void AdjustSelectedWallHeight(int32 Delta);
     void RemoveSelectedBuild();
     UFUNCTION(Server, Unreliable) void ServerPublishGeometry(const FMRFPSGeometryChunk& Chunk);
     UFUNCTION(Server, Reliable) void ServerStopGeometry(uint32 Calibration,uint32 FinalSequence,uint32 LayoutRevision);
@@ -426,6 +450,7 @@ public:
     bool HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdminAction Action,FVector2D Dimensions,FString& SafeError);
     bool PlaceAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
     bool PlaceAdminObject(AMRFPSPlayerController* Admin,EMRFPSBuildKind Kind,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
+    bool EditAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,EMRFPSWallEdit Edit,FString& SafeError);
     bool RemoveAdminObject(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,FString& SafeError);
     void InvalidateSharedFloor();
     UPROPERTY(Config) int32 MaxInspectors = 32;

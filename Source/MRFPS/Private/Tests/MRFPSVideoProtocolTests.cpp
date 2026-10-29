@@ -5,6 +5,19 @@
 #include "Serialization/MemoryWriter.h"
 #include <limits>
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSVideoDetachedSubscriptionTest,"MRFPS.Video.DetachedSubscription",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSVideoDetachedSubscriptionTest::RunTest(const FString& Parameters)
+{
+    TestEqual(TEXT("Two player thumbnails subscribe to both sources"),MRFPSVideo::ObserverSubscription(false,true,-1,0),uint8(3));
+    TestEqual(TEXT("A full-screen view subscribes only to its player"),MRFPSVideo::ObserverSubscription(false,false,1,0),uint8(2));
+    TestEqual(TEXT("A detached P1 remains subscribed while the main view follows P2"),MRFPSVideo::ObserverSubscription(false,false,1,1),uint8(3));
+    TestEqual(TEXT("Detached windows remain subscribed while the main view uses reconstructed cameras"),MRFPSVideo::ObserverSubscription(true,false,-1,3),uint8(3));
+    TestEqual(TEXT("Closing both windows and hiding thumbnails releases both subscriptions"),MRFPSVideo::ObserverSubscription(false,false,-1,0),uint8(0));
+    TestEqual(TEXT("Invalid player slots and extra mask bits cannot add subscriptions"),MRFPSVideo::ObserverSubscription(false,false,2,0xfc),uint8(0));
+    return true;
+}
+
 namespace
 {
 FMRFPSVideoChunk VideoPart(int32 Index,uint32 Sequence=1,uint32 Stream=1)
