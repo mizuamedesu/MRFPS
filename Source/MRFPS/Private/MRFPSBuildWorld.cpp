@@ -31,7 +31,7 @@ bool PickAdminWall(UWorld* World,const FVector& Origin,const FVector& Direction,
     double Nearest=20000.;
     for(TActorIterator<AMRFPSBarrier> It(World);It;++It) {
         auto* Wall=*It;
-        if(!Wall->bAdminPlaced || Wall->bPlacementPreview || !Wall->WallShape.IsSane()) continue;
+        if(!Wall->bAdminPlaced || Wall->bPlacementPreview || Wall->BuildKind!=EMRFPSBuildKind::Wall || !Wall->WallShape.IsSane()) continue;
         const FTransform Transform=Wall->GetActorTransform();
         const FVector LocalOrigin=Transform.InverseTransformPosition(Origin);
         const FVector LocalDirection=Transform.InverseTransformVectorNoScale(Direction);
@@ -51,6 +51,18 @@ bool PickAdminWall(UWorld* World,const FVector& Origin,const FVector& Direction,
     for(TActorIterator<AMRFPSBarrier> It(World);It;++It) if(It->bPlacementPreview) Query.AddIgnoredActor(*It);
     FHitResult Obstruction;
     return !World->LineTraceSingleByChannel(Obstruction,Origin,Origin+Direction*FMath::Max(0.,Pick.Distance-.5),ECC_GameTraceChannel1,Query);
+}
+
+AMRFPSBarrier* PickAdminCrate(UWorld* World,const FVector& Origin,const FVector& Direction)
+{
+    if (!World || !ValidBuildRay(Origin,Direction)) return nullptr;
+    FCollisionQueryParams Query;
+    for (TActorIterator<AMRFPSPawn> It(World);It;++It) Query.AddIgnoredActor(*It);
+    for (TActorIterator<AMRFPSBarrier> It(World);It;++It) if (It->bPlacementPreview) Query.AddIgnoredActor(*It);
+    FHitResult Hit;
+    if (!World->LineTraceSingleByChannel(Hit,Origin,Origin+Direction*20000,ECC_GameTraceChannel1,Query)) return nullptr;
+    auto* Piece=Cast<AMRFPSBarrier>(Hit.GetActor());
+    return Piece && Piece->bAdminPlaced && !Piece->bPlacementPreview && Piece->BuildKind==EMRFPSBuildKind::Crate?Piece:nullptr;
 }
 
 bool AddedCellsAreClear(UWorld* World,AMRFPSBarrier* Wall,const FMRFPSWallShape& Next)
@@ -103,10 +115,11 @@ bool Unoccupied(UWorld* World,EMRFPSBuildKind Kind,const FTransform& Transform,A
 void AMRFPSBarrier::ApplyBuildKind()
 {
     if(!Collision||!Visual||!WallCells) return;
-    const bool Editable=bAdminPlaced && MRFPSBuild::Valid(BuildKind) && WallShape.IsSane();
-    Collision->SetBoxExtent(MRFPSBuild::Extent(EMRFPSBuildKind::Wall));
-    Collision->SetCollisionEnabled(bAdminPlaced?ECollisionEnabled::NoCollision:ECollisionEnabled::QueryOnly);
-    Visual->SetVisibility(!bAdminPlaced);
+    const bool Editable=bAdminPlaced && BuildKind==EMRFPSBuildKind::Wall && WallShape.IsSane();
+    const bool Crate=bAdminPlaced && BuildKind==EMRFPSBuildKind::Crate;
+    Collision->SetBoxExtent(MRFPSBuild::Extent(Crate?EMRFPSBuildKind::Crate:EMRFPSBuildKind::Wall));
+    Collision->SetCollisionEnabled(bAdminPlaced && !Crate?ECollisionEnabled::NoCollision:ECollisionEnabled::QueryOnly);
+    Visual->SetVisibility(!bAdminPlaced || Crate);
     WallCells->ClearInstances();WallCells->SetVisibility(Editable);
     if(!bAdminPlaced) {
         if(auto* Mesh=LoadObject<UStaticMesh>(nullptr,TEXT("/Game/Meshes/SM_MRWall.SM_MRWall"))) { Visual->SetStaticMesh(Mesh);Visual->SetRelativeScale3D(FVector::OneVector); }
@@ -117,6 +130,28 @@ void AMRFPSBarrier::ApplyBuildKind()
         const FVector VisualExtent=MRFPSBuild::CellExtent()-FVector(0,.5,.5);
         for(int32 Row=0;Row<WallShape.HeightRows;++Row) for(int32 Col=0;Col<MRFPSBuild::WallColumns;++Col) if(WallShape.IsSolid(Col,Row))
             WallCells->AddInstance(FTransform(FQuat::Identity,MRFPSBuild::CellCenter(Col,Row),VisualExtent/50));
+#endif
+    }
+    if (Crate) {
+        if (auto* Cube=LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Cube.Cube"))) Visual->SetStaticMesh(Cube);
+        Visual->SetRelativeLocation(FVector::ZeroVector);Visual->SetRelativeScale3D(FVector::OneVector);
+        if (auto* Wood=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Wood.M_Wood"))) Visual->SetMaterial(0,Wood);
+        if (auto* Dark=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_WoodDark.M_WoodDark"))) WallCells->SetMaterial(0,Dark);
+#if !UE_SERVER
+        // Framing strips on the sides and top read as a wooden crate even at
+        // a distance; the authority uses one matching one-metre collision box.
+        WallCells->SetVisibility(true);
+        const auto Add=[this](FVector Position,FVector Extent) { WallCells->AddInstance(FTransform(FQuat::Identity,Position,Extent/50)); };
+        for (double Side:{-1.,1.}) for (double Edge:{-40.,40.}) {
+            Add(FVector(Side*50,Edge,0),FVector(2,5,50));
+            Add(FVector(Side*50,0,Edge),FVector(2,50,5));
+            Add(FVector(Edge,Side*50,0),FVector(5,2,50));
+            Add(FVector(0,Side*50,Edge),FVector(50,2,5));
+        }
+        for (double Edge:{-40.,40.}) {
+            Add(FVector(Edge,0,50),FVector(5,50,2));
+            Add(FVector(0,Edge,50),FVector(50,5,2));
+        }
 #endif
     }
     // Merge horizontally adjacent cells into collision boxes. Both the server's
@@ -176,10 +211,38 @@ bool AMRFPSGameMode::PlaceAdminObject(AMRFPSPlayerController* Admin,EMRFPSBuildK
     Error=TEXT("ADMIN_WALL_OCCUPIED");if(!Unoccupied(GetWorld(),Kind,Transform,Support)) return false;
     auto* Piece=GetWorld()->SpawnActorDeferred<AMRFPSBarrier>(AMRFPSBarrier::StaticClass(),Transform,Admin,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
     if(!Piece) { Error=TEXT("ADMIN_WALL_SPAWN_FAILED");return false; }
-    Piece->bAdminPlaced=true;Piece->BuildKind=Kind;Piece->OwnerSlot=-1;
+    Piece->bAdminPlaced=true;Piece->BuildKind=Kind;Piece->OwnerSlot=-1;Piece->bMapAnchor=true;
+    Piece->MapLocalPosition=GS->Layout.ToLocal(Transform.GetLocation());
+    Piece->MapLocalYaw=FRotator::NormalizeAxis(Transform.Rotator().Yaw-GS->Layout.YawDegrees);
     UGameplayStatics::FinishSpawningActor(Piece,Transform);Piece->ApplyBuildKind();Piece->ForceNetUpdate();
     UE_LOG(LogMRFPSBuild,Display,TEXT("MRFPS_BUILD_PLACED kind=%d location=%s"),int32(Kind),*Transform.GetLocation().ToCompactString());
     Error.Empty();return true;
+}
+
+void AMRFPSGameMode::SpawnDefaultStage()
+{
+    auto* GS=GetGameState<AMRFPSGameState>();
+    if (!HasAuthority() || !GS || !GS->Layout.IsSane()) return;
+    struct FInitialPiece { EMRFPSBuildKind Kind; FVector Local; float Yaw; };
+    const FInitialPiece Pieces[]={
+        {EMRFPSBuildKind::Wall,FVector(-75,-70,100),90},
+        {EMRFPSBuildKind::Wall,FVector(75,70,100),90},
+        {EMRFPSBuildKind::Crate,FVector(120,-175,50),0},
+        {EMRFPSBuildKind::Crate,FVector(-120,175,50),0}
+    };
+    int32 Spawned=0;
+    for (const auto& Initial:Pieces) {
+        if (Spawned>=MaxAdminWalls) break;
+        const FTransform Transform(FRotator(0,GS->Layout.YawDegrees+Initial.Yaw,0),GS->Layout.ToWorld(Initial.Local));
+        if (!MRFPSBuild::Fits(GS->Layout,Initial.Kind,Transform)) continue;
+        auto* Piece=GetWorld()->SpawnActorDeferred<AMRFPSBarrier>(AMRFPSBarrier::StaticClass(),Transform,nullptr,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+        if (!Piece) continue;
+        Piece->bAdminPlaced=true;Piece->bDefaultStageObject=true;Piece->bMapAnchor=true;
+        Piece->BuildKind=Initial.Kind;Piece->OwnerSlot=-1;
+        Piece->MapLocalPosition=Initial.Local;Piece->MapLocalYaw=Initial.Yaw;
+        UGameplayStatics::FinishSpawningActor(Piece,Transform);Piece->ApplyBuildKind();Piece->ForceNetUpdate();
+        ++Spawned;
+    }
 }
 bool AMRFPSGameMode::EditAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,EMRFPSWallEdit Edit,FString& Error)
 {
@@ -271,6 +334,24 @@ void AMRFPSPlayerController::TickAdminPreview()
             Dynamic->SetVectorParameterValue(TEXT("Tint"),Pick.Wall->WallShape.IsSolid(Pick.Column,Pick.Row)?FLinearColor(.05,.65,1):FLinearColor(.05,1,.55));
         }
         AdminCellPreview->SetVisibility(true);bAdminPreviewValid=true;return;
+    }
+    if (auto* Crate=PickAdminCrate(GetWorld(),Origin,Direction)) {
+        if (AdminPreview) AdminPreview->SetActorHiddenInGame(true);
+        SelectedWallHeightCm=-1;
+        if (!AdminCellPreview) {
+            AdminCellPreview=NewObject<UStaticMeshComponent>(this);
+            AdminCellPreview->SetStaticMesh(LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Cube.Cube")));
+            AdminCellPreview->SetCollisionEnabled(ECollisionEnabled::NoCollision);AdminCellPreview->SetCastShadow(false);
+            AddInstanceComponent(AdminCellPreview);AdminCellPreview->RegisterComponent();
+        }
+        const FTransform Box=Crate->GetActorTransform();
+        AdminCellPreview->SetWorldTransform(FTransform(Box.GetRotation(),Box.GetLocation(),(MRFPSBuild::Extent(EMRFPSBuildKind::Crate)+FVector(1))/50));
+        if (auto* Base=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Preview.M_Preview"))) {
+            auto* Dynamic=Cast<UMaterialInstanceDynamic>(AdminCellPreview->GetMaterial(0));
+            if (!Dynamic || Dynamic->Parent!=Base) { Dynamic=UMaterialInstanceDynamic::Create(Base,this);AdminCellPreview->SetMaterial(0,Dynamic); }
+            Dynamic->SetVectorParameterValue(TEXT("Tint"),FLinearColor(.05,.65,1));
+        }
+        AdminCellPreview->SetVisibility(true);bAdminPreviewValid=false;return;
     }
     SelectedWallHeightCm=0;
     if(AdminCellPreview) AdminCellPreview->SetVisibility(false);

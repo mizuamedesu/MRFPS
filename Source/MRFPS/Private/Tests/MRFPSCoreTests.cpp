@@ -1,5 +1,6 @@
 #include "MRFPSGame.h"
 #include "../MRFPSHandPose.h"
+#include "../MRFPSGloveInput.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -12,6 +13,30 @@
 #include <limits>
 
 #if WITH_DEV_AUTOMATION_TESTS
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSGloveFingerSourceTest,"MRFPS.Gloves.FingerSource",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMRFPSGloveFingerSourceTest::RunTest(const FString& Parameters)
+{
+    FMRFPSGloveHandFrame Left,Right;
+    FMRFPSFingerPose LeftPose,RightPose;
+    Left.bFlexValid=Right.bFlexValid=true;
+    Left.FingerCurls={.18f,.12f,.07f,.10f,.37f};
+    Left.Flexion[0]=.25f;Left.Splay[0]=-.5f;
+    Right.Flexion[1]=.75f;Right.Splay[1]=.5f;
+    MRFPSGloveInput::CopyFingers(Left,LeftPose);MRFPSGloveInput::CopyFingers(Right,RightPose);
+    TestTrue(TEXT("Both hands use their own ContactGlove finger samples"),LeftPose.bValid && RightPose.bValid);
+    TestEqual(TEXT("Left glove flex is quantized for replication"),int32(LeftPose.Joint[0]),64);
+    TestEqual(TEXT("Right glove flex is independently quantized"),int32(RightPose.Joint[1]),191);
+    TestEqual(TEXT("Left glove spread is preserved"),int32(LeftPose.Splay[0]),64);
+    TestEqual(TEXT("Right glove spread is preserved"),int32(RightPose.Splay[1]),191);
+    TestEqual(TEXT("Fresh open glove activates the palm gesture"),MRFPSGloveInput::LeftOpenness(Left),1.f);
+    Left.bFlexValid=false;MRFPSGloveInput::CopyFingers(Left,LeftPose);
+    TestFalse(TEXT("Stale glove data cannot be presented as fresh finger tracking"),LeftPose.bValid);
+    TestEqual(TEXT("A missing glove cannot fall back to an optical open-palm gesture"),MRFPSGloveInput::LeftOpenness(Left),0.f);
+    TestTrue(TEXT("Loss of the left glove does not invalidate the right"),RightPose.bValid);
+    return true;
+}
 
 namespace MRFPSCoreTests
 {

@@ -7,6 +7,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Materials/MaterialInterface.h"
 #include "GameFramework/WorldSettings.h"
 #include "Misc/AutomationTest.h"
 #include <limits>
@@ -53,7 +54,7 @@ struct FAdminWorld
     AMRFPSPlayerController* Admin=nullptr;
     AMRFPSPlayerController* Observer=nullptr;
     AMRFPSPawn* Players[2]={nullptr,nullptr};
-    bool Create()
+    bool Create(bool KeepDefaultStage=false)
     {
         if (!GEngine) return false;
         const auto Init=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(true).CreateNavigation(false)
@@ -66,6 +67,8 @@ struct FAdminWorld
         // Fixture states below bypass cryptography only in this isolated test.
         // The separate Auth tests exercise real Ed25519 admin admission.
         Mode=World->SpawnActor<AMRFPSGameMode>(); Mode->GameState=State;
+        if (!KeepDefaultStage) for (TActorIterator<AMRFPSBarrier> It(World);It;++It)
+            if (It->bDefaultStageObject) It->Destroy();
         // GameMode PreInitializeComponents creates its own GameState. Keep the
         // fixture's authority and pawns on the same state, as a real world does.
         World->SetGameState(State);
@@ -128,8 +131,10 @@ bool FMRFPSAdminAuthorityTest::RunTest(const FString& Parameters)
     F.Mode->MaxAdminWalls=1;
     TestFalse(TEXT("Authoritative wall cap bounds actor allocation"),F.Mode->PlaceAdminWall(F.Admin,FVector(100,0,500),FVector(0,0,-1),0,Error));
     TestEqual(TEXT("Capacity rejection is precise"),Error,FString(TEXT("ADMIN_WALL_CAPACITY")));
-    TestTrue(TEXT("Reset clears walls and returns to waiting"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Reset,FVector2D::ZeroVector,Error));
-    TestTrue(TEXT("Reset does not start a new round implicitly"),F.State->Phase==EMRFPSMatchPhase::Waiting && !F.State->bCombatPaused && F.Walls()==0);
+    TestTrue(TEXT("Reset returns to waiting while retaining stage objects"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Reset,FVector2D::ZeroVector,Error));
+    TestTrue(TEXT("Reset does not start a new round or erase a map wall"),F.State->Phase==EMRFPSMatchPhase::Waiting && !F.State->bCombatPaused && F.Walls()==1);
+    TestTrue(TEXT("The admin can still explicitly clear stage objects"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::ClearAdminWalls,FVector2D::ZeroVector,Error));
+    TestEqual(TEXT("Explicit clearing removes the retained wall"),F.Walls(),0);
     for (int32 Slot=0;Slot<2;++Slot) F.Players[Slot]->Pose.bDesktop=false;
     F.Move(0,FVector(100,200,120)); F.Move(1,FVector(700,200,230));
     TestFalse(TEXT("Physical calibration is unavailable until operator confirms shared basis"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::CalibrateFloor,FVector2D::ZeroVector,Error));
@@ -163,12 +168,13 @@ bool FMRFPSBuildingTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("High stacks are bounded"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Wall,Layout.ToWorld(FVector(0,0,600)),0,Snapped));
     TestTrue(TEXT("A wall can sit exactly on a 2.5 metre wall"),MRFPSBuild::Snap(Layout,EMRFPSBuildKind::Wall,Layout.ToWorld(FVector(0,0,250)),0,Snapped) &&
         FMath::IsNearlyEqual(Layout.ToLocal(Snapped.GetLocation()).Z,350.,.01));
-    TestFalse(TEXT("Floor, stair and crate identifiers are rejected"),MRFPSBuild::Valid(EMRFPSBuildKind(1)) || MRFPSBuild::Valid(EMRFPSBuildKind(2)) || MRFPSBuild::Valid(EMRFPSBuildKind(3)));
+    TestTrue(TEXT("A wooden crate is a valid map object"),MRFPSBuild::Valid(EMRFPSBuildKind::Crate));
+    TestFalse(TEXT("Unused object identifiers remain rejected"),MRFPSBuild::Valid(EMRFPSBuildKind(2)) || MRFPSBuild::Valid(EMRFPSBuildKind(3)));
     FAdminWorld F;if(!TestTrue(TEXT("Isolated authority world"),F.Create())) return false;
     FString Error;
     const FVector FloorRay(0,0,1000),Down(0,0,-1);
     TestFalse(TEXT("Observers cannot place a wall"),F.Mode->PlaceAdminObject(F.Observer,EMRFPSBuildKind::Wall,FloorRay,Down,0,Error));
-    TestFalse(TEXT("Admin cannot place a removed object kind"),F.Mode->PlaceAdminObject(F.Admin,EMRFPSBuildKind(1),FloorRay,Down,0,Error));
+    TestFalse(TEXT("Admin cannot place an unsupported object kind"),F.Mode->PlaceAdminObject(F.Admin,EMRFPSBuildKind(2),FloorRay,Down,0,Error));
     TestTrue(TEXT("Admin can place a wall"),F.Mode->PlaceAdminObject(F.Admin,EMRFPSBuildKind::Wall,FloorRay,Down,0,Error));
     TestEqual(TEXT("One replicated wall was created"),F.Walls(),1);
     AMRFPSBarrier* Wall=nullptr;for(TActorIterator<AMRFPSBarrier> It(F.World);It;++It) if(It->bAdminPlaced) Wall=*It;
@@ -217,6 +223,46 @@ bool FMRFPSBuildingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Admin opens a cell again before deleting"),F.Mode->EditAdminWall(F.Admin,LowRay,Across,EMRFPSWallEdit::ToggleCell,Error));
     TestTrue(TEXT("A wall can be deleted through its opening"),F.Mode->RemoveAdminObject(F.Admin,LowRay,Across,Error));
     TestEqual(TEXT("Deleting the wall removes its actor"),F.Walls(),0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSDefaultStageTest,"MRFPS.Admin.DefaultStageObjects",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSDefaultStageTest::RunTest(const FString& Parameters)
+{
+    FAdminWorld F;if(!TestTrue(TEXT("Authority world starts with the default stage"),F.Create(true))) return false;
+    int32 Walls=0,Crates=0;AMRFPSBarrier* Crate=nullptr;
+    for (TActorIterator<AMRFPSBarrier> It(F.World);It;++It) {
+        if (!It->bDefaultStageObject) continue;
+        TestTrue(TEXT("Default object is an editable, replicated and persistent map actor"),
+            It->bAdminPlaced && It->bMapAnchor && It->GetIsReplicated() && It->GetLifeSpan()==0);
+        if (It->BuildKind==EMRFPSBuildKind::Wall) ++Walls;
+        if (It->BuildKind==EMRFPSBuildKind::Crate) { ++Crates;Crate=*It; }
+    }
+    TestEqual(TEXT("Two editable walls are present initially"),Walls,2);
+    TestEqual(TEXT("Two wooden crates are present initially"),Crates,2);
+    if (!TestNotNull(TEXT("A default crate exists"),Crate)) return false;
+    TestEqual(TEXT("A crate has real projectile collision"),Crate->Collision->GetCollisionEnabled(),ECollisionEnabled::QueryOnly);
+    TestTrue(TEXT("The crate is visibly framed like a wooden box"),Crate->WallCells->GetInstanceCount()>0);
+    TestTrue(TEXT("The crate uses its cooked wood and frame materials"),Crate->Visual->GetMaterial(0) &&
+        Crate->Visual->GetMaterial(0)->GetName()==TEXT("M_Wood") && Crate->WallCells->GetMaterial(0) &&
+        Crate->WallCells->GetMaterial(0)->GetName()==TEXT("M_WoodDark"));
+    const FVector Above=Crate->GetActorLocation()+FVector(0,0,200),Down(0,0,-1);
+    FHitResult Hit;FCollisionQueryParams Query;for(auto* Player:F.Players) Query.AddIgnoredActor(Player);
+    TestTrue(TEXT("A projectile trace hits the solid crate"),
+        F.World->LineTraceSingleByChannel(Hit,Above,Above+Down*400,ECC_GameTraceChannel1,Query) && Hit.GetActor()==Crate);
+    FString Error;
+    TestFalse(TEXT("An observer cannot delete a map crate"),F.Mode->RemoveAdminObject(F.Observer,Above,Down,Error));
+    TestTrue(TEXT("An admin can select and delete a default crate"),F.Mode->RemoveAdminObject(F.Admin,Above,Down,Error));
+    TestEqual(TEXT("Only the selected map object is removed"),F.Walls(),3);
+    TestTrue(TEXT("A match reset keeps the edited map"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Reset,FVector2D::ZeroVector,Error));
+    TestEqual(TEXT("The removed crate does not reappear on reset"),F.Walls(),3);
+    F.State->Layout.Center=FVector(35,-40,0);F.State->Layout.YawDegrees=35;
+    TestTrue(TEXT("Floor resize and reposition preserve in-bounds stage objects"),
+        F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::SetDimensions,FVector2D(500,800),Error));
+    TestEqual(TEXT("Remaining objects survive floor adjustment"),F.Walls(),3);
+    for (TActorIterator<AMRFPSBarrier> It(F.World);It;++It) if (It->bDefaultStageObject)
+        TestTrue(TEXT("A stage object follows its floor-local anchor"),It->GetActorLocation().Equals(F.State->Layout.ToWorld(It->MapLocalPosition),.1));
     return true;
 }
 namespace

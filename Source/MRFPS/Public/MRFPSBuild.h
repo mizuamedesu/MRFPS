@@ -4,7 +4,7 @@
 #include "MRFPSBuild.generated.h"
 
 UENUM()
-enum class EMRFPSBuildKind : uint8 { Wall };
+enum class EMRFPSBuildKind : uint8 { Wall, Crate };
 
 UENUM()
 enum class EMRFPSWallEdit : uint8 { ToggleCell, Taller, Shorter };

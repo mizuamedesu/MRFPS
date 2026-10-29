@@ -25,6 +25,8 @@ ContactGlove の `/DS/HC/Wrist` には WXYZ の回転のみが含まれ、手の
 
 `/DS/HC/Hand` の 20 floats は親指→人差し指→中指→薬指→小指の順で、各指は 3 関節の屈曲値と開き値です。`/DS/HC/HandQuat` は 15 関節の回転 WXYZ です。vendor の骨座標のまま格納し、UE の任意の skeleton へそのまま適用できるとは扱いません。DivingStation は信頼度の確率を提供しないため、plugin は受信済み・鮮度・位置トラッキングの有無を別々のフラグで返します。
 
+ゲーム内の両手の指表示とパー判定はContactGloveの `/DS/HC/Hand` を使い、Questの指関節から屈曲を推定しません。グローブ入力が途切れた間、観戦画面は最後に受けた指姿勢を表示しますが、盾や射撃の入力は古い値を使いません。手の位置・向きは別途コントローラーやQuestの掌位置を使用します。
+
 ## PC / Quest Link
 
 1. 公式 DivingStation と SteamVR をセットアップし、グローブをペアリング、指を校正します。

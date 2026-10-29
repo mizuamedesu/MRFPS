@@ -6,6 +6,7 @@
 #include "Materials/MaterialExpressionConstant.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
+#include "Misc/Parse.h"
 #include "HAL/FileManager.h"
 #include "GameFramework/WorldSettings.h"
 #include "AssetImportTask.h"
@@ -72,11 +73,12 @@ UMRFPSSetupCommandlet::UMRFPSSetupCommandlet() { IsClient = false; IsEditor = tr
 
 int32 UMRFPSSetupCommandlet::Main(const FString& Params)
 {
-    const TCHAR* Names[] = { TEXT("Blue"), TEXT("Orange"), TEXT("Wall"), TEXT("Shield"), TEXT("Floor"), TEXT("Tracer"),TEXT("Graphite"),TEXT("Trim"),TEXT("White") };
+    const TCHAR* Names[] = { TEXT("Blue"), TEXT("Orange"), TEXT("Wall"), TEXT("Shield"), TEXT("Floor"), TEXT("Tracer"),TEXT("Graphite"),TEXT("Trim"),TEXT("White"),TEXT("Wood"),TEXT("WoodDark") };
     const FLinearColor Colors[] = {
         {0.04f,0.55f,1,1}, {1,0.24f,0.035f,1}, {0.08f,0.4f,0.65f,1},
         {0.1f,0.95f,0.6f,1}, {0.035f,0.05f,0.08f,1}, {1,0.8f,0.1f,1},
-        {.018f,.024f,.038f,1}, {.12f,.2f,.26f,1}, {.65f,.78f,.86f,1}
+        {.018f,.024f,.038f,1}, {.12f,.2f,.26f,1}, {.65f,.78f,.86f,1},
+        {.48f,.24f,.09f,1}, {.22f,.09f,.025f,1}
     };
     for (int32 I=0; I<UE_ARRAY_COUNT(Names); ++I) {
         const FString Name = FString(TEXT("M_")) + Names[I];
@@ -115,7 +117,7 @@ int32 UMRFPSSetupCommandlet::Main(const FString& Params)
         if (World) World->GetWorldSettings()->WorldToMeters=100;
         if (!World || !UEditorLoadingAndSavingUtils::SaveMap(World, TEXT("/Game/Maps/MRFPSArena"))) return 2;
     }
-    if (!ImportBlenderAssets()) return 3;
+    if (!FParse::Param(*Params,TEXT("SkipArtImport")) && !ImportBlenderAssets()) return 3;
     // These paths are loaded by the native avatar at runtime. Explicit labels
     // cook their dependencies without cooking unused template Blueprints/rigs.
     const FString AvatarPackage=TEXT("/Game/RuntimeAssets/Manny");

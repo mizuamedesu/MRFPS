@@ -100,13 +100,25 @@ bool FMRFPSMannyTrackingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Locomotion stops when the tracked body stops"),Avatar->GetLocomotionSpeed()<1);
     bool Finite=true;for(const auto& Transform:Avatar->BoneSpaceTransforms) Finite=Finite&&!Transform.ContainsNaN()&&Transform.GetRotation().IsNormalized();
     TestTrue(TEXT("All locomotion and IK bone transforms remain finite and normalized"),Finite);
+    const FVector HeldHead=Avatar->SolvedWorldPosition(TEXT("head"));
+    const FVector HeldHand=Avatar->SolvedWorldPosition(TEXT("hand_r"));
     World->Tick(LEVELTICK_TimeOnly,.6f);
     Avatar->UpdateTracking(Pose,Layout,1,1.f/60,false);
-    TestFalse(TEXT("A stopped pose stream hides its last body"),Avatar->IsVisible());
+    TestTrue(TEXT("A stopped pose stream retains its last body"),Avatar->IsVisible());
+    TestTrue(TEXT("The stale body keeps its last solved head and hand"),
+        Avatar->SolvedWorldPosition(TEXT("head")).Equals(HeldHead,.01) && Avatar->SolvedWorldPosition(TEXT("hand_r")).Equals(HeldHand,.01));
+    TestEqual(TEXT("Holding a stale pose does not continue a walking animation"),Avatar->GetLocomotionSpeed(),0.f);
     Avatar->UpdateTracking(Pose,Layout,1,1.f/60,false);
-    TestFalse(TEXT("A stale pose cannot resurrect itself on the next render frame"),Avatar->IsVisible());
-    Update(1);TestTrue(TEXT("A newly measured pose restores the body"),Avatar->IsVisible());
-    Pose.bHeadTracked=false;Update(1);TestFalse(TEXT("Lost tracking hides the inferred body"),Avatar->IsVisible());
+    TestTrue(TEXT("The last body remains visible across repeated stale frames"),Avatar->IsVisible());
+    Update(1);TestTrue(TEXT("A newly measured pose resumes the body"),Avatar->IsVisible());
+    const FVector BeforeLostHead=Avatar->SolvedWorldPosition(TEXT("head"));
+    const FVector ResumeHead=Pose.Head;
+    Pose.bHeadTracked=Pose.bLeftTracked=Pose.bRightTracked=false;Pose.Head=FVector(1,1,1);Update(1);
+    TestTrue(TEXT("Lost head tracking keeps the last visible body"),Avatar->IsVisible());
+    TestTrue(TEXT("Invalid head data cannot move the held body"),Avatar->SolvedWorldPosition(TEXT("head")).Equals(BeforeLostHead,.01));
+    Pose.bHeadTracked=Pose.bLeftTracked=Pose.bRightTracked=true;Pose.Head=ResumeHead;Update(30);
+    TestTrue(TEXT("Reacquired head tracking is followed again"),
+        FVector::Dist(Avatar->SolvedWorldPosition(TEXT("head")),FVector(Pose.Head)-Pose.HeadRotation.RotateVector(FVector(0,0,8*StandingScale)))<8);
     World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
 }
 
@@ -193,6 +205,24 @@ bool FMRFPSFingerVisualTest::RunTest(const FString& Parameters)
             TestTrue(FString::Printf(TEXT("%s rendered bone agrees with solution"),*Bone.ToString()),
                 FVector::Dist(Closed,Avatar->GetBoneLocationByName(Bone,EBoneSpaces::WorldSpace))<1);
         }
+        const FVector LastLeft=Pose.Left;
+        const FVector ClosedTip=Avatar->SolvedWorldPosition(TEXT("index_03_l"));
+        Pose.bLeftTracked=false;Pose.Left=FVector(1000,1000,1000);
+        for(int32 I=0;I<15;++I) Pose.LeftFingers.Joint[I]=0;
+        ++Pose.Sequence;Avatar->UpdateTracking(Pose,Layout,1,1.f/60,true);
+        FMRFPSPose VisualPose;
+        TestTrue(TEXT("A viewer can read the retained display pose"),Avatar->GetVisualPose(VisualPose));
+        TestTrue(TEXT("A lost optical hand retains its last position"),VisualPose.bLeftTracked && FVector(VisualPose.Left).Equals(LastLeft,.01));
+        TestTrue(TEXT("Fresh glove fingers continue to animate while optical hand position is lost"),
+            FVector::Dist(ClosedTip,Avatar->SolvedWorldPosition(TEXT("index_03_l")))>.5);
+        TestFalse(TEXT("Visual retention does not change the actual tracking flag"),Pose.bLeftTracked);
+        Pose.Head.X+=20;Pose.Right.X+=20;Pose.LeftFingers.bValid=false;
+        ++Pose.Sequence;Avatar->UpdateTracking(Pose,Layout,1,1.f/60,true);Avatar->GetVisualPose(VisualPose);
+        TestTrue(TEXT("The retained hand follows the head without detaching"),
+            FVector(VisualPose.Left).Equals(LastLeft+FVector(20,0,0),.01));
+        TestTrue(TEXT("A briefly missing glove sample retains the displayed fingers"),VisualPose.LeftFingers.bValid);
+        ++Pose.Sequence;Avatar->UpdateTracking(Pose,Layout,2,1.f/60,true);Avatar->GetVisualPose(VisualPose);
+        TestFalse(TEXT("A new calibration does not reuse a hand from old coordinates"),VisualPose.bLeftTracked);
     }
     World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
 }
@@ -221,8 +251,15 @@ bool FMRFPSAvatarViewerPolicyTest::RunTest(const FString& Parameters)
     ViewerState->bInspector=true;++Player->Pose.Sequence;Player->Tick(1.f/60);
     TestTrue(TEXT("Inspector loads the mannequin on demand"),Player->Avatar->IsAvatarReady());
     TestTrue(TEXT("Inspector sees a tracked avatar"),Player->Avatar->IsVisible());
+    const FVector HeldGun=Player->GunVisual->GetComponentLocation();
+    Player->Pose.bHeadTracked=Player->Pose.bLeftTracked=Player->Pose.bRightTracked=false;
+    Player->Pose.Head=FVector(1,1,1);Player->Pose.Right=FVector(1000,1000,1000);++Player->Pose.Sequence;Player->Tick(1.f/60);
+    TestTrue(TEXT("Inspector keeps the avatar when headset tracking drops"),Player->Avatar->IsVisible());
+    TestTrue(TEXT("Inspector keeps the equipped gun at the last tracked hand"),
+        Player->GunVisual->IsVisible() && Player->GunVisual->GetComponentLocation().Equals(HeldGun,.01));
     ViewerState->bInspector=false;++Player->Pose.Sequence;Player->Tick(1.f/60);
     TestFalse(TEXT("Changing back to player view hides the mannequin again"),Player->Avatar->IsVisible());
+    TestFalse(TEXT("A player view does not substitute retained tracking for the live gun"),Player->GunVisual->IsVisible());
     World->EndPlay(EEndPlayReason::EndPlayInEditor);World->DestroyWorld(false);GEngine->DestroyWorldContext(World);return true;
 }
 #endif

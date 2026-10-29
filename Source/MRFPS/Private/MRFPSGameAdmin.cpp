@@ -80,7 +80,7 @@ void AMRFPSPawn::OffsetCombatTimers(double Seconds)
     if (!HasAuthority() || !FMath::IsFinite(Seconds) || Seconds<=0) return;
     if (RespawnAt>0) RespawnAt+=Seconds;
     if (WallReadyAt>0) WallReadyAt+=Seconds;
-    LastServerFire+=Seconds; LastShieldUse+=Seconds; ServerRise.Reset(); ForceNetUpdate();
+    LastServerFire+=Seconds; LastShieldUse+=Seconds; ServerRise.Reset(); ServerLower.Reset(); ForceNetUpdate();
 }
 void AMRFPSPawn::ClientNominalDesktopStart_Implementation(FVector_NetQuantize10 Head,FRotator Rotation)
 {
@@ -206,7 +206,18 @@ void AMRFPSGameMode::ApplyLayoutChange()
 {
     auto* GS=GetGameState<AMRFPSGameState>(); if (!GS) return;
     GS->OnRepLayout(); GS->ForceNetUpdate();
-    for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) It->Destroy();
+    for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) {
+        auto* Piece=*It;
+        if (!Piece->bAdminPlaced || !Piece->bMapAnchor) { Piece->Destroy(); continue; }
+        const FTransform Transform(FRotator(0,GS->Layout.YawDegrees+Piece->MapLocalYaw,0),
+            GS->Layout.ToWorld(Piece->MapLocalPosition));
+        const bool Fits=Piece->BuildKind==EMRFPSBuildKind::Wall
+            ? MRFPSBuild::FitsWall(GS->Layout,Transform,Piece->WallShape)
+            : MRFPSBuild::Fits(GS->Layout,Piece->BuildKind,Transform);
+        if (!Fits) { Piece->Destroy(); continue; }
+        Piece->SetActorTransform(Transform,false,nullptr,ETeleportType::TeleportPhysics);
+        Piece->ForceNetUpdate();
+    }
     PausedWallLifetimes.Reset();
 }
 void AMRFPSGameMode::SetCombatPaused(bool Paused)
@@ -234,7 +245,7 @@ void AMRFPSGameMode::ResetToWaiting()
     SetCombatPaused(false);
     if (GameState) for (APlayerState* Base:GameState->PlayerArray) if (auto* PS=Cast<AMRFPSPlayerState>(Base)) { PS->Kills=0; PS->Deaths=0; PS->ForceNetUpdate(); }
     for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) { It->ClientCombatStopped(); It->Respawn(); }
-    for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) It->Destroy();
+    for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if (!It->bAdminPlaced) It->Destroy();
     PausedWallLifetimes.Reset();
     if (auto* GS=GetGameState<AMRFPSGameState>()) { GS->Phase=EMRFPSMatchPhase::Waiting; GS->WinnerSlot=-1; GS->RestartAt=0; GS->bNominalDesktopSession=false; GS->ForceNetUpdate(); }
 }

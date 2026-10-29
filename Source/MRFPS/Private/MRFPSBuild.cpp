@@ -1,13 +1,15 @@
 #include "MRFPSBuild.h"
 
-bool MRFPSBuild::Valid(EMRFPSBuildKind Kind) { return Kind==EMRFPSBuildKind::Wall; }
+bool MRFPSBuild::Valid(EMRFPSBuildKind Kind) { return Kind==EMRFPSBuildKind::Wall || Kind==EMRFPSBuildKind::Crate; }
 FVector MRFPSBuild::Extent(EMRFPSBuildKind Kind)
 {
-    return Valid(Kind)?FVector(WallHalfThicknessCm,WallWidthCm*.5,100):FVector::ZeroVector;
+    if (Kind==EMRFPSBuildKind::Wall) return FVector(WallHalfThicknessCm,WallWidthCm*.5,100);
+    if (Kind==EMRFPSBuildKind::Crate) return FVector(50);
+    return FVector::ZeroVector;
 }
 FString MRFPSBuild::Label(EMRFPSBuildKind Kind)
 {
-    return Valid(Kind)?TEXT("壁"):TEXT("");
+    return Kind==EMRFPSBuildKind::Wall?TEXT("壁"):Kind==EMRFPSBuildKind::Crate?TEXT("木箱"):TEXT("");
 }
 bool MRFPSBuild::Snap(const FMRFPSArenaLayout& Layout,EMRFPSBuildKind Kind,const FVector& Surface,float Yaw,FTransform& Result)
 {
@@ -20,7 +22,14 @@ bool MRFPSBuild::Snap(const FMRFPSArenaLayout& Layout,EMRFPSBuildKind Kind,const
 }
 bool MRFPSBuild::Fits(const FMRFPSArenaLayout& Layout,EMRFPSBuildKind Kind,const FTransform& Transform)
 {
-    return Valid(Kind) && FitsWall(Layout,Transform,FMRFPSWallShape());
+    if (Kind==EMRFPSBuildKind::Wall) return FitsWall(Layout,Transform,FMRFPSWallShape());
+    if (Kind!=EMRFPSBuildKind::Crate || !Layout.IsSane() || Transform.ContainsNaN() ||
+        !Transform.GetScale3D().Equals(FVector::OneVector)) return false;
+    const FVector E=Extent(Kind),P=Transform.GetLocation();
+    if (P.Z-E.Z<Layout.Center.Z-.1 || P.Z+E.Z>Layout.Center.Z+MaxHeightCm) return false;
+    for (double X:{-E.X,E.X}) for (double Y:{-E.Y,E.Y})
+        if (!Layout.ContainsPlanar(P+Transform.GetRotation().RotateVector(FVector(X,Y,0)),2)) return false;
+    return true;
 }
 bool MRFPSBuild::FitsWall(const FMRFPSArenaLayout& Layout,const FTransform& Transform,const FMRFPSWallShape& Shape)
 {

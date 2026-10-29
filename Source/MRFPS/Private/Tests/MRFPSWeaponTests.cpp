@@ -2,6 +2,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/WorldSettings.h"
 #include "MRFPSHapticsComponent.h"
 #include "Misc/AutomationTest.h"
@@ -98,6 +99,13 @@ bool FMRFPSPracticeActionsTest::RunTest(const FString& Parameters)
     Pawn->Tick(.01f); TestTrue(TEXT("An open hand produces a shield immediately"),Pawn->bShieldActive);
     Pose.Left=FVector(25,-30,100); Send(.1f); Pose.Left=FVector(25,-30,120); Send(.1f);
     TestTrue(TEXT("An upward hand motion deploys a wall before match start"),Pawn->WallReadyAt>World->GetTimeSeconds());
+    TWeakObjectPtr<AMRFPSBarrier> FighterWall;
+    for (TActorIterator<AMRFPSBarrier> It(World);It;++It) if (It->GetOwner()==Pawn) FighterWall=*It;
+    auto* StageWall=World->SpawnActor<AMRFPSBarrier>();StageWall->bAdminPlaced=true;StageWall->OwnerSlot=-1;
+    TestTrue(TEXT("The deployed wall exists before the reverse gesture"),FighterWall.IsValid());
+    Pose.Left=FVector(25,-30,100); Send(.1f); Pose.Left=FVector(25,-30,80); Send(.1f);
+    TestTrue(TEXT("A downward hand motion removes the fighter's deployed wall"),!FighterWall.IsValid() || FighterWall->IsActorBeingDestroyed());
+    TestTrue(TEXT("The reverse gesture never removes an admin stage wall"),IsValid(StageWall) && !StageWall->IsActorBeingDestroyed());
     State->bCombatPaused=true; Pawn->LastPoseReceived=World->GetTimeSeconds();
     Pawn->ServerFire(); TestEqual(TEXT("Admin pause still prevents firing"),Pawn->MagazineRounds,29);
     auto* Other=World->SpawnActor<AMRFPSPawn>(); auto* OtherPS=World->SpawnActor<AMRFPSPlayerState>();

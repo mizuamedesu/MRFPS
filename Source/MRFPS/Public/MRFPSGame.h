@@ -165,6 +165,11 @@ public:
     UPROPERTY(ReplicatedUsing=ApplyBuildKind) FMRFPSWallShape WallShape;
     UPROPERTY(Transient) TArray<TObjectPtr<UBoxComponent>> WallCollisionParts;
     bool bPlacementPreview=false;
+    // Authority-only floor-local anchor; clients receive the resulting transform.
+    bool bMapAnchor=false;
+    bool bDefaultStageObject=false;
+    FVector MapLocalPosition=FVector::ZeroVector;
+    float MapLocalYaw=0;
     UFUNCTION() void ApplyBuildKind();
     void SetPreviewColor(bool Valid);
 };
@@ -257,6 +262,7 @@ public:
 private:
     void SampleLocalPose(float DeltaSeconds);
     void UpdateVisuals();
+    void RemoveDeployedWall();
     void UpdateWeaponFromPose(double Now);
     void UpdatePlayerHud();
     UFUNCTION() void InvalidateCalibration();
@@ -284,6 +290,8 @@ private:
     double LastShieldUse = -100;
     double IgnoreOriginChangesUntil = -1;
     FMRFPSRiseGesture ServerRise;
+    FMRFPSRiseGesture ServerLower;
+    TArray<TWeakObjectPtr<AMRFPSBarrier>> DeployedWalls;
     FMRFPSReloadGesture ServerReload;
     TSharedPtr<SWidget> PlayerHudSlate;
 };
@@ -509,6 +517,7 @@ private:
     void ApplyLayoutChange();
     void SetCombatPaused(bool Paused);
     void ResetToWaiting();
+    void SpawnDefaultStage();
     uint32 RegisteredCalibration[2]={0,0};
     TWeakObjectPtr<AMRFPSPawn> RegisteredPlayers[2];
     double CombatPausedAt=0;

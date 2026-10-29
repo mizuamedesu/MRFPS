@@ -36,6 +36,15 @@ struct FMRFPSAvatarRig
     FVector Velocity=FVector::ZeroVector;
     FQuat SmoothRotations[3];
     FVector SmoothHands[2];
+    FMRFPSPose LastVisualPose;
+    FMRFPSFingerPose LastFingers[2];
+    FVector LastHandPosition[2];
+    FVector HeadAtLastHand[2];
+    FRotator LastHandRotation[2];
+    FRotator LastWeaponRotation;
+    bool HasHand[2]={false,false};
+    bool HasVisualPose=false;
+    bool HoldingPose=false;
     uint32 LastSequence=0;
     uint32 Calibration=MAX_uint32;
     uint32 LayoutRevision=0;
@@ -66,6 +75,13 @@ UMRFPSAvatarComponent::UMRFPSAvatarComponent()
 UMRFPSAvatarComponent::~UMRFPSAvatarComponent()=default;
 void UMRFPSAvatarComponent::BeginPlay() { Super::BeginPlay(); }
 bool UMRFPSAvatarComponent::IsAvatarReady() const { return Rig.IsValid(); }
+bool UMRFPSAvatarComponent::GetVisualPose(FMRFPSPose& OutPose) const
+{
+#if !UE_SERVER
+    if (Rig && Rig->HasVisualPose) { OutPose=Rig->LastVisualPose; return true; }
+#endif
+    return false;
+}
 
 bool UMRFPSAvatarComponent::InitializeAvatar()
 {
@@ -154,17 +170,45 @@ bool UMRFPSAvatarComponent::InitializeAvatar()
 #endif
 }
 
-void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSArenaLayout& Layout,uint32 Calibration,float Dt,bool LocalView)
+void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& InputPose,const FMRFPSArenaLayout& Layout,uint32 Calibration,float Dt,bool LocalView)
 {
 #if !UE_SERVER
-    if(!Rig || !Pose.IsSane() || !Layout.IsSane() || !FMath::IsFinite(Dt) || Dt<=0) return;
+    if(!Rig || !InputPose.IsSane() || !Layout.IsSane() || !FMath::IsFinite(Dt) || Dt<=0) return;
     auto& R=*Rig;
     const double Now=GetWorld()?GetWorld()->GetTimeSeconds():0;
-    const bool NewPose=!R.SeenSequence || Pose.Sequence!=R.LastSequence;
-    if(NewPose) { R.SeenSequence=true;R.LastSequence=Pose.Sequence;R.LastReceipt=Now; }
+    const bool NewPose=!R.SeenSequence || InputPose.Sequence!=R.LastSequence;
+    if(NewPose) { R.SeenSequence=true;R.LastSequence=InputPose.Sequence;R.LastReceipt=Now; }
     const bool Fresh=LocalView || Now-R.LastReceipt<.4;
-    SetVisibility(Pose.bHeadTracked && Fresh);
-    if(!Pose.bHeadTracked || !Fresh) { R.Initialized=false;return; }
+    if (!InputPose.bHeadTracked || !Fresh) {
+        SetVisibility(R.HasVisualPose);
+        R.HoldingPose=R.HasVisualPose; R.Velocity=FVector::ZeroVector; LocomotionSpeed=0;
+        return;
+    }
+    SetVisibility(true);
+    FMRFPSPose Pose=InputPose;
+    if (Calibration!=R.Calibration || Layout.Revision!=R.LayoutRevision) {
+        for (int32 Hand=0;Hand<2;++Hand) { R.HasHand[Hand]=false; R.LastFingers[Hand].bValid=false; }
+    }
+    const auto RetainHand=[&](int32 Hand,bool& Tracked,FVector_NetQuantize10& Position,
+        FRotator& HandRotation,FRotator* WeaponRotation,FMRFPSFingerPose& Fingers) {
+        if (Tracked) {
+            R.HasHand[Hand]=true; R.LastHandPosition[Hand]=Position; R.HeadAtLastHand[Hand]=Pose.Head;
+            R.LastHandRotation[Hand]=HandRotation;
+            if (WeaponRotation) R.LastWeaponRotation=*WeaponRotation;
+        } else if (R.HasHand[Hand]) {
+            // Keep the last measured hand offset to the still-tracked head so
+            // the displayed arm does not detach as the player moves.
+            Position=R.LastHandPosition[Hand]+(FVector(Pose.Head)-R.HeadAtLastHand[Hand]);
+            HandRotation=R.LastHandRotation[Hand];
+            if (WeaponRotation) *WeaponRotation=R.LastWeaponRotation;
+            Tracked=true;
+        }
+        if (Fingers.bValid) R.LastFingers[Hand]=Fingers;
+        else if (R.LastFingers[Hand].bValid && Tracked) Fingers=R.LastFingers[Hand];
+    };
+    RetainHand(0,Pose.bLeftTracked,Pose.Left,Pose.LeftRotation,nullptr,Pose.LeftFingers);
+    RetainHand(1,Pose.bRightTracked,Pose.Right,Pose.RightHandRotation,&Pose.RightRotation,Pose.RightFingers);
+    const bool WasHolding=R.HoldingPose; R.HoldingPose=false;
     const FVector RawHead=Pose.Head;
     const FQuat Rotations[]={Pose.HeadRotation.Quaternion(),Pose.LeftRotation.Quaternion(),Pose.RightHandRotation.Quaternion()};
     const FVector Hands[]={FVector(Pose.Left),FVector(Pose.Right)};
@@ -185,7 +229,7 @@ void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSAr
     R.SmoothHead=FMath::Lerp(R.SmoothHead,RawHead,double(Blend));
     for(int32 I=0;I<3;++I) R.SmoothRotations[I]=FQuat::Slerp(R.SmoothRotations[I],Rotations[I],Blend).GetNormalized();
     for(int32 I=0;I<2;++I) R.SmoothHands[I]=FMath::Lerp(R.SmoothHands[I],Hands[I],double(Blend));
-    FVector Velocity=(R.SmoothHead-R.PreviousHead)/Dt;Velocity.Z=0;Velocity=Velocity.GetClampedToMaxSize(650);
+    FVector Velocity=WasHolding?FVector::ZeroVector:(R.SmoothHead-R.PreviousHead)/Dt;Velocity.Z=0;Velocity=Velocity.GetClampedToMaxSize(650);
     R.PreviousHead=R.SmoothHead;R.Velocity=FMath::VInterpTo(R.Velocity,Velocity,Dt,12);
     LocomotionSpeed=R.Velocity.Size();
     const float HeadYaw=R.SmoothRotations[0].Rotator().Yaw;
@@ -316,6 +360,7 @@ void UMRFPSAvatarComponent::UpdateTracking(const FMRFPSPose& Pose,const FMRFPSAr
         const int32 Parent=Ref.GetParentIndex(I);
         R.Global[I]=Parent<0?BoneSpaceTransforms[I]:BoneSpaceTransforms[I]*R.Global[Parent];
     }
+    R.LastVisualPose=Pose; R.HasVisualPose=true;
     MarkRefreshTransformDirty();RefreshBoneTransforms();
 #endif
 }

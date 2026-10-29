@@ -24,6 +24,8 @@ public:
     bool InitializeAvatar();
     void UpdateTracking(const FMRFPSPose& Pose,const FMRFPSArenaLayout& Layout,uint32 Calibration,float DeltaSeconds,bool LocalView);
     bool IsAvatarReady() const;
+    // Viewer-only last display pose; never use it for server-side gameplay.
+    bool GetVisualPose(FMRFPSPose& OutPose) const;
     FVector SolvedWorldPosition(FName Bone) const;
     float GetTrackingErrorCm() const { return TrackingErrorCm; }
     float GetLocomotionSpeed() const { return LocomotionSpeed; }
