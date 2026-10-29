@@ -107,10 +107,11 @@ class Windows:
         finally:
             self.kernel.CloseHandle(handle)
 
-    def window(self, hwnd: int, pid: int) -> dict:
+    def window(self, hwnd: int, pid: int, allow_minimized: bool = False) -> dict:
         _positive(hwnd, "HWND"); _positive(pid, "process ID")
         u = self.user
-        if not u.IsWindow(hwnd) or not u.IsWindowVisible(hwnd) or u.IsIconic(hwnd):
+        iconic = bool(u.IsIconic(hwnd))
+        if not u.IsWindow(hwnd) or not u.IsWindowVisible(hwnd) or (iconic and not allow_minimized):
             raise RuntimeError("selected window is closed, hidden, or minimized")
         if u.GetAncestor(hwnd, 2) != hwnd:  # GA_ROOT: never capture a child control
             raise RuntimeError("selected HWND is not a top-level window")
@@ -125,7 +126,7 @@ class Windows:
         if not u.GetWindowRect(hwnd, ctypes.byref(rect)):
             raise RuntimeError("selected window dimensions are unavailable")
         width, height = rect.right - rect.left, rect.bottom - rect.top
-        if not (0 < width <= MAX_SIDE and 0 < height <= MAX_SIDE and width * height <= MAX_PIXELS):
+        if not iconic and not (0 < width <= MAX_SIDE and 0 < height <= MAX_SIDE and width * height <= MAX_PIXELS):
             raise RuntimeError("selected window dimensions exceed the capture limit")
         title = self.title(hwnd)
         matches = []
@@ -166,13 +167,13 @@ class Windows:
             raise RuntimeError("cannot list windows for the selected process")
         return {"process": process, "windows": windows}
 
-    def snapshot(self, pid: int, main_hwnd: int, target_hwnd: int) -> dict:
+    def snapshot(self, pid: int, main_hwnd: int, target_hwnd: int, allow_minimized: bool = False) -> dict:
         process = self.process(pid)
-        main = self.window(main_hwnd, pid)
+        main = self.window(main_hwnd, pid, allow_minimized)
         if target_hwnd == main_hwnd:
             target = main
         else:
-            target = self.window(target_hwnd, pid)
+            target = self.window(target_hwnd, pid, allow_minimized)
             if target["title"] not in POPUP_TITLES or main["title"] in POPUP_TITLES:
                 raise RuntimeError("target is not an MRFPS player or inspector popout")
         # Recheck process identity after both windows to detect a process restart.
@@ -180,7 +181,7 @@ class Windows:
             raise RuntimeError("selected process changed during inspection")
         return {"process": process, "main": main, "target": target}
 
-    def validate_snapshot(self, identity: dict) -> None:
+    def validate_snapshot(self, identity: dict, allow_minimized: bool = False) -> None:
         try:
             pid = identity["process"]["pid"]
             main = identity["main"]["hwnd"]
@@ -188,13 +189,15 @@ class Windows:
         except (KeyError, TypeError) as error:
             raise ValueError("invalid window identity") from error
         expected = {key: identity[key] for key in ("process", "main", "target")}
-        if self.snapshot(pid, main, target) != expected:
+        actual = (self.snapshot(pid, main, target, allow_minimized=True) if allow_minimized
+                  else self.snapshot(pid, main, target))
+        if actual != expected:
             raise RuntimeError("window or process identity changed")
 
-    def validate(self, identity: dict, marker: dict | None = None) -> None:
+    def validate(self, identity: dict, marker: dict | None = None, allow_minimized: bool = False) -> None:
         if set(identity) != {"process", "main", "target", "window_marker"}:
             raise ValueError("invalid window identity")
-        self.validate_snapshot(identity)
+        self.validate_snapshot(identity, allow_minimized)
         main, target = identity["main"]["hwnd"], identity["target"]["hwnd"]
         stable = identity["window_marker"]
         validate_marker(stable, "MRFPS-Identity-")
@@ -222,14 +225,14 @@ class Windows:
                     self.user.RemovePropW(hwnd, marker["name"])
             raise
 
-    def bind(self, snapshot: dict, stable: dict) -> dict:
+    def bind(self, snapshot: dict, stable: dict, allow_minimized: bool = False) -> dict:
         """Bind the initial selection to window objects, not recycled HWNDs."""
         validate_marker(stable, "MRFPS-Identity-")
-        self.validate_snapshot(snapshot)
+        self.validate_snapshot(snapshot, allow_minimized)
         self._attach(snapshot, stable)
         identity = {**snapshot, "window_marker": stable}
         try:
-            self.validate(identity)
+            self.validate(identity, allow_minimized=allow_minimized)
         except Exception:
             self.unmark(identity, stable)
             raise

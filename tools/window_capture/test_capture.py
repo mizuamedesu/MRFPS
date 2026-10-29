@@ -10,6 +10,8 @@ import uuid
 from unittest import mock
 import ctypes
 from ctypes import wintypes
+from contextlib import redirect_stdout
+import sys
 import zlib
 
 import capture
@@ -379,6 +381,58 @@ class WindowIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ambiguous"):
             self.api.window(102, 42)
 
+    def test_minimized_identity_is_opt_in_and_does_not_enable_capture(self):
+        class User:
+            def IsWindow(self, hwnd): return True
+            def IsWindowVisible(self, hwnd): return True
+            def IsIconic(self, hwnd): return True
+            def GetAncestor(self, hwnd, flag): return hwnd
+            def GetWindowThreadProcessId(self, hwnd, out):
+                ctypes.cast(out, ctypes.POINTER(wintypes.DWORD))[0] = 42
+                return 7
+            def GetClassNameW(self, hwnd, out, size):
+                out.value = "UnrealWindow"
+                return len(out.value)
+            def GetWindowRect(self, hwnd, out):
+                rect = ctypes.cast(out, ctypes.POINTER(wintypes.RECT)).contents
+                rect.left = -32000; rect.top = -32000; rect.right = -31840; rect.bottom = -31973
+                return True
+            def EnumWindows(self, callback, _):
+                callback(102, 0)
+                return True
+        self.api.user = User()
+        self.api.callback_type = lambda function: function
+        self.api.title = lambda hwnd: "MRFPS - P1"
+        with self.assertRaisesRegex(RuntimeError, "minimized"):
+            self.api.window(102, 42)
+        self.assertEqual(self.api.window(102, 42, allow_minimized=True)["hwnd"], 102)
+
+
+class CommandDispatchTests(unittest.TestCase):
+    def test_identify_and_release_dispatch_to_their_operations(self):
+        root = Path(tempfile.gettempdir())
+        identity_id = str(uuid.uuid4())
+        api = object()
+        for command in ("identify", "release"):
+            argv = ["capture.py", command, "--identity-id", identity_id]
+            if command == "identify":
+                argv += ["--pid", "42", "--main-hwnd", "101", "--target-hwnd", "102"]
+            output = io.StringIO()
+            with self.subTest(command=command), mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(capture, "root_directory", return_value=root), \
+                 mock.patch.object(capture, "prepare_directory"), \
+                 mock.patch.object(win_identity, "Windows", return_value=api), \
+                 mock.patch.object(capture, "identify", return_value={"status": "ok"}) as identify_call, \
+                 mock.patch.object(capture, "release", return_value={"status": "released"}) as release_call, \
+                 redirect_stdout(output):
+                self.assertEqual(capture.main(), 0)
+                if command == "identify":
+                    identify_call.assert_called_once_with(root, identity_id, 42, 101, 102, api, allow_minimized=False)
+                    release_call.assert_not_called()
+                else:
+                    release_call.assert_called_once_with(root, identity_id, api)
+                    identify_call.assert_not_called()
+
 
 class IdentityJournalTests(unittest.TestCase):
     def setUp(self):
@@ -401,6 +455,21 @@ class IdentityJournalTests(unittest.TestCase):
         self.assertEqual(len(self.api.user.props), 0)
         self.assertEqual(capture.identify(self.root, self.id, 42, 101, 102, self.api)["status"], "released")
         self.assertEqual(len(self.api.user.props), 0)
+
+    def test_opt_in_minimized_identify_and_existing_identity_replay(self):
+        first = capture.identify(self.root, self.id, 42, 101, 102, self.api, allow_minimized=True)
+        self.assertEqual(first["status"], "ok")
+        self.assertTrue(first["request"]["allow_minimized"])
+        self.api.snapshot.assert_called_with(42, 101, 102, allow_minimized=True)
+        self.assertEqual(capture.identify(self.root, self.id, 42, 101, 102, self.api,
+                                          allow_minimized=True), first)
+        with self.assertRaisesRegex(RuntimeError, "different window"):
+            capture.identify(self.root, self.id, 42, 101, 102, self.api)
+
+    def test_normal_identity_replay_allows_window_to_be_minimized(self):
+        first = capture.identify(self.root, self.id, 42, 101, 102, self.api)
+        self.assertEqual(capture.identify(self.root, self.id, 42, 101, 102, self.api), first)
+        self.api.snapshot.assert_called_with(42, 101, 102, allow_minimized=True)
 
     def test_identity_id_cannot_be_reassigned(self):
         capture.identify(self.root, self.id, 42, 101, 102, self.api)

@@ -182,12 +182,14 @@ def validate_explicit_identity(identity: dict) -> None:
 
 
 def identify(root: Path, identity_id: str, pid: int, main_hwnd: int, target_hwnd: int,
-             api: win_identity.Windows) -> dict:
+             api: win_identity.Windows, allow_minimized: bool = False) -> dict:
     identity_id = valid_id(identity_id)
     pid = win_identity._positive(pid, "process ID")
     main_hwnd = win_identity._positive(main_hwnd, "main HWND")
     target_hwnd = win_identity._positive(target_hwnd, "target HWND")
     request = {"pid": pid, "main_hwnd": main_hwnd, "target_hwnd": target_hwnd}
+    if allow_minimized:
+        request["allow_minimized"] = True
     path = root / "identities" / (identity_id + ".json")
     with directory_lock(root):
         if path.exists():
@@ -200,7 +202,7 @@ def identify(root: Path, identity_id: str, pid: int, main_hwnd: int, target_hwnd
                 atomic_json(path, state)
             elif state.get("status") == "ok":
                 try:
-                    api.validate(state["identity"])
+                    api.validate(state["identity"], allow_minimized=True)
                 except Exception:
                     api.unmark(state["identity"], state["identity"]["window_marker"])
                     state.update(status="unknown", code="window_changed")
@@ -208,13 +210,15 @@ def identify(root: Path, identity_id: str, pid: int, main_hwnd: int, target_hwnd
             elif state.get("status") not in ("error", "released", "unknown"):
                 raise RuntimeError("invalid identity state")
             return state
-        snapshot = api.snapshot(pid, main_hwnd, target_hwnd)
+        snapshot = (api.snapshot(pid, main_hwnd, target_hwnd, allow_minimized=True) if allow_minimized
+                    else api.snapshot(pid, main_hwnd, target_hwnd))
         stable = marker_for(identity_id, "MRFPS-Identity-")
         state = {"identity_id": identity_id, "request": request, "status": "pending",
                  "identity": {**snapshot, "window_marker": stable}}
         atomic_json(path, state)
         try:
-            state["identity"] = api.bind(snapshot, stable)
+            state["identity"] = (api.bind(snapshot, stable, allow_minimized=True) if allow_minimized
+                                 else api.bind(snapshot, stable))
             state["status"] = "ok"
         except Exception:
             state.update(status="error", code="identity_failed")
@@ -559,13 +563,15 @@ def main() -> int:
     commands.add_parser("init", help="create the restricted capture directory")
     listing = commands.add_parser("list", help="list window metadata for one client PID")
     listing.add_argument("--pid", type=parse_int, required=True)
-    identify = commands.add_parser("identify", help="inspect explicitly supplied main and target HWNDs")
-    identify.add_argument("--identity-id", required=True)
-    identify.add_argument("--pid", type=parse_int, required=True)
-    identify.add_argument("--main-hwnd", type=parse_int, required=True)
-    identify.add_argument("--target-hwnd", type=parse_int, required=True)
-    release = commands.add_parser("release", help="remove this identification's window properties")
-    release.add_argument("--identity-id", required=True)
+    identify_parser = commands.add_parser("identify", help="inspect explicitly supplied main and target HWNDs")
+    identify_parser.add_argument("--identity-id", required=True)
+    identify_parser.add_argument("--pid", type=parse_int, required=True)
+    identify_parser.add_argument("--main-hwnd", type=parse_int, required=True)
+    identify_parser.add_argument("--target-hwnd", type=parse_int, required=True)
+    identify_parser.add_argument("--allow-minimized", action="store_true",
+                                 help="allow identifying a minimized window for state operations, not capture")
+    release_parser = commands.add_parser("release", help="remove this identification's window properties")
+    release_parser.add_argument("--identity-id", required=True)
     shot = commands.add_parser("capture", help="capture the previously identified window once")
     shot.add_argument("--identity-id", required=True)
     shot.add_argument("--id", required=True)
@@ -579,7 +585,8 @@ def main() -> int:
             if args.command == "init":
                 value = {"status": "ok", "directory": str(root)}
             elif args.command == "identify":
-                value = identify(root, args.identity_id, args.pid, args.main_hwnd, args.target_hwnd, win_identity.Windows())
+                value = identify(root, args.identity_id, args.pid, args.main_hwnd, args.target_hwnd,
+                                 win_identity.Windows(), allow_minimized=args.allow_minimized)
             elif args.command == "release":
                 value = release(root, args.identity_id, win_identity.Windows())
             else:
