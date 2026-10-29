@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "repository": "mizuamedesu/MRFPS-Server-Registry",
+  "publisher_repository_id": 1438751425,
+  "package": "mrfps-server-private",
+  "package_id": 16392074,
+  "created_at": "2026-10-29T18:05:08Z",
+  "creation_workflow_run_id": 40927353040,
+  "creation_preflight_absent": true,
+  "fixture_digest": "sha256:0f94eeae41fcbe2acc2654022fddf033198e116d274f53150ffea6c9437d2993",
+  "fixture_version_id": 1469398143,
+  "fixture_created_at": "2026-10-29T18:05:08Z",
+  "inspection_workflow_run_id": 40930870354,
+  "anonymous_boundary_and_source_label_must_still_be_verified": true
+}

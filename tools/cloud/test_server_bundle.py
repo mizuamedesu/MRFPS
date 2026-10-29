@@ -80,7 +80,7 @@ class CloudTests(unittest.TestCase):
         self.assertIn("BUNDLE_SOURCE_COMMIT_MISMATCH", result.stdout + result.stderr)
 
     @unittest.skipUnless(os.name == "nt", "actual PowerShell publication plan")
-    def test_matching_publisher_plan_preserves_private_visibility(self):
+    def test_matching_publisher_plan_targets_private_repository_without_claiming_live_proof(self):
         self.pack()
         script = Path(__file__).resolve().parents[2] / "Scripts/Cloud/Publish-GhcrServer.ps1"
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(script),
@@ -91,6 +91,52 @@ class CloudTests(unittest.TestCase):
         self.assertTrue(plan["bundleSourceCommitMatched"])
         self.assertFalse(plan["packageVisibilityChange"])
         self.assertFalse(plan["compilationFreshnessProvenByHash"])
+        self.assertEqual(plan["repository"], "mizuamedesu/MRFPS-Server-Registry")
+        self.assertFalse(plan["publisherPrivateVerified"])
+        self.assertIn("/mrfps-server-private:", plan["image"])
+
+    @unittest.skipUnless(os.name == "nt", "actual PowerShell publication preflight")
+    def test_public_publisher_is_refused_before_credentials_or_artifact_upload(self):
+        self.pack()
+        script = Path(__file__).resolve().parents[2] / "Scripts/Cloud/Publish-GhcrServer.ps1"
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(script),
+            "-BundleDirectory", str(self.root / "bundle"), "-ExpectedServerSha256", self.server_hash,
+            "-SourceCommit", self.commit, "-Repository", "mizuamedesu/MRFPS", "-Mode", "Publish"], capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DEDICATED_PRIVATE_PUBLISHER_REQUIRED", result.stdout + result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "actual PowerShell bounded draft polling")
+    def test_draft_creation_eventual_visibility_is_bounded_and_ambiguity_fails(self):
+        publisher = Path(__file__).resolve().parents[2] / "Scripts/Cloud/Publish-GhcrServer.ps1"
+        fixture = self.root / "test-draft-retry.ps1"
+        fixture.write_text(r'''
+$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$tokens,[ref]$errors)
+$function=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-ArtifactDraft'},$true)
+. ([scriptblock]::Create($function.Extent.Text))
+$Repository='fixture/private';$tag='fixture'
+$script:calls=0;$script:sleeps=0;$script:mode='eventual'
+function Start-Sleep {param($Milliseconds) $script:sleeps++}
+function gh {
+  $script:calls++;$global:LASTEXITCODE=0
+  if($script:mode -eq 'eventual' -and $script:calls -eq 3){return '[[{"tag_name":"fixture","draft":true}]]'}
+  if($script:mode -eq 'ambiguous'){return '[[{"tag_name":"fixture","draft":true},{"tag_name":"fixture","draft":true}]]'}
+  return '[]'
+}
+$found=Find-ArtifactDraft -Attempts 8
+if(-not $found.draft -or $script:calls -ne 3 -or $script:sleeps -ne 2){throw 'EVENTUAL_RETRY_FAILED'}
+$script:calls=0;$script:sleeps=0;$script:mode='absent'
+$missing=Find-ArtifactDraft -Attempts 4
+if($null -ne $missing -or $script:calls -ne 4 -or $script:sleeps -ne 3){throw 'RETRY_BOUND_FAILED'}
+$script:calls=0;$script:mode='ambiguous'
+try{Find-ArtifactDraft -Attempts 8;throw 'AMBIGUITY_ACCEPTED'}catch{if($_.Exception.Message -ne 'DRAFT_ARTIFACT_AMBIGUOUS'){throw}}
+if($script:calls -ne 1){throw 'AMBIGUITY_RETRIED'}
+Write-Output 'BOUNDED_DRAFT_RETRY_PASS'
+''', encoding="utf-8")
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(fixture), str(publisher)], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("BOUNDED_DRAFT_RETRY_PASS", result.stdout)
 
     def test_credential_file_rejected_before_archive_creation(self):
         (self.package / "issuer-private.pem").write_text("fixture")

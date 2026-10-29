@@ -1,0 +1,214 @@
+# Install only in the dedicated PRIVATE MRFPS-Server-Registry repository.
+name: Publish approved Linux server image
+run-name: '${{ inputs.operation }} ${{ inputs.runner_label }}'
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: Exact random label of the one owned ephemeral Linux runner
+        type: string
+        required: true
+      operation:
+        description: Probe harmless fixture first; Publish requires that proof again
+        type: choice
+        options: [Inspect, Probe, Publish]
+        default: Probe
+        required: true
+      source_commit:
+        description: Full approved commit in mizuamedesu/MRFPS
+        type: string
+        required: true
+      release_tag:
+        description: Private draft input in THIS private publisher repository
+        type: string
+        required: false
+      bundle_sha256:
+        type: string
+        required: false
+      server_sha256:
+        type: string
+        required: false
+permissions:
+  contents: write
+  packages: write
+concurrency:
+  group: mrfps-private-server-publisher
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: [self-hosted, Linux, X64, '${{ inputs.runner_label }}']
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PUBLISHER_REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+      OPERATION: ${{ inputs.operation }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
+      SERVER_SHA256: ${{ inputs.server_sha256 }}
+      PACKAGE_NAME: mrfps-server-private
+      REQUESTED_RUNNER_LABEL: ${{ inputs.runner_label }}
+    steps:
+      - name: Require the dedicated private publisher before artifact or registry access
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PUBLISHER_REPOSITORY_PRIVATE" == true ]]
+          [[ "$GITHUB_REPOSITORY" == 'mizuamedesu/MRFPS-Server-Registry' ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REQUESTED_RUNNER_LABEL" =~ ^mrfps-private-[0-9a-f]{16}$ ]]
+          [[ "$REQUESTED_RUNNER_LABEL" == "mrfps-private-$MRFPS_PUBLISHER_TASK_ID" ]]
+          [[ "$MRFPS_BUILDER_NAME" == "mrfps-private-builder-$MRFPS_PUBLISHER_TASK_ID" ]]
+          [[ "$OPERATION" == Inspect || "$OPERATION" == Probe || "$OPERATION" == Publish ]]
+          if [[ "$OPERATION" == Publish ]]; then
+            [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$SERVER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$RELEASE_TAG" == "server-artifacts-${BUNDLE_SHA256:0:12}-${SOURCE_COMMIT:0:12}" ]]
+          elif [[ "$OPERATION" == Probe ]]; then
+            [[ "$RELEASE_TAG" =~ ^mrfps-privacy-probe-[0-9a-f]{16}$ ]]
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: publisher
+          persist-credentials: false
+      - name: Refuse another repository's or public package before pushing even a fixture
+        if: inputs.operation != 'Inspect'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f publisher/tools/cloud/private-registry-identity.json || { echo '::error::APPROVED_PRIVATE_PACKAGE_ID_PIN_REQUIRED'; exit 1; }
+          python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --preflight
+      - name: Inspect only private package identity metadata without accepting it or pushing an image
+        if: inputs.operation == 'Inspect'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --inspect
+      - name: Authenticate scoped private-publisher job to GHCR
+        if: inputs.operation != 'Inspect'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish harmless fixture and prove authenticated pull plus anonymous denial
+        if: inputs.operation != 'Inspect'
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$PACKAGE_NAME"
+          FIXTURE="$IMAGE:privacy-fixture-v1"
+          mkdir -p "$RUNNER_TEMP/private-image-fixture"
+          printf 'MRFPS non-secret private registry fixture\n' > "$RUNNER_TEMP/private-image-fixture/fixture.txt"
+          cat > "$RUNNER_TEMP/private-image-fixture/Dockerfile" <<'EOF'
+          FROM scratch
+          LABEL app.mrfps.privacy-fixture="nonsecret-v1"
+          COPY fixture.txt /fixture.txt
+          EOF
+          # Linking must point at this PRIVATE publisher, never the public source.
+          if ! docker manifest inspect "$FIXTURE" >/dev/null 2>&1; then
+            docker buildx build --builder "$MRFPS_BUILDER_NAME" --load \
+              --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              -t "$FIXTURE" "$RUNNER_TEMP/private-image-fixture"
+            docker push "$FIXTURE"
+            docker image rm "$FIXTURE"
+          fi
+          docker pull "$FIXTURE"
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.privacy-fixture" }}' "$FIXTURE")" == nonsecret-v1 ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$FIXTURE")" == "https://github.com/$GITHUB_REPOSITORY" ]]
+          python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --tag privacy-fixture-v1 \
+            | tee "$RUNNER_TEMP/private-registry-proof.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo 'MRFPS_GHCR_AUTHENTICATED_FIXTURE_PULL=true' | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prove this scoped token can download the non-secret private draft fixture
+        if: inputs.operation == 'Probe'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern privacy-fixture.txt --dir "$RUNNER_TEMP/mrfps-draft-privacy"
+          grep -qx 'MRFPS non-secret draft-access fixture' "$RUNNER_TEMP/mrfps-draft-privacy/privacy-fixture.txt"
+          echo 'MRFPS_PRIVATE_DRAFT_FIXTURE_DOWNLOAD=true' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: inputs.operation == 'Publish'
+        with:
+          repository: mizuamedesu/MRFPS
+          ref: ${{ inputs.source_commit }}
+          path: server-source
+          persist-credentials: false
+      - name: Download and verify only the approved private draft input
+        if: inputs.operation == 'Publish'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
+          mkdir -p "$RUNNER_TEMP/mrfps-package"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern linux-server.tar.gz --dir "$RUNNER_TEMP/mrfps-package"
+          python3 server-source/tools/cloud/server_bundle.py verify \
+            --archive "$RUNNER_TEMP/mrfps-package/linux-server.tar.gz" \
+            --bundle-sha256 "$BUNDLE_SHA256" --server-sha256 "$SERVER_SHA256" \
+            --destination "$GITHUB_WORKSPACE/server-source"
+      - name: Build and publish actual image only after private-boundary proof
+        if: inputs.operation == 'Publish'
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$PACKAGE_NAME"
+          TAG="linux-${BUNDLE_SHA256:0:12}-${SOURCE_COMMIT:0:12}"
+          python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --tag privacy-fixture-v1
+          if docker manifest inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+            docker pull --platform linux/amd64 "$IMAGE:$TAG"
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.server.sha256" }}' "$IMAGE:$TAG")" == "$SERVER_SHA256" ]]
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.bundle.sha256" }}' "$IMAGE:$TAG")" == "$BUNDLE_SHA256" ]]
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$TAG")" == "$SOURCE_COMMIT" ]]
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$IMAGE:$TAG")" == "https://github.com/$GITHUB_REPOSITORY" ]]
+          else
+            # One bounded BuildKit invocation: a container driver cannot import
+            # a FROM image from the unrelated host Docker image store. Keep the
+            # reviewed Dockerfiles unchanged and append the wrapper in this job.
+            python3 - <<'PY'
+            import os
+            from pathlib import Path
+            base = Path('server-source/Deploy/Linux/Dockerfile').read_text()
+            wrapper = Path('server-source/Deploy/Cloud/Flash.Dockerfile').read_text().splitlines()
+            if wrapper[:2] != ['ARG MRFPS_BASE_IMAGE', 'FROM ${MRFPS_BASE_IMAGE}']:
+                raise SystemExit('APPROVED_FLASH_WRAPPER_PREFIX_CHANGED')
+            wrapper = [line.replace('COPY ', 'COPY --from=mrfps-flash-context ', 1) if line.startswith('COPY ') else line for line in wrapper[2:]]
+            (Path(os.environ['RUNNER_TEMP']) / 'mrfps-private.Dockerfile').write_text(base + '\n' + '\n'.join(wrapper) + '\n')
+            PY
+            docker buildx build --builder "$MRFPS_BUILDER_NAME" --load --platform linux/amd64 \
+              --build-context mrfps-flash-context=server-source/Deploy/Cloud \
+              -f "$RUNNER_TEMP/mrfps-private.Dockerfile" \
+              --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
+              --label 'app.mrfps.source.repository=https://github.com/mizuamedesu/MRFPS' \
+              --label "app.mrfps.server.sha256=$SERVER_SHA256" \
+              --label "app.mrfps.bundle.sha256=$BUNDLE_SHA256" -t "$IMAGE:$TAG" server-source
+          fi
+          for uid in 10001 0; do
+            set +e
+            docker run --rm --name "mrfps-private-negative-$MRFPS_PUBLISHER_TASK_ID-$uid" \
+              --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" \
+              --user "$uid" --memory 128m --memory-swap 128m --cpus 1 \
+              --security-opt no-new-privileges:true "$IMAGE:$TAG" >"$RUNNER_TEMP/mrfps-negative-$uid.log" 2>&1
+            result=$?
+            set -e
+            [[ "$result" -ne 0 ]]
+            grep -q '^MRFPS_FLASH_RUNTIME uid=10001 ' "$RUNNER_TEMP/mrfps-negative-$uid.log"
+            grep -q '^AUTH_CONFIG:' "$RUNNER_TEMP/mrfps-negative-$uid.log"
+          done
+          docker push "$IMAGE:$TAG"
+          python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --tag "$TAG" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          docker buildx imagetools inspect "$IMAGE:$TAG" > "$RUNNER_TEMP/mrfps-image.txt"
+          DIGEST=$(awk '$1 == "Digest:" { print $2; exit }' "$RUNNER_TEMP/mrfps-image.txt")
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          REPORT=$(printf '{"image":"%s@%s","tag":"%s","publisher":"%s","source_repository":"mizuamedesu/MRFPS","source_commit":"%s","server_sha256":"%s","bundle_sha256":"%s","private":true}' \
+            "$IMAGE" "$DIGEST" "$TAG" "$GITHUB_REPOSITORY" "$SOURCE_COMMIT" "$SERVER_SHA256" "$BUNDLE_SHA256")
+          printf 'MRFPS_GHCR_PUBLICATION %s\n' "$REPORT" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Logout of the ephemeral registry session
+        if: always()
+        shell: bash
+        run: docker logout ghcr.io
