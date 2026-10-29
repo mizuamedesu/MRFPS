@@ -176,10 +176,49 @@ class DeviceLoginControlTests(unittest.TestCase):
             path = Path(folder) / "code.txt"
             path.write_bytes(b"000123\n")
             self.assertEqual(module.read_code(path), b"000123")
-            for invalid in (b"12345", b"1234567", b"123x56", b"\xef\xbb\xbf123456"):
+            for invalid in (b"12345", b"1234567", b"123x56", b"\xef\xbb\xbf123456", b"1"*1024):
                 path.write_bytes(invalid)
                 with self.assertRaises(ValueError):
                     module.read_code(path)
+
+    def test_code_file_change_during_read_never_reaches_quest_control(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_bytes(b"000123")
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,serial="fixture",role="player",
+                                    adb="adb",replace=False,code_file=code)
+            real_fstat=os.fstat; calls=0
+            def mutate_after_first_stat(fd):
+                nonlocal calls
+                value=real_fstat(fd); calls+=1
+                if calls==1:
+                    code.write_bytes(b"000456")
+                    os.utime(code,ns=(value.st_atime_ns,value.st_mtime_ns+1_000_000_000))
+                return value
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module.os,"fstat",side_effect=mutate_after_first_stat), \
+                 mock.patch.object(module,"quest_control") as control:
+                with self.assertRaisesRegex(RuntimeError,"changed while reading"):
+                    module.quest(args)
+                control.assert_not_called()
+
+    def test_code_file_replacement_during_read_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); code=root/"code.txt"; code.write_bytes(b"000123")
+            expected=code.resolve(strict=True); real_fstat=os.fstat; real_stat=Path.stat; calls=0
+            def count_fstat(fd):
+                nonlocal calls
+                value=real_fstat(fd); calls+=1
+                return value
+            def changed_path_identity(path,*args,**kwargs):
+                value=real_stat(path,*args,**kwargs)
+                if calls>=2 and str(path)==str(expected):
+                    from types import SimpleNamespace
+                    return SimpleNamespace(st_dev=value.st_dev,st_ino=value.st_ino+1,
+                                           st_mtime_ns=value.st_mtime_ns,st_ctime_ns=value.st_ctime_ns,st_size=value.st_size)
+                return value
+            with mock.patch.object(module.os,"fstat",side_effect=count_fstat), \
+                 mock.patch.object(Path,"stat",changed_path_identity):
+                with self.assertRaisesRegex(RuntimeError,"changed while reading"):
+                    module.submission(code)
 
     def test_debug_auth_url_cannot_escape_loopback(self):
         self.assertTrue(module.test_auth_url("http://127.0.0.1:18787/api/device/exchange"))

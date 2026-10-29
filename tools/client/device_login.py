@@ -41,11 +41,18 @@ def test_auth_url(value: str) -> bool:
     return bool(match and 1<=int(match.group(1))<=65535)
 
 
-def read_code(path: Path) -> bytes:
-    data = path.read_bytes().strip()
+def validate_code(data: bytes) -> bytes:
+    if len(data) > 64:
+        raise ValueError("code file must contain exactly six ASCII digits")
+    data = data.strip()
     if not re.fullmatch(rb"[0-9]{6}", data):
         raise ValueError("code file must contain exactly six ASCII digits")
     return data
+
+
+def read_code(path: Path) -> bytes:
+    with path.open("rb") as source:
+        return validate_code(source.read(65))
 
 
 def adb_result(adb: str, serial: str, args: list[str], *, data: bytes | None = None) -> subprocess.CompletedProcess:
@@ -268,8 +275,21 @@ def state_lock(path: Path):
 def submission(code_file: Path | None) -> tuple[dict | None, str | None]:
     if code_file is None:
         return None, None
-    marker = {"path": str(code_file.resolve(strict=True)), "modified_ns": code_file.stat().st_mtime_ns}
-    return marker, read_code(code_file).decode("ascii")
+    resolved = code_file.resolve(strict=True)
+    # Read the bytes and identity from one open handle. The issuer may replace
+    # its code file atomically while a launcher is reading; never associate a
+    # newer code with an older marker or silently submit it again on retry.
+    with resolved.open("rb") as source:
+        before = os.fstat(source.fileno())
+        data = source.read(65)
+        after = os.fstat(source.fileno())
+        current = resolved.stat()
+    def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size)
+    if identity(before) != identity(after) or identity(after) != identity(current):
+        raise RuntimeError("code file changed while reading; no code was sent")
+    marker = {"path": str(resolved), "modified_ns": after.st_mtime_ns}
+    return marker, validate_code(data).decode("ascii")
 
 
 def control_data(address: str, role: str, code: str | None) -> bytes:
