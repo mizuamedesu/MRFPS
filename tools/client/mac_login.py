@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -23,6 +24,9 @@ from device_login import DEFAULT_SERVER, ROLES, control_data, endpoint, read_cod
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+INSTANCE = re.compile(r"[0-9a-f]{32}\Z")
+GUARD_REASONS = {"requested_stop", "memory_limit", "insufficient_memory", "monitor_unavailable",
+                 "monitor_error", "launch_failed", "cleanup_failed", "completed", "child_failed"}
 
 
 def validate_name(value: str) -> str:
@@ -269,6 +273,49 @@ def marker_exists(marker: str) -> bool:
     return any(token in line.split() for line in listing.splitlines())
 
 
+def guard_paths(directory: Path, marker: str) -> tuple[Path, Path]:
+    if not isinstance(marker, str) or not INSTANCE.fullmatch(marker):
+        raise ValueError("invalid client instance marker")
+    return directory / ("stop-" + marker + ".json"), directory / ("guard-" + marker + ".json")
+
+
+def stop_file_present(path: Path, marker: str) -> bool:
+    try:
+        request = json.loads(safe_read(path, 256))
+    except FileNotFoundError:
+        return False
+    if request != {"action": "stop", "instance": marker}:
+        raise ValueError("invalid stop request")
+    return True
+
+
+def guard_report(directory: Path, marker: str) -> dict | None:
+    _, path = guard_paths(directory, marker)
+    try:
+        raw = load_json(path)
+    except (ValueError, OSError):
+        return {"status": "invalid_report"}
+    if raw is None:
+        return None
+    state, reason = raw.get("status"), raw.get("reason")
+    if state not in ("preflight", "running", "stopped", "failed") or (reason is not None and
+        (not isinstance(reason, str) or reason not in GUARD_REASONS)):
+        return {"status": "invalid_report"}
+    output = {"status": state, "reason": reason}
+    for key in ("exit_code", "reserve_gb", "minimum_available_gb"):
+        value = raw.get(key)
+        if value is None or (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)):
+            output[key] = value
+    return output
+
+
+def guard_needs_recovery(state: dict, report: dict | None) -> bool:
+    if state.get("control_version") != 1 or state.get("cleanup_acknowledged") or state.get("launch_not_started"):
+        return False
+    return (report is None or report.get("status") in ("preflight", "running", "invalid_report") or
+            report.get("reason") == "cleanup_failed")
+
+
 def start(args: argparse.Namespace) -> dict:
     name = validate_name(args.name)
     binary = args.executable.resolve(strict=True)
@@ -282,19 +329,26 @@ def start(args: argparse.Namespace) -> dict:
         previous = load_json(path)
         if previous:
             marker = previous.get("instance", "")
-            if not re.fullmatch(r"[0-9a-f]{32}", marker):
+            if not isinstance(marker, str) or not INSTANCE.fullmatch(marker):
                 raise RuntimeError("invalid previous process state")
+            prior_report = guard_report(directory, marker)
             if previous.get("status") == "unknown":
                 raise RuntimeError("previous launch outcome unknown; inspect processes before clearing state")
             started = process_info(previous.get("pid", 0), marker)
             if started and started == previous.get("started"):
                 if previous.get("config") != config:
                     raise RuntimeError("client name already runs with different settings")
+                stop_path, _ = guard_paths(directory, marker)
+                if previous.get("status") == "stopping" or stop_file_present(stop_path, marker):
+                    return {"status": "stopping", "name": name, "guard_pid": previous["pid"]}
                 return {"status": "already_running", "name": name, "guard_pid": previous["pid"]}
             if marker_exists(marker):
                 raise RuntimeError("previous client process may still be running")
+            if guard_needs_recovery(previous, prior_report):
+                raise RuntimeError("previous guard outcome is unknown; inspect the processes before recovery")
         marker = uuid.uuid4().hex
-        save_json(path, {"status": "unknown", "instance": marker, "config": config})
+        stop_path, report_path = guard_paths(directory, marker)
+        save_json(path, {"status": "unknown", "instance": marker, "config": config, "control_version": 1})
         command = [str(binary)]
         if args.editor:
             command += [str(ROOT / "MRFPS.uproject"), "-game"]
@@ -302,22 +356,25 @@ def start(args: argparse.Namespace) -> dict:
                     "-MRFPSWindowName=" + name, "-MRFPSInstanceId=" + marker,
                     "-ExecCmds=t.MaxFPS 60,t.IdleWhenNotForeground 0", "-windowed", "-ResX=1280", "-ResY=720"]
         try:
-            child = subprocess.Popen([sys.executable, str(ROOT / "tools/dev/mac_resource_guard.py"), "--", *command],
+            child = subprocess.Popen([sys.executable, str(ROOT / "tools/dev/mac_resource_guard.py"),
+                                      "--report-file", str(report_path), "--stop-file", str(stop_path), "--stop-id", marker, "--", *command],
                                      cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                      start_new_session=True, close_fds=True)
         except OSError:
-            save_json(path, {"status": "failed", "instance": marker, "config": config})
+            save_json(path, {"status": "failed", "instance": marker, "config": config,
+                             "control_version": 1, "launch_not_started": True})
             raise
         time.sleep(.3)
         if child.poll() is not None and not marker_exists(marker):
-            save_json(path, {"status": "failed", "instance": marker, "config": config})
+            save_json(path, {"status": "failed", "instance": marker, "config": config, "control_version": 1})
             raise RuntimeError("memory guard exited before the client could start")
         started = process_info(child.pid, marker)
         if child.poll() is not None or not started:
             # Keep unknown: a process may have started even when identity could
             # not be read. The operator can inspect before launching again.
             raise RuntimeError("could not verify guarded launch; result is unknown")
-        save_json(path, {"status": "running", "instance": marker, "pid": child.pid, "started": started, "config": config})
+        save_json(path, {"status": "running", "instance": marker, "pid": child.pid, "started": started,
+                         "config": config, "control_version": 1})
         return {"status": "launching", "name": name, "guard_pid": child.pid}
 
 
@@ -336,10 +393,51 @@ def status(args: argparse.Namespace) -> dict:
         if state.get("status") == "unknown":
             return {"status": "unknown", "name": name}
         marker = state.get("instance", "")
+        stop_path, _ = guard_paths(directory, marker)
+        report = guard_report(directory, marker)
+        details = {"name": name}
+        if report is not None:
+            details["guard_report"] = report
         started = process_info(state.get("pid", 0), marker)
         if started and started == state.get("started"):
-            return {"status": "running", "name": name, "guard_pid": state["pid"]}
-        return {"status": "unknown" if marker_exists(marker) else "stopped", "name": name}
+            stopping = state.get("status") == "stopping" or stop_file_present(stop_path, marker)
+            return {"status": "stopping" if stopping else "running", **details, "guard_pid": state["pid"]}
+        return {"status": "unknown" if guard_needs_recovery(state, report) or marker_exists(marker) else "stopped", **details}
+
+
+def stop(args: argparse.Namespace) -> dict:
+    name = validate_name(args.name)
+    if not math.isfinite(args.wait_seconds) or args.wait_seconds < 0 or args.wait_seconds > 20:
+        raise ValueError("wait seconds must be between 0 and 20")
+    _, base = private_directories()
+    directory = client_directory(base, name)
+    path = directory / "process.json"
+    with state_lock(directory):
+        previous = load_json(path)
+        if not previous:
+            return {"status": "stopped", "name": name}
+        marker = previous.get("instance", "")
+        stop_path, _ = guard_paths(directory, marker)
+        started = process_info(previous.get("pid", 0), marker)
+        if not started or started != previous.get("started"):
+            if marker_exists(marker):
+                return {"status": "unknown", "name": name}
+            report = guard_report(directory, marker)
+            details = {"status": "unknown" if guard_needs_recovery(previous, report) else "stopped", "name": name}
+            if report is not None:
+                details["guard_report"] = report
+            return details
+        if previous.get("control_version") != 1:
+            return {"status": "unsupported", "name": name}
+        if not stop_file_present(stop_path, marker):
+            atomic_private(stop_path, json.dumps({"action": "stop", "instance": marker}, separators=(",", ":"), sort_keys=True).encode("ascii"))
+        save_json(path, {**previous, "status": "stopping"})
+    deadline = time.monotonic() + args.wait_seconds
+    while True:
+        result = status(argparse.Namespace(name=name, operation_id=None))
+        if result["status"] != "stopping" or time.monotonic() >= deadline:
+            return result
+        time.sleep(min(.2, max(0, deadline-time.monotonic())))
 
 
 def recover(args: argparse.Namespace) -> dict:
@@ -349,12 +447,18 @@ def recover(args: argparse.Namespace) -> dict:
     path = directory / "process.json"
     with state_lock(directory):
         previous = load_json(path)
-        if not previous or previous.get("status") != "unknown":
+        if not previous:
             return {"status": "nothing_to_recover", "name": name}
         marker = previous.get("instance", "")
-        if not re.fullmatch(r"[0-9a-f]{32}", marker) or marker_exists(marker):
+        if not isinstance(marker, str) or not INSTANCE.fullmatch(marker):
+            raise RuntimeError("invalid previous process state")
+        report = guard_report(directory, marker)
+        needs_recovery = guard_needs_recovery(previous, report)
+        if previous.get("status") != "unknown" and not needs_recovery:
+            return {"status": "nothing_to_recover", "name": name}
+        if marker_exists(marker):
             raise RuntimeError("cannot confirm that the previous client has exited")
-        save_json(path, {**previous, "status": "failed"})
+        save_json(path, {**previous, "status": "failed", "cleanup_acknowledged": True})
         return {"status": "recovered", "name": name}
 
 
@@ -376,6 +480,9 @@ def main() -> int:
     p.add_argument("--operation-id")
     p = sub.add_parser("recover")
     p.add_argument("--name", default="MRFPS-Client")
+    p = sub.add_parser("stop")
+    p.add_argument("--name", default="MRFPS-Client")
+    p.add_argument("--wait-seconds", type=float, default=10)
     p = sub.add_parser("cancel")
     p.add_argument("--name", default="MRFPS-Client")
     p.add_argument("--operation-id", required=True)
@@ -383,9 +490,9 @@ def main() -> int:
     try:
         if sys.platform != "darwin":
             raise RuntimeError("macOS is required")
-        result = start(args) if args.command == "start" else queue(args) if args.command == "queue" else status(args) if args.command == "status" else recover(args) if args.command == "recover" else cancel(args)
+        result = start(args) if args.command == "start" else queue(args) if args.command == "queue" else status(args) if args.command == "status" else recover(args) if args.command == "recover" else stop(args) if args.command == "stop" else cancel(args)
         print(json.dumps(result, ensure_ascii=False))
-        return 2 if result.get("status") == "unknown" else 0
+        return 2 if result.get("status") in ("unknown", "unsupported") else 0
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
         print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
