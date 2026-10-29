@@ -35,6 +35,10 @@ $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\p
 & $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
   --serial QUEST_SERIAL --role player --code-file .local\device-code.txt
 
+# Quest で PC の ContactGlove relay を使う場合は、最初の起動時に PC の実 IPv4 を指定
+& $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
+  --serial QUEST_SERIAL --role player --glove-sender 192.168.1.10
+
 # 指定した Quest の MRFPS アプリだけを停止（繰り返し実行可）
 & $mrfpsPython tools/client/device_login.py stop-quest --adb .local\android\platform-tools\adb.exe `
   --serial QUEST_SERIAL
@@ -45,6 +49,8 @@ $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\p
 ```
 
 同じコードファイルの同じ更新時刻、接続先、役割、プロセスの組み合わせを再実行すると、既存のプロセスを維持して終了します。同じログイン画面に新しい接続先・役割・コードを渡すと再起動せずに入力できます。`--replace` は、このコマンドが起動した Windows クライアント、または対象 Quest の MRFPS アプリだけを再起動します。別の Windows インスペクターはそれぞれ別の `--name` とコードを使って起動できます。6桁コードの交換自体は意図的に一回限りで、冪等な再発行や同じコードの再利用はできません。`login_queued`／`settings_queued` はファイル投入の完了を示し、画面が開いて処理するまで待ちます。認証や参加の成功を保証しません。信頼解除コマンドは固定された公開鍵と旧アクセス資格情報のみを削除し、稼働中プロセスのメモリ上の鍵には影響しません。稼働中なら対象アプリを再起動してください。
+
+Quest の `--glove-sender` は受信元を指定した PC の IPv4 に固定します。必要に応じて `--glove-port` と `--glove-device` も指定できます。これは起動時の設定なので、既に動いているアプリで変更する場合は `--replace` が必要です。起動後のコード投入では省略しても、そのプロセスの設定を維持します。アプリの新規起動時は再指定してください。DivingStation と PC relay も必要です。詳しくは [ContactGlove](ContactGlove.md) を参照してください。
 
 `stop-quest` は指定した serial の `org.mrfps.arena` のみを停止し、終了待ちの起動要求が残る場合にも対象アプリへ `force-stop` を送ります。プロセスが消えたことを確認できない場合はエラーで止まり、同じ停止コマンドは再実行できます。画面共有の OS 許可は操作しません。次の `quest` 起動時には、対象アプリが停止済みで、MRFPS 由来の孤立した共有ダイアログだけだと確認できた場合に限ってその古いタスクを閉じます。確認できない状態では起動を中断します。
 

@@ -272,6 +272,62 @@ class DeviceLoginControlTests(unittest.TestCase):
         for invalid in ("http://127.0.0.1:1234@evil.test/api", "http://localhost.evil.test:80/", "http://localhost:0/", "http://localhost:65536/", "http://localhost:99/?x=1"):
             self.assertFalse(module.test_auth_url(invalid))
 
+    def test_quest_glove_pin_requires_a_valid_player_relay(self):
+        args = argparse.Namespace(role="player", glove_sender="192.168.1.10", glove_device="CG2-1", glove_port=None)
+        self.assertEqual(module.quest_glove_config(args), {"sender":"192.168.1.10", "device":"CG2-1", "port":25788})
+        for sender in ("0.0.0.0", "255.255.255.255", "224.0.0.1", "::1", "192.168.1.10;echo"):
+            with self.subTest(sender=sender):
+                args.glove_sender = sender
+                with self.assertRaises(ValueError): module.quest_glove_config(args)
+        args.glove_sender = "192.168.1.10"
+        for device in ("", "a b", "x;echo", "x" * 129):
+            with self.subTest(device=device):
+                args.glove_device = device
+                with self.assertRaises(ValueError): module.quest_glove_config(args)
+        args.glove_device = None
+        for port in (0, 1023, 65536, True):
+            args.glove_port = port
+            with self.assertRaises(ValueError): module.quest_glove_config(args)
+        args.glove_port = None
+        args.role = "inspector"
+        with self.assertRaises(ValueError): module.quest_glove_config(args)
+        args.role = "player"
+        args.glove_sender = None
+        args.glove_device = "CG2"
+        with self.assertRaises(ValueError): module.quest_glove_config(args)
+
+    def test_quest_glove_pin_is_applied_once_and_not_changed_by_login(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player", adb="adb",
+                                      replace=False, code_file=None, glove_sender="192.168.1.10",
+                                      glove_port=25788, glove_device="CG2-1")
+            pid = {"value":""}
+            calls = []
+            def fake_adb(_adb, _serial, cmd, **_kwargs):
+                calls.append(cmd)
+                if cmd[:3] == ["shell", "am", "start"]: pid["value"] = "4321"
+                return ""
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb",fake_adb), \
+                 mock.patch.object(module,"quest_pid",side_effect=lambda *_: pid["value"]), \
+                 mock.patch.object(module,"clear_orphaned_quest_share"), mock.patch.object(module,"quest_control") as control:
+                self.assertEqual(module.quest(args)["status"],"launched")
+                launch = next(cmd for cmd in calls if cmd[:3] == ["shell", "am", "start"])
+                self.assertIn("-MRFPSGloveSender=192.168.1.10 -MRFPSGlovePort=25788 -MRFPSGloveDevice=CG2-1", launch[-1])
+                args.glove_sender = args.glove_port = args.glove_device = None
+                code = root / "code.txt"; code.write_text("000123", encoding="ascii")
+                args.code_file = code
+                self.assertEqual(module.quest(args)["status"],"login_queued")
+                self.assertEqual(control.call_count,2)
+                args.glove_sender = "192.168.1.11"
+                before = list(calls)
+                with self.assertRaisesRegex(RuntimeError,"launch setting"):
+                    module.quest(args)
+                self.assertEqual(calls,before)
+                self.assertEqual(control.call_count,2)
+            saved = module.load_quest_state(root / "Saved" / "DeviceAuth" / "quest-fixture.json")
+            self.assertEqual(saved["config"]["glove"]["sender"],"192.168.1.10")
+
     def test_quest_repeated_configuration_does_not_restart_or_redeem_again(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

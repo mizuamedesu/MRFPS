@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,32 @@ def endpoint(value: str) -> str:
 def test_auth_url(value: str) -> bool:
     match=re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):([0-9]{1,5})(?:/[A-Za-z0-9_./-]*)?",value)
     return bool(match and 1<=int(match.group(1))<=65535)
+
+
+def quest_glove_config(args: argparse.Namespace) -> dict | None:
+    """Validate an explicitly pinned PC relay before using it in an adb intent."""
+    sender = getattr(args, "glove_sender", None)
+    device = getattr(args, "glove_device", None)
+    port = getattr(args, "glove_port", None)
+    if sender is None:
+        if device is not None or port is not None:
+            raise ValueError("glove device and port require --glove-sender")
+        return None
+    if args.role != "player":
+        raise ValueError("glove relay is available only for a player")
+    try:
+        address = ipaddress.IPv4Address(sender)
+    except (ipaddress.AddressValueError, TypeError):
+        raise ValueError("glove sender must be a single IPv4 address") from None
+    if address.is_unspecified or address.is_multicast or int(address) == 0xffffffff:
+        raise ValueError("glove sender must be a unicast IPv4 address")
+    if device is not None and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", device):
+        raise ValueError("invalid glove device identifier")
+    if port is None:
+        port = 25788
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError("invalid glove relay port")
+    return {"sender": str(address), "port": port, "device": device or ""}
 
 
 def validate_code(data: bytes) -> bytes:
@@ -347,7 +374,7 @@ def stop_quest(args: argparse.Namespace) -> dict:
 
 def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> dict:
     serial = args.serial
-    wanted = {"server": address, "role": args.role}
+    requested_glove = quest_glove_config(args)
     marker, code = submission(args.code_file)
     current_pid = quest_pid(args.adb, serial)
     previous = load_quest_state(state_path)
@@ -355,6 +382,17 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     previous_pids = set(str(previous.get("pid") or "").split())
     same_process = bool(previous_pids.intersection(current_pid.split()))
     known = same_process or previous.get("pending") or getattr(args, "adopt", False)
+    previous_config = previous.get("config", {})
+    if not isinstance(previous_config, dict):
+        raise RuntimeError("Quest configuration journal is invalid; no code was sent")
+    prior_glove = previous_config.get("glove")
+    if current_pid and known and not args.replace and requested_glove is not None and requested_glove != prior_glove:
+        raise RuntimeError("Quest glove relay is a launch setting; use --replace to change it")
+    # A later code-only submission must not silently discard the launch pin.
+    glove = prior_glove if requested_glove is None and current_pid and same_process and not args.replace else requested_glove
+    wanted = {"server": address, "role": args.role}
+    if glove is not None:
+        wanted["glove"] = glove
     if marker is not None and marker in history:
         submitted_pids = set(str(previous.get("submitted_pid") or "").split())
         launched_pending = bool(previous.get("pending") and not previous_pids and not submitted_pids)
@@ -419,6 +457,10 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     previous["pending"] = True
     save_state(state_path, previous)
     cmdline = "/Game/Maps/MRFPSArena -vr -log"
+    if glove is not None:
+        cmdline += f" -MRFPSGloveSender={glove['sender']} -MRFPSGlovePort={glove['port']}"
+        if glove["device"]:
+            cmdline += f" -MRFPSGloveDevice={glove['device']}"
     run_adb(args.adb, serial, ["shell", "am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-n", PACKAGE + "/com.epicgames.unreal.GameActivity", "--es", "cmdline", "'" + cmdline + "'"])
     current_pid = ""
     for _ in range(12):
@@ -782,6 +824,9 @@ def main() -> int:
             p.add_argument("--serial", required=True)
             p.add_argument("--replace", action="store_true")
             p.add_argument("--adopt", action="store_true", help="explicitly take control of an already running MRFPS app")
+            p.add_argument("--glove-sender", help="pin the PC glove relay's IPv4 address when launching")
+            p.add_argument("--glove-port", type=int, help="Quest receive port; defaults to 25788")
+            p.add_argument("--glove-device", help="optional DivingStation device ID")
     p = sub.add_parser("reset-trust")
     p.add_argument("platform", choices=("windows", "quest"))
     p.add_argument("--adb", default="adb")
