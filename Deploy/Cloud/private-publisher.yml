@@ -129,13 +129,13 @@ jobs:
             --pattern privacy-fixture.txt --dir "$RUNNER_TEMP/mrfps-draft-privacy"
           grep -qx 'MRFPS non-secret draft-access fixture' "$RUNNER_TEMP/mrfps-draft-privacy/privacy-fixture.txt"
           echo 'MRFPS_PRIVATE_DRAFT_FIXTURE_DOWNLOAD=true' | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Fetch only the reviewed server build context without a whole-repository checkout
         if: inputs.operation == 'Publish'
-        with:
-          repository: mizuamedesu/MRFPS
-          ref: ${{ inputs.source_commit }}
-          path: server-source
-          persist-credentials: false
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 publisher/tools/cloud/fetch_server_context.py --commit "$SOURCE_COMMIT" \
+            --destination "$GITHUB_WORKSPACE/server-source" --report "$RUNNER_TEMP/server-source-provenance.json"
       - name: Download and verify only the approved private draft input
         if: inputs.operation == 'Publish'
         shell: bash
@@ -149,6 +149,9 @@ jobs:
             --archive "$RUNNER_TEMP/mrfps-package/linux-server.tar.gz" \
             --bundle-sha256 "$BUNDLE_SHA256" --server-sha256 "$SERVER_SHA256" \
             --destination "$GITHUB_WORKSPACE/server-source"
+          # Keep only the verified runtime files, avoiding a second 150+ MiB
+          # cached archive in the 1 GiB runner cgroup during Docker transfer.
+          rm -- "$RUNNER_TEMP/mrfps-package/linux-server.tar.gz"
       - name: Build and publish actual image only after private-boundary proof
         if: inputs.operation == 'Publish'
         shell: bash
@@ -200,6 +203,20 @@ jobs:
             grep -q '^AUTH_CONFIG:' "$RUNNER_TEMP/mrfps-negative-$uid.log"
           done
           docker push "$IMAGE:$TAG"
+          # Verify retrieval of the actual published server image, not only a
+          # manifest or the harmless fixture. No game server is launched here.
+          docker image rm "$IMAGE:$TAG"
+          docker pull --platform linux/amd64 "$IMAGE:$TAG"
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$IMAGE:$TAG")" == "https://github.com/$GITHUB_REPOSITORY" ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$TAG")" == "$SOURCE_COMMIT" ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.bundle.sha256" }}' "$IMAGE:$TAG")" == "$BUNDLE_SHA256" ]]
+          ACTUAL_ELF=$(docker run --rm --name "mrfps-private-negative-$MRFPS_PUBLISHER_TASK_ID-elf" \
+            --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" \
+            --memory 128m --memory-swap 128m --cpus 1 --network none --read-only \
+            --security-opt no-new-privileges:true --entrypoint /usr/bin/sha256sum \
+            "$IMAGE:$TAG" /opt/mrfps/MRFPS/Binaries/Linux/MRFPSServer)
+          [[ "${ACTUAL_ELF%% *}" == "$SERVER_SHA256" ]]
+          echo 'MRFPS_GHCR_AUTHENTICATED_SERVER_PULL_AND_ELF=true' | tee -a "$GITHUB_STEP_SUMMARY"
           python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --tag "$TAG" \
             | tee -a "$GITHUB_STEP_SUMMARY"
           docker buildx imagetools inspect "$IMAGE:$TAG" > "$RUNNER_TEMP/mrfps-image.txt"
