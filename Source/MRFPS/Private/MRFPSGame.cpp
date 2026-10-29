@@ -672,8 +672,7 @@ void AMRFPSPlayerController::BeginPlay()
 #if !UE_SERVER
         FString WindowName;
         if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSWindowName="),WindowName) && !WindowName.IsEmpty())
-            if (auto* Viewport=GetGameInstance()->GetGameViewportClient())
-                if (auto Window=Viewport->GetWindow()) Window->SetTitle(FText::FromString(WindowName.Left(64)));
+            RequestedWindowTitle=WindowName.Left(64);
 #endif
     }
     FString StartupServer,DeviceCodeFile;
@@ -1001,6 +1000,16 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
 void AMRFPSPlayerController::PlayerTick(float Dt)
 {
     Super::PlayerTick(Dt); if (!IsLocalController()) return;
+#if !UE_SERVER
+    // The game window's native handle may be created after BeginPlay. Reapply
+    // to the actual window as it appears, including after world travel.
+    if (!RequestedWindowTitle.IsEmpty() && FPlatformTime::Seconds()>=NextWindowTitleUpdate) {
+        NextWindowTitleUpdate=FPlatformTime::Seconds()+1.;
+        if (auto* Instance=GetGameInstance())
+            if (auto* Viewport=Instance->GetGameViewportClient())
+                if (auto Window=Viewport->GetWindow()) Window->SetTitle(FText::FromString(RequestedWindowTitle));
+    }
+#endif
     TickAutomation();
     if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) {
         if (Instance->IsLoginScreenRequested() && GetNetMode()==NM_Standalone && GetPawn()) {

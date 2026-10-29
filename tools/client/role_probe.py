@@ -99,7 +99,7 @@ class Probe:
         self.children=[]; self.operations=[]; self.events=[]
         self.control_prefix="MRFPS-Role-"+uuid.uuid4().hex[:8]
         self.report={"schema":1,"status":"running","stage":"preflight","server":args.server,"port":args.port,
-                     "container":args.container,"fingerprint":args.fingerprint,"requestedInspectors":args.inspectors,
+                     "container":args.container,"fingerprint":args.fingerprint,"requestedInspectors":args.inspectors,"scenario":args.scenario,
                      "minimumFreeGB":10,"maximumCommitPercent":75,"checks":{},"instances":[],"limitations":[],"clientsCleaned":False,
                      "credentialStateDirectory":str(self.exchange_state),"exchangeOperations":[],"temporaryCredentialsCleaned":False}
 
@@ -113,6 +113,10 @@ class Probe:
         for item in self.children:
             if item["required"] and item["process"].poll() is not None:
                 raise RuntimeError("an accepted client exited during the test")
+            if item["required"] and item["log"].is_file():
+                if item["log"].stat().st_size>8*1024*1024: raise RuntimeError("private test log exceeds its bound")
+                text=item["log"].read_text(encoding="utf-8",errors="replace")
+                if "MRFPS_NETWORK_FAILURE" in text: raise RuntimeError("an accepted client lost its network connection")
 
     def set_stage(self,stage):
         self.check_stop(); self.report["stage"]=stage; self.persist()
@@ -123,6 +127,22 @@ class Probe:
         # hard minimum. The guard independently monitors every descendant.
         if sample["free_gib"]<12.5 or sample["commit_percent"]>72:
             raise ResourceLimit("insufficient headroom for another real client")
+
+    def trim_owned_working_sets(self):
+        # Only our own headless Popen handles are touched. Unrelated apps and
+        # processes are neither enumerated nor stopped. The job guard still
+        # enforces the same hard system-wide RAM and commit thresholds.
+        kernel=ctypes.WinDLL("kernel32",use_last_error=True)
+        kernel.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]; kernel.OpenProcess.restype=wintypes.HANDLE
+        kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+        psapi=ctypes.WinDLL("psapi",use_last_error=True)
+        psapi.EmptyWorkingSet.argtypes=[wintypes.HANDLE]; psapi.EmptyWorkingSet.restype=wintypes.BOOL
+        for item in self.children:
+            if item["process"].poll() is not None: continue
+            handle=kernel.OpenProcess(0x0400|0x0100,False,item["process"].pid)
+            if handle:
+                try: psapi.EmptyWorkingSet(handle)
+                finally: kernel.CloseHandle(handle)
 
     def docker(self,*args):
         command=["wsl.exe","-d","Ubuntu","-u","root","--exec","docker",*args]
@@ -175,7 +195,7 @@ class Probe:
         return token,safe_subject(token,role,self.args.fingerprint)
 
     def start(self,role,name,required):
-        self.set_stage("starting_"+name); self.require_memory()
+        self.set_stage("starting_"+name); self.trim_owned_working_sets(); self.require_memory()
         token,subject=self.issue(role)
         log=self.private/(name+".log")
         control_name=self.control_prefix+"-"+name
@@ -252,6 +272,39 @@ class Probe:
 
     def run_test(self):
         self.preflight()
+        if self.args.scenario=="admin-inspector":
+            observer=self.accept("inspector","inspector1")
+            admin=self.accept("admin","admin1")
+            self.wait("both_observers_live",lambda:all(self.snapshot_players(item) is not None for item in (observer,admin)),timeout=30)
+            self.report["checks"]["adminAndInspectorAccepted"]=True
+            self.report["limitations"].append("This focused scenario does not prove simultaneous player capacity or multiple inspectors")
+            return self.finish_checks()
+        if self.args.scenario=="admin-limit":
+            admin=self.accept("admin","admin1")
+            self.reject_capacity("admin","extraAdmin","ADMIN_FULL")
+            self.wait("admin_still_live",lambda:self.snapshot_players(admin) is not None,timeout=30)
+            self.report["checks"]["secondAdminRejected"]=True
+            self.report["limitations"].append("This focused scenario does not prove simultaneous player or inspector capacity")
+            return self.finish_checks()
+        if self.args.scenario=="inspector-multi":
+            observers=[self.accept("inspector","inspector"+str(i+1)) for i in range(self.args.inspectors)]
+            self.wait("inspectors_live",lambda:all(self.snapshot_players(item) is not None for item in observers),timeout=30)
+            self.report["checks"]["multipleInspectorsAccepted"]=True
+            self.report["limitations"].append("This focused scenario does not prove simultaneous player or admin capacity")
+            return self.finish_checks()
+        if self.args.scenario=="player-limit":
+            players=[self.accept("player","player1"),self.accept("player","player2")]
+            text=self.logs(); slots=[]
+            for item in players:
+                found=re.search(r"MRFPS_JOIN role=player slot=([01]) name="+re.escape(item["subject"])+r"(?:\s|$)",text)
+                if not found: raise RuntimeError("accepted players lack authoritative slot assignments")
+                slots.append(int(found.group(1)))
+            if sorted(slots)!=[0,1]: raise RuntimeError("accepted players do not occupy distinct slots")
+            self.report["checks"]["twoPlayersAccepted"]=True; self.persist()
+            self.reject_capacity("player","extraPlayer","ARENA_FULL")
+            self.report["checks"]["thirdPlayerRejected"]=True
+            self.report["limitations"].append("This focused scenario does not prove simultaneous admin or inspector capacity")
+            return self.finish_checks()
         first=self.accept("inspector","inspector1"); observers=[first]
         self.wait("initial_player_count",lambda:self.snapshot_players(first) is not None)
         baseline=self.snapshot_players(first)
@@ -269,6 +322,9 @@ class Probe:
         for i in range(1,self.args.inspectors): observers.append(self.accept("inspector","inspector"+str(i+1)))
         self.wait("roles_simultaneously_present",lambda:all(self.snapshot_players(item)==2 for item in [admin,*observers]),timeout=20)
         self.report["checks"]["multipleInspectorsAccepted"]=True; self.persist()
+        return self.finish_checks()
+
+    def finish_checks(self):
         self.report["checksCompleted"]=True; self.persist()
         self.set_stage("holding")
         end=time.monotonic()+self.args.hold_seconds
@@ -308,6 +364,7 @@ def main():
     p.add_argument("--server",required=True); p.add_argument("--port",type=int,required=True); p.add_argument("--container",required=True)
     p.add_argument("--fingerprint",required=True); p.add_argument("--admin-dir",required=True); p.add_argument("--inspectors",type=int,default=2)
     p.add_argument("--hold-seconds",type=int,default=0); p.add_argument("--editor",action="store_true"); p.add_argument("--allow-existing-player",action="store_true")
+    p.add_argument("--scenario",choices=("full","player-limit","admin-limit","inspector-multi","admin-inspector"),default="full")
     args=parser.parse_args(); run=Path(args.run_dir).resolve()
     if args.command=="stop":
         run.mkdir(parents=True,exist_ok=True); (run/"STOP").touch(exist_ok=True)

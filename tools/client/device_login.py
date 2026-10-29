@@ -213,6 +213,8 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     import ctypes
     from ctypes import wintypes
     address = endpoint(args.server)
+    if args.show_settings and args.code_file is not None:
+        raise ValueError("--show-settings cannot include a code")
     if args.auth_test_url and not test_auth_url(args.auth_test_url):
         raise ValueError("test auth URL must be a localhost HTTP URL")
     binary = args.executable.resolve(strict=True)
@@ -248,16 +250,21 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
             kernel.CloseHandle(handle)
     pid = old.get("pid", 0)
     active = bool(pid and creation_time(pid) == old.get("created"))
-    if active and old.get("config") == wanted and (marker is None or marker == old.get("submitted")):
-        return {"status": "already_running", "guard_pid": pid, "config": wanted}
     prior = old.get("config", {})
     same_binary = all(prior.get(key) == wanted.get(key) for key in ("name", "auth_test_url", "binary", "editor"))
-    if active and same_binary and not args.replace:
-        if old.get("config") == wanted and (marker is None or marker == old.get("submitted")):
+    if active and not args.replace:
+        if args.show_settings:
+            if old.get("config") != wanted or old.get("configured", True):
+                raise RuntimeError("settings page requires a new instance; use --replace")
+            return {"status": "already_running", "guard_pid": pid, "config": wanted}
+        if not same_binary:
+            raise RuntimeError("a client with this name already runs with different settings; use --replace")
+        if old.get("config") == wanted and old.get("configured", True) and (marker is None or marker == old.get("submitted")):
             return {"status": "already_running", "guard_pid": pid, "config": wanted}
         windows_control(args.name, address, args.role, code)
         old["config"] = wanted
         old["submitted"] = marker
+        old["configured"] = True
         save_state(state_path, old)
         return {"status": "login_queued" if marker else "settings_queued", "guard_pid": pid, "config": wanted}
     if active:
@@ -278,7 +285,14 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
                 raise RuntimeError("owned client guard did not exit in time")
         finally:
             kernel.CloseHandle(handle)
-    windows_control(args.name, address, args.role, code)
+    if args.show_settings:
+        local = os.environ.get("LOCALAPPDATA", "")
+        if not local or not Path(local).is_absolute(): raise RuntimeError("LOCALAPPDATA is required")
+        # This name belongs to a non-running guarded instance at this point.
+        # Remove only its stale command so startup remains on server settings.
+        (Path(local)/"MRFPS"/"DeviceLogin"/"controls"/(args.name+".json")).unlink(missing_ok=True)
+    else:
+        windows_control(args.name, address, args.role, code)
     run_id = uuid.uuid4().hex
     report = ROOT / "Saved" / "Validation" / "DeviceLogin" / args.name / run_id / "report.json"
     launch_config = state_path.parent / ("windows-" + args.name + "-launch-" + run_id + ".json")
@@ -293,7 +307,8 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     created = creation_time(process.pid)
     if not created:
         raise RuntimeError("unable to verify client process identity")
-    save_state(state_path, {"pid": process.pid, "created": created, "config": wanted, "submitted": marker, "report":str(report)})
+    save_state(state_path, {"pid": process.pid, "created": created, "config": wanted, "submitted": marker,
+                            "configured": not args.show_settings, "report":str(report)})
     return {"status": "launching", "guard_pid": process.pid, "report":str(report), "config": wanted}
 
 
@@ -433,6 +448,7 @@ def main() -> int:
             p.add_argument("--name", default="MRFPS-Client")
             p.add_argument("--replace", action="store_true")
             p.add_argument("--auth-test-url", default="", help="development builds only; localhost HTTP")
+            p.add_argument("--show-settings", action="store_true", help="start at the server settings page")
         else:
             p.add_argument("--adb", default="adb")
             p.add_argument("--serial", required=True)

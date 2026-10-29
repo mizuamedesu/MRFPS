@@ -1,7 +1,9 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -12,6 +14,42 @@ spec.loader.exec_module(module)
 
 
 class DeviceLoginControlTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
+    def test_windows_show_settings_then_configure_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, role="inspector", name="MRFPS-fixture",
+                executable=Path(sys.executable), editor=True, code_file=None, show_settings=True,
+                replace=False, auth_test_url="")
+            code = root / "code.txt"
+            code.write_text("000123", encoding="ascii")
+            with mock.patch.object(module, "ROOT", root), mock.patch.dict(module.os.environ, {"LOCALAPPDATA": str(root)}), \
+                 mock.patch.object(module, "windows_control") as control, \
+                 mock.patch.object(module.subprocess, "Popen") as launch:
+                # Use this test process solely as a verifiable live guard identity;
+                # no Unreal process or external window is created.
+                launch.return_value.pid = os.getpid()
+                self.assertEqual(module.windows(args)["status"], "launching")
+                state_path = root / "Saved" / "DeviceAuth" / "windows-MRFPS-fixture.json"
+                self.assertFalse(module.load_state(state_path)["configured"])
+                self.assertEqual(module.windows(args)["status"], "already_running")
+                control.assert_not_called()
+                args.show_settings = False
+                self.assertEqual(module.windows(args)["status"], "settings_queued")
+                control.assert_called_once_with(args.name, args.server, args.role, None)
+                self.assertTrue(module.load_state(state_path)["configured"])
+                self.assertEqual(module.windows(args)["status"], "already_running")
+                args.code_file = code
+                self.assertEqual(module.windows(args)["status"], "login_queued")
+                self.assertEqual(module.windows(args)["status"], "already_running")
+                self.assertEqual(control.call_count, 2)
+                control.assert_called_with(args.name, args.server, args.role, "000123")
+                args.show_settings = True
+                args.code_file = None
+                with self.assertRaisesRegex(RuntimeError, "settings page requires a new instance"):
+                    module.windows(args)
+                self.assertEqual(launch.call_count, 1)
+
     def test_endpoint_and_code_validation(self):
         self.assertEqual(module.endpoint("mrfps.mizuame.app:7777"), "mrfps.mizuame.app:7777")
         self.assertEqual(module.endpoint("[2001:db8::1]:7777"), "[2001:db8::1]:7777")

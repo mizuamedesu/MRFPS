@@ -381,6 +381,10 @@ public:
     int32 ViewSlot = -1;
     FString ConnectionError;
 private:
+#if !UE_SERVER
+    FString RequestedWindowTitle;
+    double NextWindowTitleUpdate=0;
+#endif
     UFUNCTION(Server,Reliable) void ServerAutomationCommand(FGuid OperationId,const FString& Operation,const FString& Parameters,AMRFPSBarrier* Target,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Client,Reliable) void ClientAutomationResult(FGuid OperationId,const FString& Code);
     FString AutomationDirectory() const;
