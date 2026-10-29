@@ -129,6 +129,12 @@ async function ensureKey() {
   try { await handle.writeFile(JSON.stringify(result.backup, null, 2) + '\n'); } finally { await handle.close(); }
   return result;
 }
+function issuerSubject(entry, role) {
+  const pieces = entry.body.token.split('.');
+  const claims = pieces.length === 3 ? JSON.parse(Buffer.from(pieces[1],'base64url').toString('utf8')) : {};
+  if (typeof claims.sub !== 'string' || !new RegExp('^'+role+'-[0-9a-f-]{36}$').test(claims.sub)) throw Error('invalid local subject');
+  return claims.sub;
+}
 async function ensureCodes(state, key) {
   const fingerprint = required('fingerprint').toLowerCase().replace(/:/g, '');
   if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw Error('invalid fingerprint');
@@ -154,6 +160,9 @@ async function ensureCodes(state, key) {
       const error=Error(`owner_conflict: ${role}; use explicit --takeover true to switch issuers`); error.code='owner_conflict'; throw error;
     }
     if (row && local && row.owner === state.owner && row.id === local.id && !row.consumed && row.expires_at > now + 1) {
+      // A lost publish response can leave the original signed request pending.
+      // Preserve only its non-token subject for local join correlation.
+      if (!local.subject && local.pending) local.subject=issuerSubject(local.pending,role);
       delete local.pending;
       await writePrivate(join(stateDir, role + '.code'), local.code + '\n');
       continue;
@@ -162,7 +171,8 @@ async function ensureCodes(state, key) {
     // the retry can recover the same code and ID from the durable local state.
     let entry = local?.pending && local.expires_at > now + 1 ? local.pending : await newCode(role, state.owner, fingerprint, key);
     if (opts.takeover === 'true') entry.body.takeover = true;
-    state.roles[role] = {code:entry.code,id:entry.body.id,expires_at:entry.body.expires_at,pending:entry};
+    state.roles[role] = {code:entry.code,id:entry.body.id,expires_at:entry.body.expires_at,
+      subject:issuerSubject(entry,role),pending:entry};
     await saveState(state);
     await call('/api/admin/publish', entry.body);
     delete state.roles[role].pending;

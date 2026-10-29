@@ -10,6 +10,8 @@ Quest は起動するとサーバー設定、デバイスログインの順に�
 
 `tools/client/device_login.py` は、接続先・役割・入力コードを指定して同じ処理を起動します。コードは**6桁の ASCII テキストファイル**で渡し、コマンドラインや表示・ログには値を出しません。Quest の転送は adb 標準入力とアプリ private storage を使うため、`run-as` に対応した開発 APK が必要です。Windows の制御ファイルは ACL を制限した `%LOCALAPPDATA%\MRFPS\DeviceLogin\controls` に置き、ゲーム側が読み取った直後に削除します。GUI のコード交換処理と同じ HTTPS API とクライアント側の署名検証を使います。
 
+Mac の画面起動とコード投入は [Macでの開発・観戦](Mac.md) の `--device-login` と `tools/client/mac_login.py` を使います。Mac 実機でのビルド・ログイン・接続は未検証です。
+
 ```powershell
 $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
 # 設定画面をそのまま表示したい場合は --show-settings を追加

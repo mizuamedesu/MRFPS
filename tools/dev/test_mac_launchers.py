@@ -51,6 +51,9 @@ if [[ "${1##*/}" == mac_resource_guard.py ]]; then
   [[ "$1" == -- ]] && shift
   exec "$MRFPS_TEST_PYTHON" "$MRFPS_TEST_RECORDER" "$@"
 fi
+if [[ "${1##*/}" == mac_login.py ]]; then
+  exec "$MRFPS_TEST_PYTHON" "$MRFPS_TEST_RECORDER" "$@"
+fi
 exec "$MRFPS_TEST_PYTHON" "$@"
 """)
         version = self.engine / "Engine/Build/Build.version"
@@ -148,6 +151,21 @@ exec "$MRFPS_TEST_PYTHON" "$@"
         self.assertEqual(len(calls), 1)
         self.assertIn("-MRFPSAdmin", calls[0])
         self.assertNotIn("-game", calls[0])
+
+    def test_device_login_uses_named_editor_and_no_credentials(self):
+        result = self.invoke("run-client.sh", "--device-login", "MRFPS-Inspector-1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.recorded()[0]
+        self.assertTrue(args[0].endswith("/tools/client/mac_login.py"))
+        self.assertEqual(args[1:4], ["start", "--name", "MRFPS-Inspector-1"])
+        self.assertIn("--editor", args)
+        self.assertIn("--executable", args)
+        self.assertFalse(any("MRFPSAuth" in arg or "DeviceCode" in arg for arg in args))
+
+    def test_device_login_rejects_invalid_name(self):
+        result = self.invoke("run-client.sh", "--device-login", "../invalid")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(self.recorded(), [])
 
     def test_missing_app_or_invalid_role_never_reaches_guard(self):
         self.env["MRFPS_APP"] = (self.work / "missing game").as_posix()

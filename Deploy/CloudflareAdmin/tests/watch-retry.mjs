@@ -57,6 +57,8 @@ try {
   const watch=launch(['watch',...common,...signer]); children.push(watch.child);
   let active=await waitFor(s=>s.watch?.status==='active','initial issuer');
   const firstOwner=active.owner;
+  assert.match(active.roles.player.subject,/^player-[0-9a-f-]{36}$/);
+  assert.equal('pending' in active.roles.player,false);
   unavailable=true;
   await waitFor(s=>s.watch?.status==='retrying'&&s.watch.consecutive_errors>=1,'transient failure');
   unavailable=false;
@@ -70,12 +72,21 @@ try {
   unavailable=false;
   const stopped=await withDeadline(watch.done,'watch did not stop');
   assert.equal(stopped.code,0); assert.match(stopped.stdout,/"status":"stopped"/);
+  assert(!stopped.stdout.includes(active.roles.player.subject));
+  assert(!stopped.stdout.includes(active.roles.player.code));
   assert.deepEqual((await state()).roles,{});
   await assert.rejects(access(join(stateDir,'player.code')));
   const status=await (await fetch(upstream+'/api/admin/status?owner='+firstOwner,{headers:{authorization:auth}})).json();
   assert.equal(status.owner_state,'stopped'); assert.equal(status.codes.length,0);
   await run(['ensure',...common,...signer]);
   const restarted=await state(); assert.notEqual(restarted.owner,firstOwner);
+  // Old state files may not have a subject. Reusing their still-valid code
+  // must remain compatible rather than silently replacing it.
+  const oldCodeId=restarted.roles.player.id;
+  delete restarted.roles.player.subject;
+  await writeFile(join(stateDir,'state.json'),JSON.stringify(restarted));
+  await run(['ensure',...common,...signer]);
+  assert.equal((await state()).roles.player.id,oldCodeId);
   const watch2=launch(['watch',...common,...signer]); children.push(watch2.child);
   await waitFor(s=>s.watch?.status==='active','second watcher');
   unavailable=true;
