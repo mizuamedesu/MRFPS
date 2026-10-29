@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "MRFPSLocalInputLease.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
@@ -228,6 +229,7 @@ public:
     bool IsXR() const;
     bool CanAct() const;
     bool IsPoseFresh() const;
+    bool AreLocalGloveControlsFresh(int32 Hand) const { return Hand>=0 && Hand<2 && bGloveControlsFresh[Hand]; }
     bool IsInsideArena() const;
     void OffsetCombatTimers(double Seconds);
     bool GetGeometryCalibration(FTransform& TrackingToArena,double& CalibratedSince) const;
@@ -279,6 +281,8 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UVRNotificationsComponent> XRNotifications;
     FString TrackingDescription;
     double LastPoseReceived = -100;
+    // Time of the local sampling pass, not the age of each individual sensor.
+    double LastLocalPoseSampleAt = -1;
     int32 AcceptedShots = 0;
 private:
     void SampleLocalPose(float DeltaSeconds);
@@ -401,6 +405,7 @@ public:
     int32 ViewSlot = -1;
     FString ConnectionError;
 private:
+    friend class AMRFPSPawn;
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMRFPSSoloBotScenario;
 #endif
@@ -415,6 +420,12 @@ private:
     TMap<FGuid,TWeakObjectPtr<AMRFPSBarrier>> AutomationTargets;
     TMap<FGuid,FString> AutomationPending;
     double NextAutomationAt=0;
+    FMRFPSLocalInputLease AutomationInput;
+    TWeakObjectPtr<AMRFPSPawn> AutomationInputPawn;
+    float AutomationMoveSeconds=0;
+    bool DesktopAutomationAllowed() const;
+    void ClearAutomationInput();
+    void TickAutomationInput(float DeltaSeconds);
     TWeakPtr<SWindow> PlayerVideoWindows[2];
     TWeakPtr<SWindow> InspectorViewWindow;
     UPROPERTY(Transient) TObjectPtr<USceneCaptureComponent2D> InspectorWindowCamera;

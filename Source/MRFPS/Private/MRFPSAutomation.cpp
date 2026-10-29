@@ -2,6 +2,7 @@
 #include "MRFPSBot.h"
 #include "MRFPSAdminPanel.h"
 #include "MRFPSLoginMenu.h"
+#include "MRFPSLocalPoseStatus.h"
 #include "MRFPSMenu.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Dom/JsonObject.h"
@@ -21,6 +22,7 @@
 #include "MRFPSAuthClientSubsystem.h"
 #include "MRFPSHapticsComponent.h"
 #if !UE_SERVER
+#include "MRFPSGloveSubsystem.h"
 #include "MRFPSViewCaptureSubsystem.h"
 #endif
 
@@ -40,6 +42,18 @@ bool ParseId(const FString& Text,FGuid& Id)
     return Text.Len()==36 && Text[14]=='4' && (Text[19]=='8'||Text[19]=='9'||Text[19]=='a'||Text[19]=='b') &&
         FGuid::Parse(Text,Id) && IdText(Id)==Text;
 }
+#if !UE_SERVER
+bool ReadPair(const TSharedPtr<FJsonObject>& Params,const TCHAR* Name,FVector2D& Out)
+{
+    const TArray<TSharedPtr<FJsonValue>>* Items=nullptr;
+    if (!Params->TryGetArrayField(Name,Items) || !Items || Items->Num()!=2 ||
+        !(*Items)[0].IsValid() || !(*Items)[1].IsValid()) return false;
+    double X=0,Y=0;
+    if (!(*Items)[0]->TryGetNumber(X) || !(*Items)[1]->TryGetNumber(Y)) return false;
+    Out=FVector2D(X,Y);
+    return FMath::IsFinite(Out.X) && FMath::IsFinite(Out.Y);
+}
+#endif
 TSharedPtr<FJsonObject> ParseObject(const FString& Text)
 {
     TSharedPtr<FJsonObject> Object;
@@ -126,6 +140,52 @@ bool AMRFPSPlayerController::WriteAutomationResult(const FString& Folder,const F
     return true;
 }
 
+bool AMRFPSPlayerController::DesktopAutomationAllowed() const
+{
+#if UE_SERVER
+    return false;
+#else
+    const auto* Fighter=GetPawn<AMRFPSPawn>();
+    const auto* AuthenticatedState=GetPlayerState<AMRFPSPlayerState>();
+    const auto* State=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+    return IsLocalController() && GetNetMode()==NM_Client && Fighter && Fighter->IsLocallyControlled() &&
+        !Fighter->IsXR() && Fighter->Pose.bDesktop && Fighter->Pose.bHeadTracked && Fighter->Health>0 &&
+        Fighter->LastLocalPoseSampleAt>=0 && FPlatformTime::Seconds()-Fighter->LastLocalPoseSampleAt<=.3 &&
+        AuthenticatedState && AuthenticatedState->bAuthenticated && !AuthenticatedState->bInspector && !AuthenticatedState->bAdmin && AuthenticatedState->Slot>=0 && AuthenticatedState->Slot<2 &&
+        AuthenticatedState->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp() && State && !State->bCombatPaused &&
+        State->Phase!=EMRFPSMatchPhase::Finished && !IsMoveInputIgnored() && !IsLookInputIgnored() &&
+        !(SessionMenu && SessionMenu->IsInViewport()) && !(AdminPanel && AdminPanel->IsInViewport()) &&
+        !(DeviceLogin && DeviceLogin->IsOpen());
+#endif
+}
+
+void AMRFPSPlayerController::ClearAutomationInput()
+{
+#if !UE_SERVER
+    AutomationInput.Clear();
+    AutomationInputPawn.Reset();
+    AutomationMoveSeconds=0;
+#endif
+}
+
+void AMRFPSPlayerController::TickAutomationInput(float DeltaSeconds)
+{
+#if !UE_SERVER
+    AutomationMoveSeconds=0;
+    if (!AutomationInputPawn.IsValid()) { AutomationInput.Clear(); return; }
+    auto* Fighter=AutomationInputPawn.Get();
+    if (Fighter!=GetPawn<AMRFPSPawn>() || !DesktopAutomationAllowed() || !AutomationInput.Active(FPlatformTime::Seconds())) {
+        ClearAutomationInput(); return;
+    }
+    // Only integrate elapsed time after this lease was accepted. A stalled
+    // frame cannot retroactively apply input or produce a large camera jump.
+    const double Now=FPlatformTime::Seconds();
+    const float Step=float(AutomationInput.ConsumeStep(Now,DeltaSeconds));
+    AutomationMoveSeconds=Step;
+    Fighter->DesktopLook(float(AutomationInput.LookDegreesPerSecond.X)*Step,float(AutomationInput.LookDegreesPerSecond.Y)*Step);
+#endif
+}
+
 void AMRFPSPlayerController::TickAutomation()
 {
 #if !UE_SERVER
@@ -166,6 +226,53 @@ void AMRFPSPlayerController::TickAutomation()
             Data->SetBoolField(TEXT("session_menu"),SessionMenu&&SessionMenu->IsInViewport());
             Data->SetBoolField(TEXT("admin_panel"),AdminPanel&&AdminPanel->IsInViewport());
             Data->SetBoolField(TEXT("login_panel"),DeviceLogin&&DeviceLogin->IsOpen());
+            if(const auto* Fighter=GetPawn<AMRFPSPawn>(); Fighter && Fighter->IsLocallyControlled()) {
+                auto PlayerInfo=MakeShared<FJsonObject>();
+                PlayerInfo->SetStringField(TEXT("combat_source"),TEXT("replicated_snapshot_age_unknown"));
+                PlayerInfo->SetNumberField(TEXT("health"),Fighter->Health);
+                PlayerInfo->SetNumberField(TEXT("magazine_rounds"),Fighter->MagazineRounds);
+                PlayerInfo->SetNumberField(TEXT("magazine_capacity"),AMRFPSPawn::MagazineCapacity);
+                PlayerInfo->SetNumberField(TEXT("shield_energy"),Fighter->ShieldEnergy);
+                PlayerInfo->SetBoolField(TEXT("shield_active"),Fighter->bShieldActive);
+                PlayerInfo->SetBoolField(TEXT("calibrated"),Fighter->bCalibrated);
+                PlayerInfo->SetBoolField(TEXT("xr"),Fighter->IsXR());
+                const double SampleAge=Fighter->LastLocalPoseSampleAt<0?-1:FMath::Max(0.,FPlatformTime::Seconds()-Fighter->LastLocalPoseSampleAt);
+                PlayerInfo->SetNumberField(TEXT("local_pose_sample_age_seconds"),SampleAge);
+                const bool SampleFresh=SampleAge>=0 && SampleAge<=.3;
+                PlayerInfo->SetBoolField(TEXT("local_pose_sample_fresh"),SampleFresh);
+                PlayerInfo->SetBoolField(TEXT("head_tracked"),SampleFresh && Fighter->Pose.bHeadTracked);
+                MRFPSLocalPoseStatus::Write(*PlayerInfo,Fighter->Pose.Head,Fighter->Pose.HeadRotation,SampleFresh,Fighter->Pose.bHeadTracked);
+                PlayerInfo->SetBoolField(TEXT("left_tracked"),SampleFresh && Fighter->Pose.bLeftTracked);
+                PlayerInfo->SetBoolField(TEXT("right_tracked"),SampleFresh && Fighter->Pose.bRightTracked);
+                FMRFPSGloveHandFrame CurrentGloves[2];
+                if (Fighter->IsXR()) if (auto* Gloves=GetGameInstance()->GetSubsystem<UMRFPSGloveSubsystem>()) {
+                    Gloves->GetLatestHand(EMRFPSGloveHand::Left,CurrentGloves[0]);
+                    Gloves->GetLatestHand(EMRFPSGloveHand::Right,CurrentGloves[1]);
+                }
+                PlayerInfo->SetBoolField(TEXT("left_glove_fingers_valid"),SampleFresh && Fighter->IsXR() && Fighter->Pose.LeftFingers.bValid && CurrentGloves[0].bFlexValid);
+                PlayerInfo->SetBoolField(TEXT("right_glove_fingers_valid"),SampleFresh && Fighter->IsXR() && Fighter->Pose.RightFingers.bValid && CurrentGloves[1].bFlexValid);
+                PlayerInfo->SetBoolField(TEXT("left_glove_controls_valid"),SampleFresh && Fighter->IsXR() && Fighter->AreLocalGloveControlsFresh(0) && CurrentGloves[0].bControllerValid);
+                PlayerInfo->SetBoolField(TEXT("right_glove_controls_valid"),SampleFresh && Fighter->IsXR() && Fighter->AreLocalGloveControlsFresh(1) && CurrentGloves[1].bControllerValid);
+                const bool InputAllowed=DesktopAutomationAllowed();
+                PlayerInfo->SetBoolField(TEXT("desktop_input_allowed"),InputAllowed);
+                const bool LeaseActive=InputAllowed && AutomationInputPawn.Get()==Fighter && AutomationInput.Active(FPlatformTime::Seconds());
+                PlayerInfo->SetBoolField(TEXT("automation_input_active"),LeaseActive);
+                PlayerInfo->SetBoolField(TEXT("automation_fire_requested"),LeaseActive && AutomationInput.Fire);
+                PlayerInfo->SetBoolField(TEXT("automation_shield_requested"),LeaseActive && AutomationInput.Shield);
+                Data->SetObjectField(TEXT("player"),PlayerInfo);
+            }
+            if (auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>()) {
+                auto Video=MakeShared<FJsonObject>();
+                Video->SetBoolField(TEXT("publisher_session_valid"),IsVideoSessionValid(true));
+                Video->SetBoolField(TEXT("capture_requested"),bViewSharingRequested);
+                Video->SetBoolField(TEXT("consent_pending"),Capture->IsCaptureRequestPending() || VideoConsentFlow.IsBusy());
+                Video->SetBoolField(TEXT("capture_fresh"),Capture->IsCapturing());
+                Video->SetStringField(TEXT("capture_status"),Capture->GetSafeStatus());
+                Video->SetNumberField(TEXT("publisher_frames_queued_lifetime"),double(VideoPublisherQueue.PushedFrames));
+                Video->SetNumberField(TEXT("publisher_frames_sent_lifetime"),double(VideoPublisherQueue.FinishedFrames));
+                Video->SetNumberField(TEXT("publisher_frames_replaced_lifetime"),double(VideoPublisherQueue.ReplacedFrames));
+                Data->SetObjectField(TEXT("video_capture"),Video);
+            }
             if(IsInspector()) {
                 FVector Position; FRotator Rotation; GetPlayerViewPoint(Position,Rotation);
                 Data->SetArrayField(TEXT("camera_position"),VectorJson(Position));
@@ -175,6 +282,21 @@ void AMRFPSPlayerController::TickAutomation()
                     Data->SetArrayField(TEXT("inspector_camera_position"),VectorJson(InspectorWindowCamera->GetComponentLocation()));
                     Data->SetArrayField(TEXT("inspector_camera_rotation"),VectorJson(FVector(Extra.Pitch,Extra.Yaw,Extra.Roll)));
                 }
+                TArray<TSharedPtr<FJsonValue>> Streams;
+                for(int32 Slot=0;Slot<2;++Slot) {
+                    auto Item=MakeShared<FJsonObject>();
+                    Item->SetNumberField(TEXT("slot"),Slot);
+                    const auto* Source=FindPlayer(Slot);
+                    const auto* SourceState=Source?Source->GetPlayerState<AMRFPSPlayerState>():nullptr;
+                    Item->SetNumberField(TEXT("stream_id"),SourceState?SourceState->VideoStreamId:0);
+                    Item->SetStringField(TEXT("status"),GetQuestVideoStatus(Slot));
+                    Item->SetBoolField(TEXT("current_stream_texture_fresh"),GetQuestVideoTexture(Slot)!=nullptr);
+                    Item->SetNumberField(TEXT("completed_frames_lifetime"),double(VideoDownloads[Slot].CompletedFrames));
+                    Item->SetNumberField(TEXT("expired_frames_lifetime"),double(VideoDownloads[Slot].ExpiredFrames));
+                    Item->SetNumberField(TEXT("recovered_chunks_lifetime"),double(VideoDownloads[Slot].RecoveredChunks));
+                    Streams.Add(MakeShared<FJsonValueObject>(Item));
+                }
+                Data->SetArrayField(TEXT("video_streams"),Streams);
             }
             if(const auto* Fighter=GetPawn<AMRFPSPawn>(); Fighter && Fighter->Haptics) {
                 Data->SetNumberField(TEXT("haptics_connection"),int32(Fighter->Haptics->GetConnectionState())); Data->SetBoolField(TEXT("haptics_armed"),Fighter->Haptics->IsHapticsArmed());
@@ -284,6 +406,24 @@ void AMRFPSPlayerController::TickAutomation()
                         if(!Already) InspectorWindowCamera->SetWorldLocationAndRotation(Position,Wanted); }
                 } else { Ok=false; Code=TEXT("INVALID_CAMERA"); }
             }
+        } else if(Operation==TEXT("player.input.clear")) {
+            Already=!AutomationInput.Active(FPlatformTime::Seconds());
+            ClearAutomationInput();
+        } else if(Operation==TEXT("player.input.set")) {
+            bool Fire=false,Shield=false; FVector2D Move,Look; double Duration=0;
+            FMRFPSLocalInputLease Requested;
+            if(!DesktopAutomationAllowed()) { Ok=false; Code=TEXT("DESKTOP_PLAYER_UNAVAILABLE"); }
+            else if(!Params->TryGetBoolField(TEXT("fire"),Fire)||!Params->TryGetBoolField(TEXT("shield"),Shield)||
+                !ReadPair(Params,TEXT("move"),Move)||!ReadPair(Params,TEXT("look_degrees_per_second"),Look)||
+                !Params->TryGetNumberField(TEXT("duration_seconds"),Duration)||
+                !Requested.Set(Fire,Shield,Move,Look,Duration,FPlatformTime::Seconds())) { Ok=false; Code=TEXT("INVALID_INPUT"); }
+            else {
+                ClearAutomationInput(); AutomationInput=Requested; AutomationInputPawn=GetPawn<AMRFPSPawn>();
+                Code=TEXT("INPUT_LEASE_SET");
+            }
+        } else if(Operation==TEXT("player.reload")||Operation==TEXT("player.wall")) {
+            if(!DesktopAutomationAllowed()) { Ok=false; Code=TEXT("DESKTOP_PLAYER_UNAVAILABLE"); }
+            else { if(Operation==TEXT("player.reload")) ReloadPressed(); else WallPressed(); Submitted=true; Code=TEXT("INPUT_SUBMITTED"); }
         } else if(Operation==TEXT("player.calibrate")) {
             if(IsInspector()||!GetPawn<AMRFPSPawn>()) { Ok=false; Code=TEXT("PLAYER_REQUIRED"); }
             else { Calibrate(); Submitted=true; Code=TEXT("CALIBRATION_SUBMITTED"); }

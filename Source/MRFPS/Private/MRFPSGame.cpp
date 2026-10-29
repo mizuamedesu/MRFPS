@@ -1,8 +1,10 @@
 #include "MRFPSGame.h"
+#include "MRFPSInspectorHudLayout.h"
 #include "MRFPSAvatar.h"
 #include "MRFPSHandPose.h"
 #include "MRFPSGloveInput.h"
 #include "Misc/Paths.h"
+#include "HAL/PlatformTime.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Components/BoxComponent.h"
@@ -465,6 +467,11 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     if (IsXR()) Camera->SetRelativeLocation(FVector::ZeroVector);
     float IndexCurl = 0, TriggerAnalog = 0; bool bGloveTrigger = false;
     bool bRightPalmPose = false;
+    const auto* LocalController=Cast<AMRFPSPlayerController>(Controller);
+    const bool Automated=LocalController && LocalController->AutomationInputPawn.Get()==this &&
+        LocalController->AutomationInput.Active(FPlatformTime::Seconds()) && LocalController->DesktopAutomationAllowed();
+    const bool AutomationFire=Automated && LocalController->AutomationInput.Fire;
+    const bool AutomationShield=Automated && LocalController->AutomationInput.Shield;
     FMRFPSGloveHandFrame GloveFrames[2];
     if (IsXR()) if (auto* Gloves=GetGameInstance()->GetSubsystem<UMRFPSGloveSubsystem>()) {
         Gloves->GetLatestHand(EMRFPSGloveHand::Left,GloveFrames[0]);
@@ -517,7 +524,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
         Next.Left=DesktopHead+Q.RotateVector(FVector(35,-30,-40));
         Next.Right=DesktopHead+Q.RotateVector(FVector(40,22,-25));
         Next.LeftRotation=Next.RightRotation=DesktopRotation;
-        Next.bLeftTracked=Next.bRightTracked=true; Next.LeftOpenness=bDesktopShield ? 1.f : 0.f;
+        Next.bLeftTracked=Next.bRightTracked=true; Next.LeftOpenness=(bDesktopShield || AutomationShield) ? 1.f : 0.f;
         Camera->SetWorldLocationAndRotation(DesktopHead,DesktopRotation);
         TrackingDescription=TEXT("Desktop simulation");
     } else {
@@ -567,17 +574,18 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     }
     if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) InvalidateCalibration();
     // A bent right index or vendor trigger fires; hysteresis prevents chatter.
-    if (bRequireFireRelease && !bFiring && !bGloveTrigger && IndexCurl<.30f && TriggerAnalog<.30f) bRequireFireRelease=false;
+    if (bRequireFireRelease && !bFiring && !AutomationFire && !bGloveTrigger && IndexCurl<.30f && TriggerAnalog<.30f) bRequireFireRelease=false;
     if (!bRequireFireRelease && (IndexCurl>.55f || TriggerAnalog>.55f || bGloveTrigger)) bFingerTriggerDown=true;
     if (IndexCurl<.30f && TriggerAnalog<.30f && !bGloveTrigger) bFingerTriggerDown=false;
     Next.Sequence = Pose.Sequence + 1;
     // Client pose remains responsive; only the server can change combat state.
     Pose = Next;
+    LastLocalPoseSampleAt=FPlatformTime::Seconds();
     PoseAccumulator += Dt;
     if (PoseAccumulator >= 1.f/30.f) { PoseAccumulator=0; ServerPose(Next); }
     const double Now=GetWorld()->GetTimeSeconds();
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
-    if (!bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
+    if (!bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || AutomationFire || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
 }
 
 void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
@@ -1028,6 +1036,7 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
     }
 #endif
     TickAutomation();
+    TickAutomationInput(Dt);
     if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) {
         if (Instance->IsLoginScreenRequested() && GetNetMode()==NM_Standalone && GetPawn()) {
             OpenDeviceLogin(); if (DeviceLogin && DeviceLogin->IsOpen()) Instance->ClearLoginScreenRequest();
@@ -1059,7 +1068,15 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
         }
         if (bReconstructedViews && ViewSlot>=0 && !FindPlayer(ViewSlot)) FreeView();
         if (Now-LastCaptureRefresh>=1./30.) { LastCaptureRefresh=Now; RefreshCaptures(); }
-    } else if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopMove(MoveAxes,Dt);
+    } else if (auto* P=GetPawn<AMRFPSPawn>()) {
+        const bool StillAllowed=AutomationInputPawn.Get()==P && AutomationInput.Active(FPlatformTime::Seconds()) && DesktopAutomationAllowed();
+        const FVector Extra=StillAllowed
+            ? FVector(AutomationInput.Move.X,AutomationInput.Move.Y,0) : FVector::ZeroVector;
+        const float AutoDt=StillAllowed?FMath::Clamp(AutomationMoveSeconds,0.f,FMath::Max(0.f,Dt)):0.f;
+        if (!StillAllowed && AutomationInputPawn.IsValid()) ClearAutomationInput();
+        if (AutoDt>0) P->DesktopMove((MoveAxes+Extra).GetClampedToMaxSize(1),AutoDt);
+        P->DesktopMove(MoveAxes,FMath::Max(0.f,Dt-AutoDt));
+    }
     if (FParse::Param(FCommandLine::Get(),TEXT("MRFPSAutoReady"))) {
         if (auto* P=GetPawn<AMRFPSPawn>(); P && P->GetSlot()>=0 && !P->bCalibrated && Now>.5) P->Calibrate();
     }
@@ -1110,43 +1127,46 @@ void AMRFPSHUD::DrawHUD()
         DrawTexture(Texture,X+(W-TW)*.5f,Y+(H-TH)*.5f,TW,TH,0,0,1,1,FLinearColor::White,BLEND_Opaque);
     };
     if(Inspector&&PC->ViewSlot>=0&&!PC->bReconstructedViews) { auto* Frame=PC->GetQuestVideoTexture(PC->ViewSlot);Video(Frame,0,0,Canvas->SizeX,Canvas->SizeY);if(!Frame) Text(TEXT("映像を待っています"),32,Canvas->SizeY*.45,18); }
-    DrawRect(FLinearColor(.015,.025,.045,.9),18,18,260,104);
-    if(Inspector && FPlatformProperties::SupportsWindowedMode() && !PC->IsAdminWallPlacement()) for(int32 I=0;I<2;++I) {
-        const float X=300+I*100;
-        DrawRect(FLinearColor(.04,.20,.36,.95),X,24,92,30);
-        Text(FString::Printf(TEXT("P%d 別窓"),I+1),X+8,29,14,FLinearColor(.8,.9,1));
-    }
-    if(Inspector && FPlatformProperties::SupportsWindowedMode() && !PC->IsAdminWallPlacement()) {
-        DrawRect(FLinearColor(.04,.20,.36,.95),500,24,112,30);
-        Text(TEXT("観戦 別窓"),508,29,14,FLinearColor(.8,.9,1));
+    const FMRFPSInspectorHudLayout InspectorLayout{float(Canvas->SizeX)};
+    const float InfoTop=Inspector?InspectorLayout.InfoTop:18.f;
+    DrawRect(FLinearColor(.015,.025,.045,.9),18,InfoTop,260,104);
+    if(Inspector && FPlatformProperties::SupportsWindowedMode() && !PC->IsAdminWallPlacement()) for(int32 I=0;I<3;++I) {
+        const auto Button=InspectorLayout.Button(I);
+        DrawRect(FLinearColor(.04,.20,.36,.95),Button.X,Button.Y,Button.Width,Button.Height);
+        const FString Label=I<2?FString::Printf(TEXT("P%d 別窓"),I+1):FString(TEXT("観戦 別窓"));
+        Text(Label,Button.X+8,Button.Y+5,14,FLinearColor(.8,.9,1));
     }
     const FString RoleLabel=PC->IsAdmin()?TEXT("管理者"):Inspector?TEXT("観戦"):TEXT("プレイ");
-    Text(TEXT("MRFPS  /  ")+RoleLabel,30,26,19,FLinearColor(.5,.8,1));
+    Text(TEXT("MRFPS  /  ")+RoleLabel,30,InfoTop+8,19,FLinearColor(.5,.8,1));
     FString Phase=TEXT("準備中");
     if(GS) Phase=GS->bCombatPaused?TEXT("一時停止"):GS->Phase==EMRFPSMatchPhase::Playing?TEXT("対戦中"):
         GS->Phase==EMRFPSMatchPhase::BetweenRounds?TEXT("ラウンド間"):
         GS->Phase==EMRFPSMatchPhase::Finished?(GS->WinnerSlot<0?TEXT("引き分け"):FString::Printf(TEXT("P%d の勝利"),GS->WinnerSlot+1)):TEXT("待機中");
-    Text(Phase,30,54,15);
+    Text(Phase,30,InfoTop+36,15);
     for(auto* P:PC->GetPlayers()) {
         const auto* PS=P->GetPlayerState<AMRFPSPlayerState>();const float X=30+(P->GetSlot()*120);
-        Text(FString::Printf(TEXT("P%d  %d"),P->GetSlot()+1,PS?PS->Kills:0),X,80,12);
-        DrawRect(FLinearColor(.08,.12,.18),X,103,104,5);DrawRect(FLinearColor(.2,.9,.55),X,103,104*FMath::Clamp(P->Health/100,0.f,1.f),5);
-        DrawRect(FLinearColor(.16,.55,1),X,112,104*FMath::Clamp(P->ShieldEnergy/100,0.f,1.f),3);
+        Text(FString::Printf(TEXT("P%d  %d"),P->GetSlot()+1,PS?PS->Kills:0),X,InfoTop+62,12);
+        DrawRect(FLinearColor(.08,.12,.18),X,InfoTop+85,104,5);DrawRect(FLinearColor(.2,.9,.55),X,InfoTop+85,104*FMath::Clamp(P->Health/100,0.f,1.f),5);
+        DrawRect(FLinearColor(.16,.55,1),X,InfoTop+94,104*FMath::Clamp(P->ShieldEnergy/100,0.f,1.f),3);
     }
-    if (!Inspector) if (const auto* P=PC->GetPawn<AMRFPSPawn>();P && !P->IsXR()) {
-        if (GS) {
-            const float Center=Canvas->SizeX*.5f;
-            const bool MissingScan=GS->bSoloBotSession && !GS->bSoloGeometryReady;
-            DrawRect(FLinearColor(.008f,.025f,.045f,.78f),Center-150,18,300,MissingScan?88:66);
-            const auto Centered=[this,Center](const FString& Value,float Y,int32 Size,FLinearColor Color) {
-                FCanvasTextItem Item(FVector2D(Center,Y),FText::FromString(Value),FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size),Color);
-                Item.Font=GEngine?GEngine->GetSmallFont():nullptr; Item.bCentreX=true;
-                Item.EnableShadow(FLinearColor(0,0,0,.6)); Canvas->DrawItem(Item);
-            };
-            Centered(GS->RoundHeaderText(),24,20,FLinearColor(.75f,1.f,.96f));
-            Centered(GS->RoundScoreText(P->GetSlot()),52,16,FLinearColor(.55f,.8f,.9f));
-            if (MissingScan) Centered(TEXT("障害物スキャン未受信"),75,13,FLinearColor(1.f,.68f,.2f));
-        }
+    const auto* HUDPawn=PC->GetPawn<AMRFPSPawn>();
+    const bool DesktopPlayer=!Inspector && HUDPawn && !HUDPawn->IsXR();
+    if (GS && (Inspector || DesktopPlayer)) {
+        const float Center=Canvas->SizeX*.5f;
+        const auto Panel=Inspector?InspectorLayout.RoundPanel():FMRFPSInspectorHudRect{Center-150,18,300,66};
+        const bool MissingScan=DesktopPlayer && GS->bSoloBotSession && !GS->bSoloGeometryReady;
+        DrawRect(FLinearColor(.008f,.025f,.045f,.78f),Panel.X,Panel.Y,Panel.Width,MissingScan?88:Panel.Height);
+        const auto Centered=[this,Center](const FString& Value,float Y,int32 Size,FLinearColor Color) {
+            FCanvasTextItem Item(FVector2D(Center,Y),FText::FromString(Value),FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size),Color);
+            Item.Font=GEngine?GEngine->GetSmallFont():nullptr; Item.bCentreX=true;
+            Item.EnableShadow(FLinearColor(0,0,0,.6)); Canvas->DrawItem(Item);
+        };
+        Centered(GS->RoundHeaderText(),24,20,FLinearColor(.75f,1.f,.96f));
+        Centered(GS->RoundScoreText(Inspector?-1:HUDPawn->GetSlot()),52,16,FLinearColor(.55f,.8f,.9f));
+        if (MissingScan) Centered(TEXT("障害物スキャン未受信"),75,13,FLinearColor(1.f,.68f,.2f));
+    }
+    if (DesktopPlayer) {
+        const auto* P=HUDPawn;
         const float W=FMath::Min(440.f,FMath::Max(120.f,float(Canvas->SizeX)-32.f));
         const float X=(Canvas->SizeX-W)*.5f,Y=FMath::Max(16.f,FMath::Min(Canvas->SizeY*.82f,float(Canvas->SizeY)-86.f));
         const FLinearColor Edge(.19f,.82f,1.f,.88f);
@@ -1179,8 +1199,9 @@ void AMRFPSHUD::DrawHUD()
         Text(TEXT("クリック 設置 / 穴・復元   Del 削除   右クリック 終了"),Left+12,Top+39,13);
     } else if(Inspector) Text(PC->IsAdmin()?TEXT("Esc マウス  B 建築  F2 管理"):TEXT("Esc マウス  1 / 2 視点  Tab 自由"),24,Canvas->SizeY-35,13,FLinearColor(.65,.78,.9));
     else if(auto* Pawn=PC->GetPawn<AMRFPSPawn>();Pawn&&!Pawn->bCalibrated) Text(TEXT("C / Y で位置調整"),30,133,16);
-    if(PC->IsAdmin()) Text(PC->AdminFeedback(),30,138,15,FLinearColor(.7,.95,.85));
-    if(!PC->ConnectionError.IsEmpty()) Text(TEXT("接続を確認してください"),30,165,15,FLinearColor(1,.4,.4));
+    const bool CompactInspector=Inspector && InspectorLayout.bCompact;
+    if(PC->IsAdmin()) Text(PC->AdminFeedback(),30,CompactInspector?Canvas->SizeY-74:138,15,FLinearColor(.7,.95,.85));
+    if(!PC->ConnectionError.IsEmpty()) Text(TEXT("接続を確認してください"),30,CompactInspector?Canvas->SizeY-54:165,15,FLinearColor(1,.4,.4));
 }
 
 bool AMRFPSGameSession::AtCapacity(bool /*bSpectator*/)

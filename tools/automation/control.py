@@ -25,7 +25,8 @@ OPERATIONS = {
     'status', 'view.set', 'multiview.set', 'reconstructed.set', 'focus.set',
     'window.set', 'build-mode.set', 'admin.action', 'objects.list',
     'object.ensure', 'object.remove', 'wall.set',
-    'player.calibrate', 'haptics.set', 'capture.set',
+    'player.calibrate', 'player.input.set', 'player.input.clear', 'player.reload', 'player.wall',
+    'haptics.set', 'capture.set',
     'menu.set', 'connection.set', 'camera.set',
 }
 

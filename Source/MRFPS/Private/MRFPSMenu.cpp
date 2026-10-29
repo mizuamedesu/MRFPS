@@ -1,4 +1,5 @@
 #include "MRFPSMenu.h"
+#include "MRFPSConnectionSettings.h"
 
 #include "MRFPSGame.h"
 #include "MRFPSHapticsComponent.h"
@@ -171,9 +172,7 @@ void UMRFPSMenu::NativeOnInitialized()
     ServerBox->SetWidgetStyle(Field);
     ServerBox->SetHintText(FText::FromString(TEXT("サーバー名:ポート")));
     ServerBox->SetSelectAllTextWhenFocused(true);
-    FString Address = TEXT("127.0.0.1:7777");
-    if (GConfig) GConfig->GetString(TEXT("MRFPS.Connection"), TEXT("Server"), Address, GGameUserSettingsIni);
-    ServerBox->SetText(FText::FromString(Address.Left(255)));
+    ServerBox->SetText(FText::FromString(MRFPSConnectionSettings::InitialServerAddress()));
     ServerBox->OnTextChanged.AddDynamic(this, &UMRFPSMenu::AddressChanged);
     Body->AddChildToVerticalBox(ServerBox);
     Space(WidgetTree,Body,8);

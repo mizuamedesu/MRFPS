@@ -2,6 +2,7 @@
 #include "../MRFPSHandPose.h"
 #include "../MRFPSGloveInput.h"
 #include "../MRFPSDeviceAuthUrl.h"
+#include "../MRFPSConnectionSettings.h"
 
 #include "Components/BoxComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -523,6 +524,29 @@ bool FMRFPSReconnectOriginTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("A cancelled device login does not misclassify a later file connection"),Cancelled->IsAutoReconnectPending());
     auto* NoAttempt=NewObject<UMRFPSGameInstance>(); NoAttempt->PrepareForNetworkFailure(true);
     TestTrue(TEXT("A file without a prior destination still requests login"),NoAttempt->IsLoginScreenRequested());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSConnectionSettingsTest,"MRFPS.Auth.ConnectionSettings",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMRFPSConnectionSettingsTest::RunTest(const FString& Parameters)
+{
+    using MRFPSConnectionSettings::InitialServerAddress;
+    const FString Filename=TEXT("MRFPSConnectionSettingsAutomation.ini");
+    const FString Default=TEXT("mrfps.mizuame.app:7777");
+    TestEqual(TEXT("Missing config falls back to the public endpoint"),InitialServerAddress(nullptr,Filename),Default);
+
+    FConfigCacheIni Config(EConfigCacheType::Temporary);
+    Config.DisableFileOperations();
+    Config.Add(Filename,FConfigFile());
+    TestEqual(TEXT("Missing saved value uses the same endpoint"),InitialServerAddress(&Config,Filename),Default);
+    Config.SetString(TEXT("MRFPS.Connection"),TEXT("Server"),TEXT("custom.test:7778"),Filename);
+    TestEqual(TEXT("A saved custom endpoint takes precedence"),InitialServerAddress(&Config,Filename),FString(TEXT("custom.test:7778")));
+    Config.SetString(TEXT("MRFPS.Connection"),TEXT("Server"),TEXT(""),Filename);
+    TestEqual(TEXT("An explicitly saved empty value is preserved"),InitialServerAddress(&Config,Filename),FString());
+    const FString LongAddress=FString::ChrN(300,TCHAR('x'));
+    Config.SetString(TEXT("MRFPS.Connection"),TEXT("Server"),*LongAddress,Filename);
+    TestEqual(TEXT("Saved addresses remain limited to 255 characters"),InitialServerAddress(&Config,Filename),LongAddress.Left(255));
     return true;
 }
 

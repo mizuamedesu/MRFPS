@@ -1,5 +1,6 @@
 #include "MRFPSLoginMenu.h"
 #include "MRFPSDeviceAuthUrl.h"
+#include "MRFPSConnectionSettings.h"
 
 #include "MRFPSGame.h"
 #include "MRFPSAuthClientSubsystem.h"
@@ -177,9 +178,8 @@ void UMRFPSLoginMenu::NativeOnInitialized()
     Field.SetPadding(FMargin(10,8)); Field.SetForegroundColor(FSlateColor(White));
     AddressBox=WidgetTree->ConstructWidget<UEditableTextBox>(UEditableTextBox::StaticClass(),TEXT("ServerAddress"));
     AddressBox->SetWidgetStyle(Field); AddressBox->SetHintText(FText::FromString(TEXT("サーバー名:ポート")));
-    FString Address=TEXT("mrfps.mizuame.app:7777");
-    if (GConfig) GConfig->GetString(TEXT("MRFPS.Connection"),TEXT("Server"),Address,GGameUserSettingsIni);
-    AddressBox->SetText(FText::FromString(Address.Left(255))); AddressPage->AddChild(AddressBox); AddSpace(WidgetTree,AddressPage,8);
+    AddressBox->SetText(FText::FromString(MRFPSConnectionSettings::InitialServerAddress()));
+    AddressPage->AddChild(AddressBox); AddSpace(WidgetTree,AddressPage,8);
     auto* NextButton=Button(WidgetTree,TEXT("ServerNext"),TEXT("次へ"),Blue);
     NextButton->OnClicked.AddDynamic(this,&UMRFPSLoginMenu::Next); AddressPage->AddChild(NextButton);
     AddSpace(WidgetTree,AddressPage,8);

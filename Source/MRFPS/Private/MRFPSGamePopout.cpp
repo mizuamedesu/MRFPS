@@ -1,9 +1,11 @@
 #include "MRFPSGame.h"
+#include "MRFPSInspectorHudLayout.h"
 
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
 #include "Components/SceneCaptureComponent2D.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "InputCoreTypes.h"
 #include "Misc/App.h"
@@ -14,6 +16,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/SOverlay.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/SWindow.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -98,7 +101,29 @@ public:
         Brush.DrawAs=ESlateBrushDrawType::Image;
         Brush.ImageSize=FVector2D(960,540);
         if (auto* PC=Owner.Get()) Brush.SetResourceObject(PC->GetInspectorWindowTarget());
-        ChildSlot [ SNew(SScaleBox).Stretch(EStretch::ScaleToFit) [ SNew(SMRFPSOpaqueCapture,&Brush) ] ];
+        ChildSlot
+        [
+            SNew(SOverlay)
+            +SOverlay::Slot()
+            [ SNew(SScaleBox).Stretch(EStretch::ScaleToFit) [ SNew(SMRFPSOpaqueCapture,&Brush) ] ]
+            +SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(0,18,0,0)
+            [
+                SNew(SBorder).Visibility(this,&SMRFPSInspectorVideo::RoundVisibility)
+                .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                .BorderBackgroundColor(FLinearColor(.008f,.025f,.045f,.78f)).Padding(FMargin(20,6))
+                [
+                    SNew(SVerticalBox)
+                    +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+                    [ SNew(STextBlock).Text(this,&SMRFPSInspectorVideo::RoundHeader)
+                      .Font(FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),20))
+                      .ColorAndOpacity(FSlateColor(FLinearColor(.75f,1.f,.96f))) ]
+                    +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0,4,0,0)
+                    [ SNew(STextBlock).Text(this,&SMRFPSInspectorVideo::RoundScore)
+                      .Font(FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),16))
+                      .ColorAndOpacity(FSlateColor(FLinearColor(.55f,.8f,.9f))) ]
+                ]
+            ]
+        ];
     }
     virtual bool SupportsKeyboardFocus() const override { return true; }
     virtual FReply OnMouseButtonDown(const FGeometry&,const FPointerEvent& Event) override
@@ -159,6 +184,15 @@ public:
         }
     }
 private:
+    const AMRFPSGameState* RoundState() const
+    {
+        const auto* PC=Owner.Get();
+        const auto* World=PC?PC->GetWorld():nullptr;
+        return World?World->GetGameState<AMRFPSGameState>():nullptr;
+    }
+    FText RoundHeader() const { const auto* State=RoundState(); return State?FText::FromString(State->RoundHeaderText()):FText::GetEmpty(); }
+    FText RoundScore() const { const auto* State=RoundState(); return State?FText::FromString(State->RoundScoreText(-1)):FText::GetEmpty(); }
+    EVisibility RoundVisibility() const { return RoundState()?EVisibility::HitTestInvisible:EVisibility::Collapsed; }
     int32 MoveKey(const FKey& Key) const
     {
         const FKey Mapping[]={EKeys::W,EKeys::S,EKeys::D,EKeys::A,EKeys::E,EKeys::Q};
@@ -200,11 +234,11 @@ bool AMRFPSPlayerController::TryOpenInspectorWindowAtCursor()
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
     float X=0,Y=0;
     if (!IsLocalController() || !IsInspector() || !GetMousePosition(X,Y)) return false;
-    for (int32 Slot=0;Slot<2;++Slot) {
-        const float Left=300+Slot*100;
-        if (X>=Left && X<Left+92 && Y>=24 && Y<54) { OpenPlayerVideoWindow(Slot); return true; }
-    }
-    if (X>=500 && X<612 && Y>=24 && Y<54) { OpenInspectorViewWindow(); return true; }
+    int32 Width=0,Height=0; GetViewportSize(Width,Height);
+    const FMRFPSInspectorHudLayout Layout{float(Width)};
+    const int32 Button=Layout.HitButton(X,Y);
+    if (Button>=0 && Button<2) { OpenPlayerVideoWindow(Button); return true; }
+    if (Button==2) { OpenInspectorViewWindow(); return true; }
 #endif
     return false;
 }

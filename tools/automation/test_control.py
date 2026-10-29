@@ -27,6 +27,23 @@ class ControlQueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 submit(directory, {**request, 'parameters': {'view': 'player1'}})
 
+    def test_desktop_input_retry_preserves_the_original_lease_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            operation_id = str(uuid.uuid4())
+            parameters = {'fire':True, 'shield':False, 'move':[1,0],
+                          'look_degrees_per_second':[0,0], 'duration_seconds':0.5}
+            request = {'version':1, 'id':operation_id, 'operation':'player.input.set', 'parameters':parameters}
+            result = submit(directory, request)
+            atomic_write(result, encode({'id':operation_id,'status':'ok','code':'INPUT_LEASE_SET'}))
+            self.assertEqual(submit(directory, request), result)
+            self.assertEqual(json.loads(result.read_text())['status'], 'ok')
+            with self.assertRaises(ValueError):
+                submit(directory, {**request, 'parameters':{**parameters, 'duration_seconds':1.0}})
+            with lock_directory(directory):
+                self.assertEqual(archive_local_locked(directory,10)['archived'],1)
+            self.assertEqual(submit(directory,request),directory/'archive'/operation_id/'result.json')
+
     def test_atomic_publish_leaves_no_partial_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
