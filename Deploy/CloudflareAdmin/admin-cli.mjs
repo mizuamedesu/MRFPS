@@ -65,6 +65,14 @@ async function readState() {
     return state;
   } catch (e) { if (e.code !== 'ENOENT') throw e; return {version:1, owner:crypto.randomUUID(), roles:{}, registered:false, stopped:false}; }
 }
+async function staleLock(path) {
+  try {
+    const holder=Number(await readFile(path,'utf8'));
+    if (!Number.isSafeInteger(holder) || holder < 1) return (Date.now()-(await stat(path)).mtimeMs)>60000;
+    try { process.kill(holder,0); return false; }
+    catch (error) { if(error.code==='ESRCH') return true; return false; }
+  } catch (error) { if(error.code==='ENOENT') return null; throw error; }
+}
 async function withState(fn, {waitMs=0}={}) {
   await ensureDirectory();
   const lockPath = join(stateDir, 'lock');
@@ -74,13 +82,22 @@ async function withState(fn, {waitMs=0}={}) {
     try { lock = await open(lockPath, 'wx', 0o600); }
     catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      let stale = false;
-      try {
-        const holder = Number(await readFile(lockPath,'utf8'));
-        if (!Number.isSafeInteger(holder) || holder < 1) stale = (Date.now() - (await stat(lockPath)).mtimeMs) > 60000;
-        else try { process.kill(holder,0); } catch (failure) { if (failure.code === 'ESRCH') stale = true; }
-      } catch (failure) { if (failure.code === 'ENOENT') continue; throw failure; }
-      if (stale) await unlink(lockPath).catch(failure => { if (failure.code !== 'ENOENT') throw failure; });
+      const stale=await staleLock(lockPath);
+      if(stale===null) continue;
+      if (stale) {
+        // Only one contender may reclaim a dead lock. Recheck under this guard:
+        // another process may have acquired a new lock after our first read.
+        const recoveryPath=lockPath+'.recovery';
+        let recovery;
+        try { recovery=await open(recoveryPath,'wx',0o600); }
+        catch (failure) {
+          if(failure.code!=='EEXIST') throw failure;
+          if(Date.now()<deadline) { await new Promise(done=>setTimeout(done,100)); continue; }
+          throw Error('lock recovery busy; verify no command is active before clearing an interrupted recovery');
+        }
+        try { if(await staleLock(lockPath)===true) await unlink(lockPath).catch(failure=>{if(failure.code!=='ENOENT')throw failure;}); }
+        finally { await recovery.close(); await unlink(recoveryPath).catch(failure=>{if(failure.code!=='ENOENT')throw failure;}); }
+      }
       else if (Date.now() < deadline) await new Promise(done => setTimeout(done,100));
       else throw Error('another local admin command is running');
     }
@@ -248,14 +265,20 @@ async function main() {
           }
           await ensureCodes(state,key);
           state.watch={status:'active',consecutive_errors:0}; await saveState(state);
-        });
+        },{waitMs:12000});
         failures=0;
         // A deliberate takeover applies only at startup, not to later poll cycles.
         delete opts.takeover;
         await new Promise(resolveDone => setTimeout(resolveDone,1500));
       } catch(error) {
         if(error.code==='owner_stopped'||error.code==='owner_conflict') {
-          await withState(async state => { if(state.owner===watchOwner) {state.stopped=true; state.watch={status:'stopped',consecutive_errors:failures}; await saveState(state);} });
+          await withState(async state => {
+            if(state.owner===watchOwner) {
+              state.stopped=true; state.roles={};
+              for(const role of roles) await unlink(join(stateDir,role+'.code')).catch(e=>{if(e.code!=='ENOENT')throw e;});
+              state.watch={status:'stopped',consecutive_errors:failures}; await saveState(state);
+            }
+          },{waitMs:12000});
           output({status:'stopped',reason:error.code});
           break;
         }
@@ -265,7 +288,7 @@ async function main() {
         failures++;
         const delay=Math.min(30000,1000 * (2 ** Math.min(failures-1,5)));
         const reason=error.code==='invalid_response' && error.status<400 ? 'invalid_response' : error.status ? 'http_'+error.status : 'network';
-        await withState(async state => { if(state.owner===watchOwner) {state.watch={status:'retrying',consecutive_errors:failures,reason,next_retry_at:Math.floor((Date.now()+delay)/1000)}; await saveState(state);} });
+        await withState(async state => { if(state.owner===watchOwner && !state.stopped) {state.watch={status:'retrying',consecutive_errors:failures,reason,next_retry_at:Math.floor((Date.now()+delay)/1000)}; await saveState(state);} },{waitMs:12000});
         output({status:'retrying',consecutive_errors:failures,reason});
         await new Promise(resolveDone => setTimeout(resolveDone,delay));
       }

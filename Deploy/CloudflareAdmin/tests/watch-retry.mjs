@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateBackup } from '../src/crypto.browser.js';
@@ -47,6 +47,11 @@ async function waitFor(predicate,description,timeout=20000) {
   while(Date.now()<until) { const value=await state(); if(value&&predicate(value)) return value; await new Promise(r=>setTimeout(r,150)); }
   throw Error('timeout: '+description);
 }
+async function withDeadline(promise,description) {
+  let timer;
+  try { return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error(description)),20000);})]); }
+  finally { clearTimeout(timer); }
+}
 const children=[];
 try {
   const watch=launch(['watch',...common,...signer]); children.push(watch.child);
@@ -63,8 +68,10 @@ try {
   const stop=await fetch(upstream+'/api/admin/stop-all',{method:'POST',headers:{authorization:auth,'content-type':'application/json'},body:'{}'});
   assert.equal(stop.status,200);
   unavailable=false;
-  const stopped=await Promise.race([watch.done,new Promise((_,reject)=>setTimeout(()=>reject(Error('watch did not stop')),20000))]);
+  const stopped=await withDeadline(watch.done,'watch did not stop');
   assert.equal(stopped.code,0); assert.match(stopped.stdout,/"status":"stopped"/);
+  assert.deepEqual((await state()).roles,{});
+  await assert.rejects(access(join(stateDir,'player.code')));
   const status=await (await fetch(upstream+'/api/admin/status?owner='+firstOwner,{headers:{authorization:auth}})).json();
   assert.equal(status.owner_state,'stopped'); assert.equal(status.codes.length,0);
   await run(['ensure',...common,...signer]);
@@ -75,7 +82,7 @@ try {
   await waitFor(s=>s.watch?.status==='retrying','local stop outage');
   await run(['stop',...common],1);
   const local=await state(); assert.equal(local.stopped,true); assert.equal(local.stop_pending,'owner');
-  const stopped2=await Promise.race([watch2.done,new Promise((_,reject)=>setTimeout(()=>reject(Error('local stop did not stop watch')),20000))]);
+  const stopped2=await withDeadline(watch2.done,'local stop did not stop watch');
   assert.equal(stopped2.code,0);
   await run(['ensure',...common,...signer],1); // An unconfirmed stop cannot silently restart.
   unavailable=false;
@@ -91,7 +98,7 @@ try {
   setTimeout(()=>{unavailable=false;},700);
   const waited=await stopDuringHang.done;
   assert.equal(waited.code,0,'stop should wait for timed-out watch lock');
-  assert.equal((await Promise.race([watch3.done,new Promise((_,reject)=>setTimeout(()=>reject(Error('watch did not exit after stop')),20000))])).code,0);
+  assert.equal((await withDeadline(watch3.done,'watch did not exit after stop')).code,0);
   await run(['stop',...common]);
   console.log('PASS: watch retries, remote stop priority, outage stop, explicit restart, stalled request and lock contention');
 } finally {

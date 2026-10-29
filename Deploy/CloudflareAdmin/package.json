@@ -9,7 +9,8 @@
     "test:integration": "node tests/integration.mjs",
     "test:watch": "node tests/watch-retry.mjs",
     "test:panel": "node tests/panel-control.mjs",
-    "test:migration": "node tests/migration.mjs"
+    "test:migration": "node tests/migration.mjs",
+    "test:locking": "node tests/locking.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.56.1",
