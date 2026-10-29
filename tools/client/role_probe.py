@@ -252,7 +252,7 @@ class Probe:
 
     def run_test(self):
         self.preflight()
-        first=self.accept("inspector","inspector1")
+        first=self.accept("inspector","inspector1"); observers=[first]
         self.wait("initial_player_count",lambda:self.snapshot_players(first) is not None)
         baseline=self.snapshot_players(first)
         if baseline not in (0,1) or (baseline==1 and not self.args.allow_existing_player):
@@ -263,11 +263,11 @@ class Probe:
         self.report["checks"]["twoPlayersAccepted"]=True; self.persist()
         self.reject_capacity("player","extraPlayer","ARENA_FULL")
         self.report["checks"]["thirdPlayerRejected"]=True; self.persist()
-        self.accept("admin","admin1")
+        admin=self.accept("admin","admin1")
         self.reject_capacity("admin","extraAdmin","ADMIN_FULL")
         self.report["checks"]["secondAdminRejected"]=True; self.persist()
-        for i in range(1,self.args.inspectors): self.accept("inspector","inspector"+str(i+1))
-        self.wait("two_players_still_present",lambda:self.snapshot_players(first)==2,timeout=15)
+        for i in range(1,self.args.inspectors): observers.append(self.accept("inspector","inspector"+str(i+1)))
+        self.wait("roles_simultaneously_present",lambda:all(self.snapshot_players(item)==2 for item in [admin,*observers]),timeout=20)
         self.report["checks"]["multipleInspectorsAccepted"]=True; self.persist()
         self.report["checksCompleted"]=True; self.persist()
         self.set_stage("holding")

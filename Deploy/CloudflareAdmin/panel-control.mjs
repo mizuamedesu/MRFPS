@@ -6,6 +6,7 @@ import { readFile, writeFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { restoreBackup } from './src/crypto.browser.js';
 const args = process.argv.slice(2);
 const command = args.shift(), options = {};
 while (args.length) {
@@ -44,6 +45,7 @@ try {
   const page = context.pages()[0] || await context.newPage();
   page.on('dialog', async dialog => {
     if (dialog.type() === 'prompt') await dialog.accept((await readFile(required('passphrase-file'),'utf8')).replace(/[\r\n]+$/, ''));
+    else if (dialog.type() === 'confirm' && command === 'restore' && options.replace === 'true') await dialog.accept();
     else await dialog.dismiss();
   });
   await page.goto(base, {waitUntil:'domcontentloaded',timeout:30000});
@@ -70,6 +72,33 @@ try {
     }
     await writeFile(publicFile, publicKey, {mode:0o600});
     process.stdout.write(JSON.stringify({ready:true,profile,backup_file:backupFile,public_key_file:publicFile,private_key_sent_to_worker:false})+'\n');
+  } else if (command === 'restore') {
+    const backupFile = required('backup-file'), publicFile = required('public-key-file');
+    if ((await stat(backupFile)).size > 8192) throw Error('backup too large');
+    const backup = JSON.parse(await readFile(backupFile,'utf8'));
+    const passphrase = (await readFile(required('passphrase-file'),'utf8')).replace(/[\r\n]+$/, '');
+    // Verify the passphrase and private/public key pair before taking any action.
+    // The private key remains local and neither its bytes nor the passphrase are logged.
+    const candidate = await restoreBackup(backup, passphrase);
+    const current = await page.locator('#public-key').inputValue();
+    if (current === candidate.publicKey) {
+      await writeFile(publicFile, current, {mode:0o600});
+      process.stdout.write(JSON.stringify({already_installed:true,public_key_file:publicFile})+'\n');
+    } else {
+      if (current && options.replace !== 'true') throw Error('different key exists; specify --replace true to stop issuance and replace it');
+      if (current) {
+        const stopped = await page.evaluate(async () => {
+          const result = await fetch('/api/admin/stop-all',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+          return result.ok;
+        });
+        if (!stopped) throw Error('could not stop issuers; key was not replaced');
+      }
+      await page.setInputFiles('#backup-file',backupFile);
+      await page.waitForFunction(expected => document.getElementById('public-key').value === expected,
+        candidate.publicKey, {timeout:15000});
+      await writeFile(publicFile, candidate.publicKey, {mode:0o600});
+      process.stdout.write(JSON.stringify({restored:true,issuance_stopped:!!current,public_key_file:publicFile,server_public_key_update_required:!!current})+'\n');
+    }
   } else if (command === 'fingerprint') {
     const fingerprint = options.fingerprint || (options['fingerprint-file'] && (await readFile(required('fingerprint-file'),'utf8')).trim());
     if (!fingerprint) throw Error('--fingerprint or --fingerprint-file is required');
@@ -89,5 +118,5 @@ try {
     const path = required('output');
     await page.screenshot({path,animations:'disabled'});
     process.stdout.write(JSON.stringify({screenshot:path})+'\n');
-  } else throw Error('commands: init, fingerprint, watch, status, screenshot, open');
+  } else throw Error('commands: init, restore, fingerprint, watch, status, screenshot, open');
 } finally { await context.close(); }

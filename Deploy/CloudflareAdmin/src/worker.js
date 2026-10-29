@@ -115,6 +115,7 @@ export class DeviceCodes extends DurableObject {
       this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS attempts (
         key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL)`);
       this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS attempts_window_idx ON attempts(window)');
+      this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS issuers (owner TEXT PRIMARY KEY, stopped INTEGER NOT NULL DEFAULT 0)');
     });
   }
   attempt(key, now, max) {
@@ -139,9 +140,19 @@ export class DeviceCodes extends DurableObject {
   }
   async publish(data) {
     const sql = this.ctx.storage.sql;
+    const issuer = sql.exec('SELECT stopped FROM issuers WHERE owner=?',data.owner).toArray()[0];
+    if (!issuer || issuer.stopped) return { error: 'owner_stopped' };
     const previous = sql.exec('SELECT owner,expires_at FROM codes WHERE role=?', data.role).toArray()[0];
-    if (previous && previous.owner !== data.owner && previous.expires_at > Math.floor(Date.now() / 1000) && data.takeover !== true) {
-      return { error: 'owner_conflict' };
+    if (previous && previous.owner !== data.owner) {
+      const now = Math.floor(Date.now() / 1000);
+      const live = sql.exec('SELECT COUNT(*) AS count FROM codes WHERE owner=? AND expires_at>?',previous.owner,now).toArray()[0].count;
+      if (live && data.takeover !== true) return { error: 'owner_conflict' };
+      // A takeover retires the previous issuer completely, so a sleeping tab
+      // or watch process cannot revive it after its displayed code expires.
+      // Older deployments have codes but no issuer row. A takeover must
+      // tombstone those owners too, not let an old tab register afterwards.
+      sql.exec('INSERT INTO issuers (owner,stopped) VALUES (?,1) ON CONFLICT(owner) DO UPDATE SET stopped=1',previous.owner);
+      sql.exec('DELETE FROM codes WHERE owner=?',previous.owner);
     }
     sql.exec(`INSERT INTO codes (role,id,owner,expires_at,code_hash,token,public_key,token_expires_at,consumed)
       VALUES (?,?,?,?,?,?,?,?,0) ON CONFLICT(role) DO UPDATE SET id=excluded.id, owner=excluded.owner,
@@ -154,14 +165,38 @@ export class DeviceCodes extends DurableObject {
     if (!alarm || alarm > due) await this.ctx.storage.setAlarm(due);
     return { ok: true, id: data.id, expires_at: data.expires_at };
   }
-  status() {
+  start(owner) {
+    const sql=this.ctx.storage.sql;
+    const existing=sql.exec('SELECT stopped FROM issuers WHERE owner=?',owner).toArray()[0];
+    if(existing?.stopped) return {error:'owner_stopped'};
+    if(!existing) sql.exec('INSERT INTO issuers (owner,stopped) VALUES (?,0)',owner);
+    return {ok:true};
+  }
+  status(owner) {
     const now = Math.floor(Date.now() / 1000);
-    this.ctx.storage.sql.exec('UPDATE codes SET token=NULL, public_key=NULL WHERE expires_at <= ?', now);
-    return this.ctx.storage.sql.exec('SELECT role,id,owner,expires_at,consumed FROM codes').toArray();
+    const sql=this.ctx.storage.sql;
+    sql.exec('UPDATE codes SET token=NULL, public_key=NULL WHERE expires_at <= ?', now);
+    const result={codes:sql.exec('SELECT role,id,owner,expires_at,consumed FROM codes').toArray()};
+    if(owner) {
+      const row=sql.exec('SELECT stopped FROM issuers WHERE owner=?',owner).toArray()[0];
+      result.owner_state=!row?'unknown':row.stopped?'stopped':'active';
+    }
+    return result;
   }
   revoke(owner) {
-    this.ctx.storage.sql.exec('DELETE FROM codes WHERE owner=?', owner);
+    const sql=this.ctx.storage.sql;
+    sql.exec('INSERT INTO issuers (owner,stopped) VALUES (?,1) ON CONFLICT(owner) DO UPDATE SET stopped=1',owner);
+    sql.exec('DELETE FROM codes WHERE owner=?', owner);
     return { ok: true };
+  }
+  stopAll() {
+    const sql=this.ctx.storage.sql;
+    // Import pre-migration owners before revoking. Otherwise a previously
+    // running tab could register after its old code was removed and revive.
+    sql.exec('INSERT OR IGNORE INTO issuers (owner,stopped) SELECT DISTINCT owner,1 FROM codes');
+    sql.exec('UPDATE issuers SET stopped=1 WHERE stopped=0');
+    sql.exec('DELETE FROM codes');
+    return {ok:true};
   }
   exchange(role, codeHash, ip) {
     const now = Math.floor(Date.now() / 1000);
@@ -206,21 +241,34 @@ export default {
       return json(result, result.error === 'rate_limited' ? 429 : result.error ? 401 : 200,
         result.error === 'rate_limited' ? { 'retry-after': '60' } : {});
     }
+    // An initial unauthenticated browser request is a normal Basic challenge,
+    // not a password attempt. Counting it locks out valid users after a few
+    // fresh browser sessions; attempts carrying Authorization remain limited.
+    if (!request.headers.has('authorization')) return json({error:'unauthorized'},401,{'www-authenticate':'Basic realm="MRFPS Admin", charset="UTF-8"'});
     const correct = await credentialsValid(request, env);
     if (!await stub.authorize(ip, correct)) return json({ error: 'unauthorized' }, 401, { 'www-authenticate': 'Basic realm="MRFPS Admin", charset="UTF-8"' });
     if (request.method === 'GET' && url.pathname === '/') return textBody(panel, 'text/html; charset=utf-8');
     if (request.method === 'GET' && url.pathname === '/panel.js') return textBody(script, 'text/javascript; charset=utf-8');
     if (request.method === 'GET' && url.pathname === '/crypto.js') return textBody(cryptoScript, 'text/javascript; charset=utf-8');
     if (request.method === 'GET' && url.pathname === '/panel.css') return textBody(style, 'text/css; charset=utf-8');
-    if (request.method === 'GET' && url.pathname === '/api/admin/status') return json({ codes: await stub.status() });
+    if (request.method === 'GET' && url.pathname === '/api/admin/status') {
+      const owner=url.searchParams.get('owner') || '';
+      if(owner && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner)) return json({error:'invalid'},400);
+      return json(await stub.status(owner));
+    }
     if (request.method === 'POST' && url.pathname.startsWith('/api/admin/')) {
       const origin = request.headers.get('origin');
       if (origin && origin !== url.origin) return json({ error: 'origin' }, 403);
-      if (url.pathname === '/api/admin/revoke') {
+      if (url.pathname === '/api/admin/revoke' || url.pathname === '/api/admin/owner/start') {
         let body;
         try { body = await bodyJson(request, 512); } catch { return json({ error: 'invalid' }, 400); }
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.owner || '')) return json({ error: 'invalid' }, 400);
-        return json(await stub.revoke(body.owner));
+        const result=url.pathname.endsWith('/start')?await stub.start(body.owner):await stub.revoke(body.owner);
+        return json(result,result.error?409:200);
+      }
+      if (url.pathname === '/api/admin/stop-all') {
+        try { await bodyJson(request,512); } catch { return json({error:'invalid'},400); }
+        return json(await stub.stopAll());
       }
       if (url.pathname === '/api/admin/publish') {
         try { const result = await stub.publish(await validatePublish(await bodyJson(request))); return json(result, result.error ? 409 : 200); }

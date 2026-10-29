@@ -33,9 +33,14 @@ async function call(path, body, auth = true) {
   const headers = {};
   if (auth) headers.authorization = await basic();
   if (body) headers['content-type'] = 'application/json';
-  const r = await fetch(base + path, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined, redirect: 'error' });
-  const result = await r.json();
-  if (!r.ok) throw Error(`${r.status} ${result.error || 'request failed'}`);
+  const r = await fetch(base + path, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined, redirect: 'error', signal:AbortSignal.timeout(5000) });
+  let result;
+  try { result=await r.json(); }
+  catch { const error=Error('invalid_response'); error.code='invalid_response'; error.status=r.status; throw error; }
+  if (!r.ok) {
+    const safeCode=typeof result.error==='string' && /^[a-z_]{1,80}$/.test(result.error) ? result.error : 'request_failed';
+    const error=Error(`${r.status} ${safeCode}`); error.code=safeCode; error.status=r.status; throw error;
+  }
   return result;
 }
 function output(value) { process.stdout.write(JSON.stringify(value) + '\n'); }
@@ -58,29 +63,46 @@ async function readState() {
     const state = JSON.parse(await readFile(statePath,'utf8'));
     if (state.version !== 1 || typeof state.owner !== 'string') throw Error('invalid state');
     return state;
-  } catch (e) { if (e.code !== 'ENOENT') throw e; return {version:1, owner:crypto.randomUUID(), roles:{}}; }
+  } catch (e) { if (e.code !== 'ENOENT') throw e; return {version:1, owner:crypto.randomUUID(), roles:{}, registered:false, stopped:false}; }
 }
-async function withState(fn) {
+async function withState(fn, {waitMs=0}={}) {
   await ensureDirectory();
   const lockPath = join(stateDir, 'lock');
+  const deadline=Date.now()+waitMs;
   let lock;
-  try { lock = await open(lockPath, 'wx', 0o600); }
-  catch (e) {
-    if (e.code !== 'EEXIST') throw e;
-    let stale = false;
-    try {
-      const holder = Number(await readFile(lockPath,'utf8'));
-      if (!Number.isSafeInteger(holder) || holder < 1) stale = (Date.now() - (await stat(lockPath)).mtimeMs) > 60000;
-      else try { process.kill(holder,0); } catch (failure) { if (failure.code === 'ESRCH') stale = true; }
-    } catch (failure) { if (failure.code === 'ENOENT') return withState(fn); throw failure; }
-    if (!stale) throw Error('another local admin command is running');
-    await unlink(lockPath).catch(failure => { if (failure.code !== 'ENOENT') throw failure; });
-    return withState(fn);
+  while (!lock) {
+    try { lock = await open(lockPath, 'wx', 0o600); }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let stale = false;
+      try {
+        const holder = Number(await readFile(lockPath,'utf8'));
+        if (!Number.isSafeInteger(holder) || holder < 1) stale = (Date.now() - (await stat(lockPath)).mtimeMs) > 60000;
+        else try { process.kill(holder,0); } catch (failure) { if (failure.code === 'ESRCH') stale = true; }
+      } catch (failure) { if (failure.code === 'ENOENT') continue; throw failure; }
+      if (stale) await unlink(lockPath).catch(failure => { if (failure.code !== 'ENOENT') throw failure; });
+      else if (Date.now() < deadline) await new Promise(done => setTimeout(done,100));
+      else throw Error('another local admin command is running');
+    }
   }
   try { await lock.writeFile(String(process.pid)); return await fn(await readState()); }
   finally { await lock.close(); await unlink(lockPath).catch(failure => { if (failure.code !== 'ENOENT') throw failure; }); }
 }
 async function saveState(state) { await writePrivate(statePath, JSON.stringify(state)); }
+function newIssuer(state) {
+  state.owner=crypto.randomUUID(); state.registered=false; state.stopped=false; state.stop_pending=false; state.roles={};
+}
+async function prepareIssuer(state,key) {
+  if(state.stop_pending) throw Error('stop is not yet confirmed; retry stop first');
+  const fingerprint=required('fingerprint').toLowerCase().replace(/:/g,'');
+  if(!/^[0-9a-f]{64}$/.test(fingerprint)) throw Error('invalid fingerprint');
+  const keyHash=createHash('sha256').update(key.publicKey).digest('hex');
+  const changed=state.fingerprint && (state.fingerprint!==fingerprint || state.keyHash!==keyHash);
+  if(changed && !state.stopped) throw Error('stop the existing issuer before changing its key or fingerprint');
+  if(state.stopped) newIssuer(state);
+  state.fingerprint=fingerprint; state.keyHash=keyHash;
+  await saveState(state);
+}
 async function ensureKey() {
   const file = required('key-file');
   try { await stat(file); return await loadKey(); }
@@ -93,22 +115,28 @@ async function ensureKey() {
 async function ensureCodes(state, key) {
   const fingerprint = required('fingerprint').toLowerCase().replace(/:/g, '');
   if (!/^[0-9a-f]{64}$/.test(fingerprint)) throw Error('invalid fingerprint');
-  const keyHash = createHash('sha256').update(key.publicKey).digest('hex');
   const selected = opts.role ? [opts.role] : roles;
   if (!selected.every(role => roles.includes(role))) throw Error('invalid role');
-  const remote = (await call('/api/admin/status')).codes;
-  const now = Math.floor(Date.now()/1000);
-  const changedIdentity = state.fingerprint && (state.fingerprint !== fingerprint || state.keyHash !== keyHash);
-  if (changedIdentity) {
-    await call('/api/admin/revoke', {owner:state.owner});
-    state.roles = {};
+  if (state.stopped) { const error=Error('issuer was stopped'); error.code='owner_stopped'; throw error; }
+  if (!state.registered) {
+    try { await call('/api/admin/owner/start',{owner:state.owner}); }
+    catch(error) { if(error.code==='owner_stopped') {state.stopped=true; await saveState(state);} throw error; }
+    state.registered=true; await saveState(state);
   }
-  state.fingerprint = fingerprint; state.keyHash = keyHash;
+  const status = await call('/api/admin/status?owner='+encodeURIComponent(state.owner));
+  if (status.owner_state !== 'active') {
+    state.stopped=true; await saveState(state);
+    const error=Error('issuer was stopped'); error.code='owner_stopped'; throw error;
+  }
+  const remote = status.codes;
+  const now = Math.floor(Date.now()/1000);
   for (const role of selected) {
     const row = remote.find(item => item.role === role);
     const local = state.roles[role];
-    if (row && row.owner !== state.owner && row.expires_at > now && opts.takeover !== 'true') throw Error(`owner_conflict: ${role}; use explicit --takeover true to switch issuers`);
-    if (!changedIdentity && row && local && row.owner === state.owner && row.id === local.id && !row.consumed && row.expires_at > now + 1) {
+    if (row && row.owner !== state.owner && row.expires_at > now && opts.takeover !== 'true') {
+      const error=Error(`owner_conflict: ${role}; use explicit --takeover true to switch issuers`); error.code='owner_conflict'; throw error;
+    }
+    if (row && local && row.owner === state.owner && row.id === local.id && !row.consumed && row.expires_at > now + 1) {
       delete local.pending;
       await writePrivate(join(stateDir, role + '.code'), local.code + '\n');
       continue;
@@ -178,23 +206,70 @@ async function main() {
   } else if (command === 'status') {
     const remote = await call('/api/admin/status');
     output({codes:remote.codes});
+  } else if (command === 'local-status') {
+    output(await withState(async state => ({owner:state.owner,stopped:!!state.stopped,stop_pending:state.stop_pending || null,watch:state.watch || {status:'idle',consecutive_errors:0}})));
   } else if (command === 'stop') {
     await withState(async state => {
-      await call('/api/admin/revoke', {owner:state.owner});
-      for (const role of roles) await unlink(join(stateDir,role+'.code')).catch(e => {if(e.code!=='ENOENT')throw e;});
-      state.roles={}; await saveState(state);
-    });
+      const selected=opts.owner || state.owner;
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(selected)) throw Error('invalid owner');
+      if(selected===state.owner && state.stop_pending==='all') throw Error('global stop is not yet confirmed; retry stop-all');
+      if(selected===state.owner) {state.stopped=true; state.stop_pending='owner'; state.watch={status:'stopping',consecutive_errors:0}; await saveState(state);}
+      await call('/api/admin/revoke', {owner:selected});
+      if(selected===state.owner) {
+        for (const role of roles) await unlink(join(stateDir,role+'.code')).catch(e => {if(e.code!=='ENOENT')throw e;});
+        state.roles={}; state.stop_pending=false; state.watch={status:'stopped',consecutive_errors:0}; await saveState(state);
+      }
+    },{waitMs:12000});
     output({stopped:true});
-  } else if (command === 'ensure' || command === 'watch') {
+  } else if (command === 'stop-all') {
+    await withState(async state => {
+      state.stopped=true; state.stop_pending='all'; state.watch={status:'stopping',consecutive_errors:0}; await saveState(state);
+      await call('/api/admin/stop-all',{});
+      state.stop_pending=false; state.roles={}; state.watch={status:'stopped',consecutive_errors:0};
+      for(const role of roles) await unlink(join(stateDir,role+'.code')).catch(e => {if(e.code!=='ENOENT')throw e;});
+      await saveState(state);
+    },{waitMs:12000});
+    output({stopped:true});
+  } else if (command === 'ensure') {
     const key = await loadKey();
-    do {
-      const result = await withState(state => ensureCodes(state,key));
-      if (command === 'ensure') {output({active:result}); break;}
-      // A deliberate takeover applies only at startup, not to later poll cycles.
-      // Otherwise two active issuers could continually steal codes from each other.
-      delete opts.takeover;
-      await new Promise(resolveDone => setTimeout(resolveDone,1500));
-    } while (true);
+    const result = await withState(async state => { await prepareIssuer(state,key); return ensureCodes(state,key); });
+    output({active:result});
+  } else if (command === 'watch') {
+    const key = await loadKey();
+    let watchOwner=null,failures=0;
+    while(true) {
+      try {
+        await withState(async state => {
+          if(!watchOwner) {
+            await prepareIssuer(state,key);
+            watchOwner=state.owner;
+          } else if(state.owner!==watchOwner || state.stopped) {
+            const error=Error('issuer was stopped'); error.code='owner_stopped'; throw error;
+          }
+          await ensureCodes(state,key);
+          state.watch={status:'active',consecutive_errors:0}; await saveState(state);
+        });
+        failures=0;
+        // A deliberate takeover applies only at startup, not to later poll cycles.
+        delete opts.takeover;
+        await new Promise(resolveDone => setTimeout(resolveDone,1500));
+      } catch(error) {
+        if(error.code==='owner_stopped'||error.code==='owner_conflict') {
+          await withState(async state => { if(state.owner===watchOwner) {state.stopped=true; state.watch={status:'stopped',consecutive_errors:failures}; await saveState(state);} });
+          output({status:'stopped',reason:error.code});
+          break;
+        }
+        const retryable=error instanceof TypeError || error.name==='TimeoutError' || error.name==='AbortError' || error.status===429 || (error.status>=500 && error.status<600) ||
+          (error.code==='invalid_response' && error.status>=200 && error.status<300);
+        if(!retryable) throw error;
+        failures++;
+        const delay=Math.min(30000,1000 * (2 ** Math.min(failures-1,5)));
+        const reason=error.code==='invalid_response' && error.status<400 ? 'invalid_response' : error.status ? 'http_'+error.status : 'network';
+        await withState(async state => { if(state.owner===watchOwner) {state.watch={status:'retrying',consecutive_errors:failures,reason,next_retry_at:Math.floor((Date.now()+delay)/1000)}; await saveState(state);} });
+        output({status:'retrying',consecutive_errors:failures,reason});
+        await new Promise(resolveDone => setTimeout(resolveDone,delay));
+      }
+    }
   } else if (command === 'exchange-test') {
     const code = (await readFile(required('code-file'),'utf8')).trim(), role = required('role');
     const result = await call('/api/device/exchange',{role,code},false);
@@ -210,6 +285,6 @@ async function main() {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw Error('invalid operation ID');
     await withState(async () => { for (const extension of ['jwt','json']) await unlink(join(stateDir,'exchange-'+id+'.'+extension)).catch(e => {if(e.code!=='ENOENT')throw e;}); });
     output({cleaned:true});
-  } else throw Error('commands: key-ensure, public-key, status, stop, ensure, watch, exchange-test, exchange-export, exchange-clean; see README.md');
+  } else throw Error('commands: key-ensure, public-key, status, local-status, stop, stop-all, ensure, watch, exchange-test, exchange-export, exchange-clean; see README.md');
 }
 main().catch(error => { process.stderr.write('MRFPS admin: '+error.message+'\n'); process.exitCode=1; });

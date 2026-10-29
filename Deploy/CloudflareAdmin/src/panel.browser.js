@@ -2,9 +2,12 @@ import { generateBackup, restoreBackup, newCode } from '/crypto.js';
 
 const $ = id => document.getElementById(id);
 const roles = ['player', 'inspector', 'admin'];
-const owner = crypto.randomUUID();
+let owner = crypto.randomUUID();
 let key = null;
 let running = false;
+let starting = false;
+let stopping = 0;
+let startEpoch = 0;
 let busy = null;
 let current = {};
 let fingerprint = localStorage.getItem('mrfps-dtls-fingerprint') || '';
@@ -58,8 +61,9 @@ function promptPassphrase(confirm) {
 }
 async function api(path, body) {
   const response = await fetch(path, body ? { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) } : { cache:'no-store' });
-  if (!response.ok) throw Error(`通信エラー (${response.status})`);
-  return response.json();
+  const result = await response.json();
+  if (!response.ok) { const error=Error(`通信エラー (${response.status})`); error.code=result.error; throw error; }
+  return result;
 }
 function clearCodes() {
   current = {};
@@ -84,7 +88,11 @@ async function publish(role, takeover = false) {
 async function tick(force = false, takeover = false) {
   if (!running || busy) return;
   busy = (async () => {
-    const status = force ? [] : (await api('/api/admin/status')).codes;
+    const response = force ? null : await api('/api/admin/status?owner=' + encodeURIComponent(owner));
+    if (response && response.owner_state !== 'active') {
+      running = false; clearCodes(); $('state').textContent = '停止中'; message('発行が停止されました。'); return;
+    }
+    const status = response ? response.codes : [];
     const now = Math.floor(Date.now() / 1000);
     for (const role of roles) {
       if (!running) break;
@@ -101,15 +109,27 @@ async function tick(force = false, takeover = false) {
     render();
     if (running) $('state').textContent = '発行中';
   })();
-  try { await busy; } catch { $('state').textContent = '接続できません'; message('管理サービスとの通信を確認してください。'); }
+  try { await busy; } catch (error) {
+    if (error.code === 'owner_stopped') { running=false; clearCodes(); $('state').textContent='停止中'; message('発行が停止されました。'); }
+    else { $('state').textContent = '接続できません'; message('管理サービスとの通信を確認してください。'); }
+  }
   finally { busy = null; }
 }
 async function stop(revoke) {
+  ++startEpoch;
   running = false;
-  if (busy) await busy.catch(() => {});
-  if (revoke) await api('/api/admin/revoke', {owner});
+  const stoppedOwner=owner;
+  stopping++;
+  // Hide locally cached codes immediately even if the remote revoke is delayed
+  // or fails. The UI must not claim a confirmed stop until the server replies.
   clearCodes();
-  $('state').textContent = '停止中';
+  $('state').textContent = revoke ? '停止確認中' : '停止中';
+  try {
+    if (busy) await busy.catch(() => {});
+    if (revoke) await api('/api/admin/revoke', {owner:stoppedOwner});
+    $('state').textContent = '停止中';
+  } catch(error) { $('state').textContent='停止未確認'; throw error; }
+  finally { stopping--; }
 }
 $('key-generate').onclick = async () => {
   try {
@@ -147,16 +167,21 @@ $('fingerprint-save').onclick = async () => {
     fingerprint = value; $('fingerprint').value = value; localStorage.setItem('mrfps-dtls-fingerprint', value); message('指紋を保存しました。');
   } catch (e) { message(e.message); }
 };
-$('codes-start').onclick = async () => {
-  if (running) return;
+async function startIssuance(takeover) {
+  if (running || starting || stopping) return;
   if (!key) { message('先に署名鍵を作成または復元してください。'); return; }
   if (!/^[0-9a-f]{64}$/.test(fingerprint)) { message('先にサーバーの指紋を保存してください。'); return; }
-  message(''); running = true; clearCodes(); await tick(true);
-};
-$('codes-takeover').onclick = async () => {
-  if (!key || !/^[0-9a-f]{64}$/.test(fingerprint)) { message('鍵と指紋を先に設定してください。'); return; }
-  running = true; clearCodes(); await tick(true, true);
-};
+  const candidate=crypto.randomUUID(), epoch=++startEpoch;
+  starting=true; message('');
+  try {
+    await api('/api/admin/owner/start',{owner:candidate});
+    if (epoch!==startEpoch) { await api('/api/admin/revoke',{owner:candidate}); return; }
+    owner=candidate; running=true; clearCodes(); await tick(true,takeover);
+  } catch { $('state').textContent='接続できません'; message('発行を開始できませんでした。'); }
+  finally { starting=false; }
+}
+$('codes-start').onclick = () => { void startIssuance(false); };
+$('codes-takeover').onclick = () => { void startIssuance(true); };
 $('codes-stop').onclick = async () => { try { await stop(true); message('コードを無効にしました。'); } catch (e) { message(e.message); } };
 setInterval(() => { render(); void tick(); }, 1500);
 try { key = await loadKey(); showKey(); $('state').textContent = '停止中'; }

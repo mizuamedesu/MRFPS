@@ -48,3 +48,12 @@ $id = [guid]::NewGuid().ToString()
 ```
 
 `ok` / `already_applied` mean the operation completed; `submitted` means an asynchronous request was sent but device, capture or calibration completion was not confirmed; `pending` means no result has arrived. `error` and `unknown` are not success. Reuse the original UUID to check the same operation; `--wait-seconds` can be set from 0 to 60. The command does not print bearer credentials. This implementation has unit tests and still requires compiled-client, real-server, Quest and Mac integration testing.
+
+Completed `ok`, `already_applied`, and `error` receipts can be moved out of UE's active directory scan without losing their retry history:
+
+```powershell
+.\.local\auth-tools\Scripts\python.exe tools\automation\control.py --name MRFPS-Client --archive-completed
+# For a Quest development APK, also pass --platform quest --serial <adb serial>.
+```
+
+The command moves at most 100 entries by default; use `--archive-limit` (1–500) and repeat it to process more. Repeating it when there is nothing completed is safe. Pending, `submitted`, `unknown`, malformed and conflicting entries stay in place. Archived results remain available for the same UUID and payload; a different payload with the same UUID is rejected. Both desktop submission and archiving use the same local file lock. On Quest, both use the same app-private per-UUID lock across ADB hosts, and an unavailable lock fails closed. If an ADB shell is interrupted while holding a Quest lock, inspect it and confirm no publisher or archiver is active before manually removing the empty `.lock-<UUID>` directory; the CLI never guesses that the operation is safe to repeat. Archiving reduces the game tick's scan, but retains files and therefore does not reclaim disk space.

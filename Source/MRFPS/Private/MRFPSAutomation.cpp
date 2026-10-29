@@ -98,7 +98,8 @@ FString AMRFPSPlayerController::AutomationDirectory() const
 #if PLATFORM_ANDROID
     Base=UMRFPSAuthClientSubsystem::PrivateDirectory();
     return Base.IsEmpty()||FPaths::IsRelative(Base)?FString():FPaths::Combine(Base,TEXT("Automation"),Name);
-#elif PLATFORM_WINDOWS
+#else
+#if PLATFORM_WINDOWS
     Base=FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
 #elif PLATFORM_MAC
     Base=FPlatformMisc::GetEnvironmentVariable(TEXT("HOME"));
@@ -108,6 +109,7 @@ FString AMRFPSPlayerController::AutomationDirectory() const
     if(Base.IsEmpty()) { Base=FPlatformMisc::GetEnvironmentVariable(TEXT("HOME")); if(!Base.IsEmpty()) Base=FPaths::Combine(Base,TEXT(".local/state")); }
 #endif
     return Base.IsEmpty()||FPaths::IsRelative(Base)?FString():FPaths::Combine(Base,TEXT("MRFPS/Automation"),Name);
+#endif
 #endif
 }
 
