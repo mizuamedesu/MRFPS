@@ -13,6 +13,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSGloveOSCValidationTest, "MRFPS.Gloves.OSC
 
 bool FMRFPSGloveOSCValidationTest::RunTest(const FString& Parameters)
 {
+    FMRFPSGloveHandFrame OpenHand;
+    OpenHand.FingerCurls={.1818f,.1218f,.0734f,.0993f,.3730f};
+    TestFalse(TEXT("Stale fingers cannot activate a shield"),OpenHand.IsOpenPalm());
+    OpenHand.bFlexValid=true;
+    TestTrue(TEXT("Measured open hand tolerates a slightly bent little finger"),OpenHand.IsOpenPalm());
+    OpenHand.FingerCurls={.7f,.8f,.8f,.8f,.8f};
+    TestFalse(TEXT("A fist is not an open palm"),OpenHand.IsOpenPalm());
     // /a, types ,if: 1 and 1.0f encoded in network byte order.
     const uint8 Valid[] = { '/', 'a', 0, 0, ',', 'i', 'f', 0, 0, 0, 0, 1, 0x3f, 0x80, 0, 0 };
     MRFPSOSC::FMessage Message;

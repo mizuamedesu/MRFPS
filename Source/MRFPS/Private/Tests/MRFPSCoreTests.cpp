@@ -96,6 +96,14 @@ bool FMRFPSHandWeaponAimTest::RunTest(const FString& Parameters)
     Hand.bValid=true; Hand.TrackingStatus=ETrackingStatus::Tracked;
     Hand.HandKeyLocations.SetNum(EHandKeypointCount);
     Hand.HandKeyRotations.SetNum(EHandKeypointCount);
+    TestTrue(TEXT("A tracked controller remains the preferred position source"),
+        MRFPSHandPose::SelectPositionSource(true,Hand)==MRFPSHandPose::EPositionSource::Controller);
+    TestTrue(TEXT("Optical position remains available independently of glove flex"),
+        MRFPSHandPose::SelectPositionSource(false,Hand)==MRFPSHandPose::EPositionSource::OpticalHand);
+    Hand.TrackingStatus=ETrackingStatus::NotTracked;
+    TestTrue(TEXT("Untracked optical input does not create a position"),
+        MRFPSHandPose::SelectPositionSource(false,Hand)==MRFPSHandPose::EPositionSource::None);
+    Hand.TrackingStatus=ETrackingStatus::Tracked;
     const int32 Palm=static_cast<int32>(EHandKeypoint::Palm);
     const int32 IndexTip=static_cast<int32>(EHandKeypoint::IndexTip);
     Hand.HandKeyLocations[Palm]=FVector(100,20,130);
@@ -107,10 +115,13 @@ bool FMRFPSHandWeaponAimTest::RunTest(const FString& Parameters)
     const FQuat Expected=TrackingToArena.TransformRotation(EngineToTracking.TransformRotation(Hand.HandKeyRotations[Palm])).GetNormalized();
     TestTrue(TEXT("Tracked hand forward follows the palm"),FVector::DotProduct(Rotation.Vector(),Expected.GetAxisX())>.9999);
     const FQuat Weapon=MRFPSHandPose::WeaponFromHand(Rotation.Quaternion());
-    TestTrue(TEXT("The weapon barrel is 90 degrees from the hand's length"),FMath::Abs(FVector::DotProduct(Weapon.GetAxisX(),Expected.GetAxisX()))<.001);
-    TestTrue(TEXT("The weapon barrel points across the palm, not out of the back of the hand"),
-        FVector::DotProduct(Weapon.GetAxisX(),Expected.GetAxisY())>.9999 && FMath::Abs(FVector::DotProduct(Weapon.GetAxisX(),Expected.GetAxisZ()))<.001);
-    TestTrue(TEXT("The downward grip points toward the wrist"),FVector::DotProduct(-Weapon.GetAxisZ(),-Expected.GetAxisX())>.9999);
+    TestTrue(TEXT("The corrected optical gun basis follows the palm's forward axis"),FVector::DotProduct(Weapon.GetAxisX(),Expected.GetAxisX())>.9999);
+    const FQuat DownwardOldAim=FRotationMatrix::MakeFromXZ(FVector::ForwardVector,FVector::RightVector).ToQuat();
+    const FQuat CorrectedAim=MRFPSHandPose::WeaponFromHand(DownwardOldAim);
+    TestTrue(TEXT("The reported downward aim is corrected by 90 degrees"),
+        FVector::DotProduct(DownwardOldAim.GetAxisY(),-FVector::UpVector)>.9999 &&
+        FVector::DotProduct(CorrectedAim.GetAxisX(),FVector::ForwardVector)>.9999 &&
+        FVector::DotProduct(CorrectedAim.GetAxisZ(),FVector::UpVector)>.9999);
     TestTrue(TEXT("A controller's existing aim ray can infer the holding hand without changing the ray"),
         MRFPSHandPose::HandFromWeapon(Weapon).Equals(Expected,.0001));
     TestTrue(TEXT("Palm position is transformed into the calibrated arena once"),FVector::Dist(Position,
@@ -149,7 +160,11 @@ bool FMRFPSRiseGestureTest::RunTest(const FString& Parameters)
     bool bSlowRiseTriggered = false;
     for (int32 Index = 0; Index <= 15; ++Index)
         bSlowRiseTriggered |= Gesture.Update(80 + Index * 4.f, 30 + Index * 0.1, true);
-    TestFalse(TEXT("Slow arm drift is not a wall gesture"), bSlowRiseTriggered);
+    TestTrue(TEXT("A natural sustained upward arm stroke is recognized"), bSlowRiseTriggered);
+    Gesture.Reset(); bool bDriftTriggered=false;
+    for (int32 Index=0; Index<=15; ++Index)
+        bDriftTriggered |= Gesture.Update(80+Index*.5f, 35+Index*.1, true);
+    TestFalse(TEXT("Small slow tracking drift does not erect a wall"), bDriftTriggered);
 
     Gesture.Reset();
     Gesture.Update(80, 40, true);
@@ -373,7 +388,6 @@ private:
         Pawn->Pose.Left = Head + Rotation.RotateVector(FVector(40, 0, -40));
         Pawn->Pose.Right = Head + Rotation.RotateVector(FVector(40, 0, -40));
         Pawn->bCalibrated = true;
-        Pawn->bGunSpawned = true; Pawn->bGunHeld = true;
         Pawn->LastPoseReceived = World->GetTimeSeconds();
         Pawn->OnRepPose();
         return Pawn;

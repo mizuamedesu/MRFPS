@@ -59,11 +59,17 @@ struct MRFPSGLOVES_API FMRFPSGloveHandFrame
         Splay.Init(0.0f, 5);
     }
 
-    bool IsOpenPalm(float MaximumCurl = 0.24f) const
+    bool IsOpenPalm(float MaximumCurl = 0.35f) const
     {
         if (!bFlexValid || FingerCurls.Num() != 5) return false;
-        for (const float Curl : FingerCurls) if (Curl > MaximumCurl) return false;
-        return true;
+        float Total=0; int32 OpenFingers=0;
+        for (int32 I=1; I<5; ++I) {
+            const float Curl=FingerCurls[I];
+            if (!FMath::IsFinite(Curl)) return false;
+            Total+=Curl; if (Curl<=MaximumCurl) ++OpenFingers;
+        }
+        return FMath::IsFinite(FingerCurls[0]) && FingerCurls[0]<=.65f &&
+            OpenFingers>=3 && Total/4.f<=.32f;
     }
 };
 

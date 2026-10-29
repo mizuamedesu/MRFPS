@@ -211,7 +211,7 @@ bool FMRFPSAvatarViewerPolicyTest::RunTest(const FString& Parameters)
     Viewer->SetPlayerState(ViewerState);
     TestEqual(TEXT("The fixture registers the local viewer"),World->GetFirstPlayerController(),static_cast<APlayerController*>(Viewer));
     auto* Player=World->SpawnActor<AMRFPSPawn>();auto* PlayerState=World->SpawnActor<AMRFPSPlayerState>();
-    PlayerState->Slot=0;Player->SetPlayerState(PlayerState);Player->bGunSpawned=true;
+    PlayerState->Slot=0;Player->SetPlayerState(PlayerState);
     Player->Pose.bHeadTracked=Player->Pose.bLeftTracked=Player->Pose.bRightTracked=true;
     ++Player->Pose.Sequence;Player->Tick(1.f/60);
     TestFalse(TEXT("Player views do not show the mannequin"),Player->Avatar->IsVisible());

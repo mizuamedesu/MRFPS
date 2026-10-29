@@ -169,9 +169,15 @@ void AMRFPSPlayerController::TickQuestVideo()
         Capture->StopCapture(); bViewSharingRequested=false; VideoConsentFlow.Abort();
         if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
     }
-    if (Publisher && !bHadVideoPublisherSession && Capture &&
-        (FParse::Param(FCommandLine::Get(),TEXT("MRFPSVideoFromAdb")) || FParse::Param(FCommandLine::Get(),TEXT("MRFPSRequestCapture")) ||
-         FParse::Param(FCommandLine::Get(),TEXT("MRFPSCaptureDesktopView")))) {
+    bool AutoCapture=FParse::Param(FCommandLine::Get(),TEXT("MRFPSVideoFromAdb")) ||
+        FParse::Param(FCommandLine::Get(),TEXT("MRFPSRequestCapture")) ||
+        FParse::Param(FCommandLine::Get(),TEXT("MRFPSCaptureDesktopView"));
+#if PLATFORM_ANDROID
+    // A player session requests OS consent once when it connects. Consent is
+    // still granted or denied by the headset user, never bypassed.
+    AutoCapture=AutoCapture || !FParse::Param(FCommandLine::Get(),TEXT("MRFPSNoAutoCapture"));
+#endif
+    if (Publisher && !bHadVideoPublisherSession && Capture && AutoCapture) {
         MRFPSShareView();
     }
     if (Publisher && Capture && VideoConsentFlow.IsBusy()) {

@@ -167,8 +167,7 @@ bool FMRFPSGeometryAuthorityTest::RunTest(const FString& Parameters)
         P->Haptics->bAutoConnectTracking=false; P->bCalibrated=true; P->bStageFloorReferenced=true; P->GeometryCalibrationGeneration=1;
         P->Pose.Head=FVector(X,0,170); P->Pose.Left=P->Pose.Right=FVector(X+(Slot? -40:40),0,130);
         P->Pose.HeadRotation=P->Pose.LeftRotation=P->Pose.RightRotation=FRotator(0,Yaw,0);
-        P->Pose.bHeadTracked=P->Pose.bLeftTracked=P->Pose.bRightTracked=true; P->Pose.bDesktop=false;
-        P->bGunSpawned=true;P->bGunHeld=true;
+        P->Pose.bHeadTracked=P->Pose.bLeftTracked=P->Pose.bRightTracked=true; P->Pose.bDesktop=false; P->Pose.RightFingers.bValid=true;
         P->LastPoseReceived=World->GetTimeSeconds(); P->OnRepPose(); return P;
     };
     auto* Shooter=Spawn(0,-150,0); auto* Target=Spawn(1,150,180);

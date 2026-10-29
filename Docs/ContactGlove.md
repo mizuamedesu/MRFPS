@@ -8,7 +8,7 @@ CG2 の[専用ドングルの公式仕様](https://store.melt-interface-technolo
 
 CG2単体は空間内の手の位置を計測できません。[メーカーのQuest用アダプター](https://store.melt-interface-technologies.com/en/products/quest-3-3s-pro-adapter-for-cg2-3)はQuest 3 / 3s / Proのコントローラーをグローブへ取り付ける構成です。コントローラー側の位置追跡とグローブ側の指入力は別々のデータであり、アダプターだけでグローブの指データがQuestへBluetooth直結されるわけではありません。取付位置と手の位置の差は実機で校正する必要があります。
 
-2026-10-29の実測では、左グローブがPCのドングルに接続し、指と手首のデータを受信できました。右グローブは電源投入後もDivingStationが未接続と報告しました。その後は左も未接続となっており、両手のペアリングとQuest内での実動作は未確認です。
+2026-10-29には両手ともQuestアプリで新鮮なグローブ指データと手の位置を受信したことをログで確認しました。その後Questがスリープしてサーバーとの接続が切れており、射撃・盾・壁がサーバーまで届くことは別途実機確認が必要です。
 
 ## 確認した公式仕様
 
@@ -21,7 +21,7 @@ SDK 同梱 LICENSE は SDK および派生物の第三者への再配布を制�
 
 ## 位置と指のデータを区別する
 
-ContactGlove の `/DS/HC/Wrist` には WXYZ の回転のみが含まれ、手の位置は含まれません。手を引き上げる壁ジェスチャーと銃の位置・方向には、実際の OpenXR MotionController pose、または SteamVR tracker pose が必要です。Wrist IMU の回転から架空の位置を生成する処理はありません。
+ContactGlove の `/DS/HC/Wrist` には WXYZ の回転のみが含まれ、手の位置は含まれません。手を引き上げる壁ジェスチャーと銃の位置・方向には、OpenXR MotionController pose、Questの光学手追跡、またはSteamVR tracker poseが必要です。Wrist IMU の回転から架空の位置を生成する処理はありません。
 
 `/DS/HC/Hand` の 20 floats は親指→人差し指→中指→薬指→小指の順で、各指は 3 関節の屈曲値と開き値です。`/DS/HC/HandQuat` は 15 関節の回転 WXYZ です。vendor の骨座標のまま格納し、UE の任意の skeleton へそのまま適用できるとは扱いません。DivingStation は信頼度の確率を提供しないため、plugin は受信済み・鮮度・位置トラッキングの有無を別々のフラグで返します。
 

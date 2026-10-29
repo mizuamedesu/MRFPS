@@ -57,7 +57,6 @@ struct FMRFPSFingerPose
         if (!bValid || Finger<0 || Finger>=5) return 0;
         return (float(Joint[Finger*3])+Joint[Finger*3+1]+Joint[Finger*3+2])/(3.f*255.f);
     }
-    float GripCurl() const { return (Curl(2)+Curl(3)+Curl(4))/3.f; }
 };
 
 // Measured shared-world centimetres. Configured/nominal starts are separate.
@@ -227,10 +226,6 @@ public:
     UPROPERTY(Replicated, BlueprintReadOnly) float Health = 100;
     static constexpr int32 MagazineCapacity=30;
     UPROPERTY(Replicated, BlueprintReadOnly) int32 MagazineRounds = MagazineCapacity;
-    UPROPERTY(Replicated, BlueprintReadOnly) bool bGunHeld = false;
-    UPROPERTY(Replicated, BlueprintReadOnly) bool bGunSpawned = false;
-    UPROPERTY(Replicated) FVector_NetQuantize10 GunRestLocation = FVector::ZeroVector;
-    UPROPERTY(Replicated) FRotator GunRestRotation = FRotator::ZeroRotator;
     UPROPERTY(Replicated, BlueprintReadOnly) float ShieldEnergy = 100;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bShieldActive = false;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bCalibrated = false;
@@ -263,8 +258,6 @@ private:
     void SampleLocalPose(float DeltaSeconds);
     void UpdateVisuals();
     void UpdateWeaponFromPose(double Now);
-    void SpawnWeaponAtPose();
-    void DropWeapon();
     void UpdatePlayerHud();
     UFUNCTION() void InvalidateCalibration();
     UFUNCTION() void OnXRSpaceChanged();
@@ -292,8 +285,6 @@ private:
     double IgnoreOriginChangesUntil = -1;
     FMRFPSRiseGesture ServerRise;
     FMRFPSReloadGesture ServerReload;
-    FVector LastGunPosition=FVector::ZeroVector;
-    FRotator LastGunRotation=FRotator::ZeroRotator;
     TSharedPtr<SWidget> PlayerHudSlate;
 };
 
@@ -546,7 +537,10 @@ public:
     void NetworkFailure(UWorld* World, class UNetDriver* Driver, ENetworkFailure::Type Type, const FString& Error);
     void RememberConnectionAttempt(const FString& Address,const FString& Role);
     void ReconnectWithFreshToken();
+    void TickAutoReconnect();
 private:
     FString LastServerAddress;
     FString LastServerRole;
+    bool bReconnectPending=false;
+    double NextReconnectCheck=0;
 };

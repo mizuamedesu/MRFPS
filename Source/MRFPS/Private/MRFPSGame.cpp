@@ -149,8 +149,8 @@ bool FMRFPSRiseGesture::Update(float Z, double Time, bool bTracked)
         if (Z < StartZ + 15) { bLatched = false; StartTime = Time; StartZ = Z; }
         return false;
     }
-    if (Z < StartZ || Time - StartTime > .65) { StartZ = Z; StartTime = Time; }
-    if (Z - StartZ >= 35 && Time - StartTime >= .08 && Speed >= 40) { bLatched = true; return true; }
+    if (Z < StartZ || Time - StartTime > 1.5) { StartZ = Z; StartTime = Time; }
+    if (Z - StartZ >= 30 && Time - StartTime >= .08 && Speed >= 10) { bLatched = true; return true; }
     return false;
 }
 
@@ -286,7 +286,7 @@ AMRFPSPawn::AMRFPSPawn()
     // follows the headset below the user's forward gaze.
     PlayerHud->SetDrawSize(FVector2D(600,120));PlayerHud->SetPivot(FVector2D(.5,.5));
     PlayerHud->SetRelativeScale3D(FVector(.085));
-    PlayerHud->SetRelativeLocation(FVector(85,0,-23));PlayerHud->SetRelativeRotation(FRotator(0,180,0));
+    PlayerHud->SetRelativeLocation(FVector(85,0,-42));PlayerHud->SetRelativeRotation(FRotator(0,180,0));
     PlayerHud->SetCollisionEnabled(ECollisionEnabled::NoCollision);PlayerHud->SetOnlyOwnerSee(true);
     PlayerHud->SetVisibility(false);
 #endif
@@ -332,19 +332,23 @@ bool AMRFPSPawn::CanAct() const
 {
     const auto* GS = GetWorld()->GetGameState<AMRFPSGameState>();
     const auto* PS = GetPlayerState<AMRFPSPlayerState>();
-    return PS && PS->bAuthenticated && PS->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp() && !PS->bInspector && !PS->bAdmin && PS->Slot>=0 && PS->Slot<2 &&
-        GS && GS->Phase==EMRFPSMatchPhase::Playing && !GS->bCombatPaused &&
+    if (!PS || !PS->bAuthenticated || PS->AuthExpiresAt<=FDateTime::UtcNow().ToUnixTimestamp() ||
+        PS->bInspector || PS->bAdmin || PS->Slot<0 || PS->Slot>=2 || !GS || GS->bCombatPaused ||
+        GS->Phase==EMRFPSMatchPhase::Finished || Health<=0 || !Pose.bHeadTracked || !IsPoseFresh()) return false;
+    // Practice actions are available immediately; player damage still requires
+    // the authoritative match and registered shared floor.
+    if (GS->Phase==EMRFPSMatchPhase::Waiting) return !GS->Layout.bCalibrated || IsInsideArena();
+    return GS->Phase==EMRFPSMatchPhase::Playing &&
         ((GS->Layout.bCalibrated && GS->bSharedFloorConfirmed && bStageFloorReferenced && GS->SharedFloorRevision &&
           GS->Layout.RegistrationRevision==GS->SharedFloorRevision) || (GS->bNominalDesktopSession && Pose.bDesktop)) &&
-        bCalibrated && Health>0 && IsInsideArena() && IsPoseFresh();
+        bCalibrated && IsInsideArena();
 }
 void AMRFPSPawn::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME_CONDITION(AMRFPSPawn, Pose, COND_SkipOwner);
     DOREPLIFETIME(AMRFPSPawn, Health); DOREPLIFETIME(AMRFPSPawn, ShieldEnergy); DOREPLIFETIME(AMRFPSPawn, bShieldActive);
-    DOREPLIFETIME(AMRFPSPawn,MagazineRounds);DOREPLIFETIME(AMRFPSPawn,bGunHeld);DOREPLIFETIME(AMRFPSPawn,bGunSpawned);
-    DOREPLIFETIME(AMRFPSPawn,GunRestLocation);DOREPLIFETIME(AMRFPSPawn,GunRestRotation);
+    DOREPLIFETIME(AMRFPSPawn,MagazineRounds);
     DOREPLIFETIME(AMRFPSPawn, bCalibrated); DOREPLIFETIME(AMRFPSPawn, RespawnAt); DOREPLIFETIME(AMRFPSPawn, WallReadyAt);
     DOREPLIFETIME(AMRFPSPawn,bStageFloorReferenced);
     DOREPLIFETIME(AMRFPSPawn, GeometryCalibrationGeneration);
@@ -392,7 +396,7 @@ void AMRFPSPawn::OnXRSpaceChanged()
 void AMRFPSPawn::ServerCalibrate_Implementation(bool bReady,bool FloorReferenced)
 {
     if (auto* Geometry=GetWorld()->GetSubsystem<UMRFPSGeometryWorld>()) Geometry->RemoveOwner(this);
-    DropWeapon();bGunSpawned=false;ServerReload.Reset();
+    ServerReload.Reset();
     // Every reliable request advances the acknowledged epoch, including loss
     // and requests during a finished match. Otherwise an old ack could unlock
     // a newer local transform or leave stale physical geometry after recenter.
@@ -440,7 +444,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     Next.bDesktop = MRFPS::HasDesktopFlag();
     Camera->bLockToHmd=IsXR();
     if (IsXR()) Camera->SetRelativeLocation(FVector::ZeroVector);
-    float IndexCurl = 0; bool bGloveTrigger = false;
+    float IndexCurl = 0, TriggerAnalog = 0; bool bGloveTrigger = false;
     bool bRightPalmPose = false;
     FMRFPSGloveHandFrame GloveFrames[2];
     if (IsXR()) if (auto* Gloves=GetGameInstance()->GetSubsystem<UMRFPSGloveSubsystem>()) {
@@ -467,8 +471,10 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             }
             FXRHandTrackingState H;
             UHeadMountedDisplayFunctionLibrary::GetHandTrackingState(this,EXRSpaceType::UnrealWorldSpace,Side,H);
-            const bool GloveValid=GloveFrames[Side==EControllerHand::Left?0:1].bFlexValid;
-            if (!Tracked && !GloveValid && H.bValid && H.TrackingStatus==ETrackingStatus::Tracked && H.HandKeyLocations.Num()>=26 && H.HandKeyRotations.Num()>=26) {
+            // ContactGlove supplies finger bends, not position. Its presence
+            // must not prevent the independently tracked optical palm from
+            // supplying a hand position when the controller is unavailable.
+            if (MRFPSHandPose::SelectPositionSource(Tracked,H)==MRFPSHandPose::EPositionSource::OpticalHand) {
                 const FTransform EngineToTracking=UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(this).Inverse();
                 if (Side==EControllerHand::Right) {
                     FVector HandPosition; FRotator HandRotation;
@@ -530,9 +536,9 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
                 for (int32 J=0;J<5;++J) Fingers.Splay[J]=uint8(FMath::RoundToInt((FMath::Clamp(G.Splay[J],-1.f,1.f)+1)*127.5f));
             }
             if (I==0 && G.bFlexValid) Next.LeftOpenness = G.IsOpenPalm() ? 1.f : 0.f;
-            if (I==1) { IndexCurl=G.bFlexValid && G.FingerCurls.IsValidIndex(1) ? G.FingerCurls[1] : 0; bGloveTrigger=G.bControllerValid && G.bTriggerPressed; }
-            // Controller poses take precedence. Retain an explicitly calibrated
-            // external tracker as a fallback when a controller is unavailable.
+            if (I==1) { IndexCurl=G.bFlexValid && G.FingerCurls.IsValidIndex(1) ? G.FingerCurls[1] : 0; bGloveTrigger=G.bControllerValid && G.bTriggerPressed; TriggerAnalog=G.bControllerValid ? G.Trigger : 0; }
+            // The controller or optical hand takes precedence. Retain an
+            // explicitly calibrated external tracker as another fallback.
             if (G.bPoseValid && !(I==0?Next.bLeftTracked:Next.bRightTracked)) {
                 const FTransform T=XROrigin->GetComponentTransform();
                 if (I==0) { Next.Left=T.TransformPosition(G.TrackingTransform.GetLocation()); const FQuat Palm=T.TransformRotation(G.TrackingTransform.GetRotation()); Next.LeftRotation=FRotationMatrix::MakeFromXZ(-Palm.GetAxisZ(),Palm.GetAxisX()).Rotator(); Next.bLeftTracked=true; }
@@ -552,13 +558,13 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
         if (Pose.LeftFingers.bValid!=Next.LeftFingers.bValid || Pose.bLeftTracked!=Next.bLeftTracked)
             UE_LOG(LogMRFPS,Display,TEXT("MRFPS_GLOVE_LOCAL hand=left fresh=%d tracked_pose=%d"),Next.LeftFingers.bValid,Next.bLeftTracked);
         if (Pose.RightFingers.bValid!=Next.RightFingers.bValid || Pose.bRightTracked!=Next.bRightTracked)
-            UE_LOG(LogMRFPS,Display,TEXT("MRFPS_GLOVE_LOCAL hand=right fresh=%d tracked_pose=%d"),Next.RightFingers.bValid,Next.bRightTracked);
+            UE_LOG(LogMRFPS,Display,TEXT("MRFPS_GLOVE_LOCAL hand=right fresh=%d tracked_pose=%d source=%s"),Next.RightFingers.bValid,Next.bRightTracked,bRightPalmPose?TEXT("palm"):TEXT("controller_or_none"));
     }
     if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) InvalidateCalibration();
     // A bent right index or vendor trigger fires; hysteresis prevents chatter.
-    if (bRequireFireRelease && !bFiring && !bGloveTrigger && IndexCurl<.35f) bRequireFireRelease=false;
-    if (!bRequireFireRelease && (IndexCurl>.72f || bGloveTrigger)) bFingerTriggerDown=true;
-    if (IndexCurl<.35f && !bGloveTrigger) bFingerTriggerDown=false;
+    if (bRequireFireRelease && !bFiring && !bGloveTrigger && IndexCurl<.30f && TriggerAnalog<.30f) bRequireFireRelease=false;
+    if (!bRequireFireRelease && (IndexCurl>.55f || TriggerAnalog>.55f || bGloveTrigger)) bFingerTriggerDown=true;
+    if (IndexCurl<.30f && TriggerAnalog<.30f && !bGloveTrigger) bFingerTriggerDown=false;
     Next.Sequence = Pose.Sequence + 1;
     // Client pose remains responsive; only the server can change combat state.
     Pose = Next;
@@ -566,7 +572,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     if (PoseAccumulator >= 1.f/30.f) { PoseAccumulator=0; ServerPose(Next); }
     const double Now=GetWorld()->GetTimeSeconds();
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
-    if (!bRequireFireRelease && bGunHeld && CombatState && !CombatState->bCombatPaused && (bFiring || bFingerTriggerDown) && bLocalReady && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
+    if (!bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
 }
 
 void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
@@ -583,7 +589,7 @@ void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
         UE_LOG(LogMRFPS,Display,TEXT("MRFPS_GLOVE_INPUT slot=%d hand=right fresh=%d tracked_pose=%d"),GetSlot(),Next.RightFingers.bValid,Next.bRightTracked);
     Pose=Next; LastPoseReceived=Now;UpdateWeaponFromPose(Now);
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
-    if (CombatState && !CombatState->bCombatPaused && ServerRise.Update(Pose.Left.Z,Now,Pose.bLeftTracked && Pose.bHeadTracked && bCalibrated)) DeployWall();
+    if (CombatState && !CombatState->bCombatPaused && ServerRise.Update(Pose.Left.Z,Now,Pose.bLeftTracked && Pose.bHeadTracked && CanAct())) DeployWall();
     UpdateVisuals();
 }
 FVector AMRFPSPawn::Muzzle() const { return Pose.Right + Pose.RightRotation.Vector()*22; }
@@ -593,8 +599,10 @@ void AMRFPSPawn::DeployWall()
     if (!HasAuthority() || !CanAct() || !Pose.bLeftTracked || Now<WallReadyAt) return;
     const FRotator R(0,Pose.HeadRotation.Yaw,0);
     FVector P=Pose.Left+R.Vector()*85; P.Z=MRFPS::Layout(GetWorld()).Center.Z+100;
-    for (double X:{-8.,8.}) for (double Y:{-80.,80.})
-        if (!MRFPS::Layout(GetWorld()).ContainsPlanar(P+R.RotateVector(FVector(X,Y,0)))) return;
+    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+    if (!GS || GS->Phase!=EMRFPSMatchPhase::Waiting || GS->Layout.bCalibrated)
+        for (double X:{-8.,8.}) for (double Y:{-80.,80.})
+            if (!MRFPS::Layout(GetWorld()).ContainsPlanar(P+R.RotateVector(FVector(X,Y,0)))) return;
     FActorSpawnParameters Params; Params.Owner=this; Params.SpawnCollisionHandlingOverride=ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
     if (auto* Wall=GetWorld()->SpawnActor<AMRFPSBarrier>(P,R,Params)) {
         Wall->OwnerSlot=GetSlot(); WallReadyAt=Now+4;
@@ -604,7 +612,7 @@ void AMRFPSPawn::DeployWall()
 void AMRFPSPawn::ServerFire_Implementation()
 {
     const double Now=GetWorld()->GetTimeSeconds();
-    if (!CanAct() || !bGunHeld || MagazineRounds<=0 || !Pose.bRightTracked || Now-LastServerFire<.15) return;
+    if (!CanAct() || MagazineRounds<=0 || !Pose.bRightTracked || Now-LastServerFire<.15) return;
     LastServerFire=Now; --MagazineRounds;++AcceptedShots;ForceNetUpdate();
     const FVector Start=Muzzle(); const FVector End=Start+Pose.RightRotation.Vector()*2000;
     FCollisionQueryParams Params(SCENE_QUERY_STAT(MRFPSShot),false,this);
@@ -614,18 +622,20 @@ void AMRFPSPawn::ServerFire_Implementation()
         (!bHit || FVector::DistSquared(Start,GeometryHit)<=FVector::DistSquared(Start,Hit.ImpactPoint));
     if (!bGeometryHit) {
         if (auto* Target=Cast<AMRFPSPawn>(Hit.GetActor())) {
-            if (Hit.GetComponent()==Target->MiniShield && Target->bShieldActive) {
+            const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+            if (Hit.GetComponent()==Target->MiniShield && Target->bShieldActive && GS && GS->Phase==EMRFPSMatchPhase::Playing && Target->CanAct()) {
                 Target->ShieldEnergy=FMath::Max(0.f,Target->ShieldEnergy-22.f); Target->LastShieldUse=Now;
                 UE_LOG(LogMRFPS,Display,TEXT("MRFPS_BLOCK shooter=%d target=%d shield=%.1f"),GetSlot(),Target->GetSlot(),Target->ShieldEnergy);
             } else Target->ApplyShot(Hit.GetComponent()==Target->HeadHitbox ? 30.f : 20.f,this,Hit.GetComponent()==Target->HeadHitbox);
         } else if (auto* Wall=Cast<AMRFPSBarrier>(Hit.GetActor())) Wall->ApplyShot(20);
     }
     ClientFeedback(0,0); MulticastShot(Start,bGeometryHit ? GeometryHit : bHit ? Hit.ImpactPoint : End,bHit || bGeometryHit);
-    UE_LOG(LogMRFPS,Verbose,TEXT("MRFPS_SHOT slot=%d count=%d"),GetSlot(),AcceptedShots);
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SHOT slot=%d count=%d"),GetSlot(),AcceptedShots);
 }
 void AMRFPSPawn::ApplyShot(float Damage, AMRFPSPawn* Shooter, bool bHeadshot)
 {
-    if (!HasAuthority() || !CanAct() || !Shooter || !Shooter->CanAct() || Shooter==this || !FMath::IsFinite(Damage) || Damage<=0) return;
+    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+    if (!HasAuthority() || !GS || GS->Phase!=EMRFPSMatchPhase::Playing || !CanAct() || !Shooter || !Shooter->CanAct() || Shooter==this || !FMath::IsFinite(Damage) || Damage<=0) return;
     Health=FMath::Max(0.f,Health-Damage); ClientFeedback(Health<=0 ? 2 : 1,Damage);
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_DAMAGE target=%d shooter=%d health=%.1f headshot=%d"),GetSlot(),Shooter->GetSlot(),Health,bHeadshot);
     if (Health<=0) {
@@ -950,6 +960,7 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
 void AMRFPSPlayerController::PlayerTick(float Dt)
 {
     Super::PlayerTick(Dt); if (!IsLocalController()) return;
+    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->TickAutoReconnect();
     if (bAdminWallPlacement && !IsAdmin()) SetAdminWallPlacement(false);
     TickAdminPreview();
     TickQuestVideo();
@@ -1049,7 +1060,7 @@ void AMRFPSHUD::DrawHUD()
     }
     if (!Inspector) if (const auto* P=PC->GetPawn<AMRFPSPawn>();P && !P->IsXR()) {
         const float W=FMath::Min(440.f,FMath::Max(120.f,float(Canvas->SizeX)-32.f));
-        const float X=(Canvas->SizeX-W)*.5f,Y=FMath::Max(16.f,FMath::Min(Canvas->SizeY*.72f,float(Canvas->SizeY)-92.f));
+        const float X=(Canvas->SizeX-W)*.5f,Y=FMath::Max(16.f,FMath::Min(Canvas->SizeY*.82f,float(Canvas->SizeY)-86.f));
         const FLinearColor Edge(.19f,.82f,1.f,.88f);
         DrawRect(FLinearColor(.008f,.025f,.045f,.78f),X,Y,W,76);
         DrawLine(X+3,Y+14,X+14,Y+3,Edge,1.5f);DrawLine(X+14,Y+3,X+W-14,Y+3,Edge,1.5f);
@@ -1268,7 +1279,7 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(9);
+    FNetworkVersion::SetGameNetworkProtocolVersion(11);
     Super::Init();
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
     // This CVar is marked Cheat in UE 5.8, so setting it in Engine.ini causes
@@ -1302,12 +1313,28 @@ void UMRFPSGameInstance::NetworkFailure(UWorld* World,UNetDriver* Driver,ENetwor
     UE_LOG(LogMRFPS,Error,TEXT("MRFPS_NETWORK_FAILURE %s"),*Error);
     if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) {
         PC->HandleSessionDisconnected();
+        bReconnectPending=!LastServerAddress.IsEmpty() && !LastServerRole.IsEmpty();
+        NextReconnectCheck=0;
         PC->ConnectionError=TEXT("接続が切れました。新しい認証情報で再接続してください");
     }
 }
 void UMRFPSGameInstance::RememberConnectionAttempt(const FString& Address,const FString& Role)
 {
     LastServerAddress=Address; LastServerRole=Role;
+    bReconnectPending=false;
+}
+void UMRFPSGameInstance::TickAutoReconnect()
+{
+    if (!bReconnectPending || FPlatformTime::Seconds()<NextReconnectCheck) return;
+    NextReconnectCheck=FPlatformTime::Seconds()+2.0;
+    auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController());
+    if (!PC || PC->GetNetMode()!=NM_Standalone) return;
+    auto* Credentials=GetSubsystem<UMRFPSAuthClientSubsystem>(); FString Error;
+    if (!Credentials || !Credentials->ReloadTokenFile(Error) || !Credentials->ValidateForNewConnection(LastServerRole,Error)) return;
+    bReconnectPending=false;
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_RECONNECT_FRESH_TOKEN"));
+    if (LastServerRole==TEXT("admin")) PC->MRFPSConnectAdmin(LastServerAddress);
+    else PC->MRFPSConnect(LastServerAddress,LastServerRole==TEXT("inspector"));
 }
 void UMRFPSGameInstance::ReconnectWithFreshToken()
 {
@@ -1347,7 +1374,7 @@ void AMRFPSPawn::Respawn()
         ClientNominalDesktopStart(ArenaLayout.NominalStart(GetSlot()),ArenaLayout.StartRotation(GetSlot()));
     }
     Health=100; ShieldEnergy=100; bShieldExhausted=false; RespawnAt=0;MagazineRounds=MagazineCapacity;
-    bGunHeld=false;bGunSpawned=false;ServerReload.Reset();LastReloadAt=-100;
+    ServerReload.Reset();LastReloadAt=-100;
     ClientFeedback(3,0); ForceNetUpdate();
 }
 void AMRFPSPawn::ClientFeedback_Implementation(uint8 Kind, float Damage)
@@ -1396,13 +1423,13 @@ void AMRFPSPawn::UpdateVisuals()
         LeftVisual->SetWorldLocationAndRotation(FVector(Pose.Left)-LeftQ.GetAxisZ()*8,FRotationMatrix::MakeFromXZ(LeftQ.GetAxisZ(),-LeftQ.GetAxisX()).Rotator());
     } else LeftVisual->SetWorldLocation(Pose.Left);
     const bool CustomGun=GunVisual->GetStaticMesh() && GunVisual->GetStaticMesh()->GetName()==TEXT("SM_MRPistol");
-    const FVector GunPosition=bGunHeld ? FVector(Pose.Right) : FVector(GunRestLocation);
-    const FRotator GunRotation=bGunHeld ? Pose.RightRotation : GunRestRotation;
+    const FVector GunPosition=Pose.Right;
+    const FRotator GunRotation=Pose.RightRotation;
     GunVisual->SetWorldLocationAndRotation(GunPosition+GunRotation.Vector()*(CustomGun ? 0 : 8),GunRotation);
     const bool ShowAvatar=MRFPS::ViewerShowsAvatars(GetWorld());
     const bool Manny=Avatar && Avatar->IsAvatarReady();
     HeadVisual->SetVisibility(ShowAvatar && !Manny && Alive && Pose.bHeadTracked); BodyVisual->SetVisibility(ShowAvatar && !Manny && Alive && Pose.bHeadTracked);
-    LeftVisual->SetVisibility(ShowAvatar && !Manny && Alive && Pose.bLeftTracked); GunVisual->SetVisibility(Alive && bGunSpawned && (!bGunHeld || Pose.bRightTracked));
+    LeftVisual->SetVisibility(ShowAvatar && !Manny && Alive && Pose.bLeftTracked); GunVisual->SetVisibility(Alive && Pose.bRightTracked);
     ShieldVisual->SetVisibility(Alive && bShieldActive);
     Label->SetWorldLocation(FVector(Pose.Head)+FVector(0,0,35));
     Label->SetText(FText::FromString(FString::Printf(TEXT("P%d"),GetSlot()+1)));
@@ -1415,10 +1442,11 @@ void AMRFPSPawn::Tick(float Dt)
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
     if (HasAuthority() && (!CombatState || !CombatState->bCombatPaused)) {
         const double Now=GetWorld()->GetTimeSeconds();
-        if (bGunHeld && !Pose.bDesktop && !IsPoseFresh()) DropWeapon();
         if (Pose.LeftOpenness<.5 || !Pose.bLeftTracked) bShieldExhausted=false;
         if (ShieldEnergy<=0) bShieldExhausted=true;
+        const bool PreviousShield=bShieldActive;
         bShieldActive=CanAct() && Pose.bLeftTracked && Pose.LeftOpenness>.8 && !bShieldExhausted && ShieldEnergy>0;
+        if (bShieldActive!=PreviousShield) UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SHIELD slot=%d active=%d"),GetSlot(),bShieldActive);
         if (bShieldActive) { ShieldEnergy=FMath::Max(0.f,ShieldEnergy-18*Dt); LastShieldUse=Now; }
         else if (Now-LastShieldUse>1.0) ShieldEnergy=FMath::Min(100.f,ShieldEnergy+14*Dt);
         if (Health<=0 && Now>=RespawnAt) if (auto* GS=GetWorld()->GetGameState<AMRFPSGameState>(); GS && GS->Phase==EMRFPSMatchPhase::Playing) Respawn();

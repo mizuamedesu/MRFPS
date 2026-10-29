@@ -65,61 +65,15 @@ bool FMRFPSReloadGesture::Update(const FVector& Hand,double Time,bool bEligible)
     return false;
 }
 
-void AMRFPSPawn::SpawnWeaponAtPose()
-{
-    if (!HasAuthority() || !Pose.bHeadTracked || !bCalibrated) return;
-    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
-    const FMRFPSArenaLayout Layout=GS ? GS->Layout : FMRFPSArenaLayout();
-    const FRotator Forward(0,Pose.HeadRotation.Yaw,0);
-    FVector Spawn=FVector(Pose.Head)+Forward.Vector()*55+FVector(0,0,-38);
-    FVector Local=Layout.ToLocal(Spawn);
-    Local.X=FMath::Clamp(Local.X,-double(Layout.WidthCm)*.5+10,double(Layout.WidthCm)*.5-10);
-    Local.Y=FMath::Clamp(Local.Y,-double(Layout.LengthCm)*.5+10,double(Layout.LengthCm)*.5-10);
-    Spawn=Layout.ToWorld(Local);
-    Spawn.Z=FMath::Clamp(Spawn.Z,Layout.Center.Z+50,Layout.Center.Z+220);
-    GunRestLocation=Spawn;GunRestRotation=Forward;bGunSpawned=true;
-    // The desktop test/player has no hand-grip sensor; it starts equipped.
-    bGunHeld=Pose.bDesktop;
-    LastGunPosition=Pose.bRightTracked ? FVector(Pose.Right) : Spawn;
-    LastGunRotation=Pose.bRightTracked ? Pose.RightRotation : Forward;
-    ServerReload.Reset();ForceNetUpdate();
-    UE_LOG(LogMRFPSWeapon,Display,TEXT("MRFPS_GUN_SPAWN slot=%d"),GetSlot());
-}
-
-void AMRFPSPawn::DropWeapon()
-{
-    if (!HasAuthority() || !bGunHeld) return;
-    GunRestLocation=LastGunPosition;GunRestRotation=LastGunRotation;bGunHeld=false;
-    ServerReload.Reset();ForceNetUpdate();
-    UE_LOG(LogMRFPSWeapon,Display,TEXT("MRFPS_GUN_RELEASE slot=%d"),GetSlot());
-}
-
 void AMRFPSPawn::UpdateWeaponFromPose(double Now)
 {
     if (!HasAuthority()) return;
-    const auto* PS=GetPlayerState<AMRFPSPlayerState>();
-    const bool Player=PS && PS->bAuthenticated && PS->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp() &&
-        !PS->bInspector && !PS->bAdmin && PS->Slot>=0 && PS->Slot<2;
-    if (!Player || !bCalibrated || Health<=0 || !Pose.bHeadTracked || !IsInsideArena() || !IsPoseFresh()) {
-        DropWeapon();ServerReload.Reset();return;
-    }
-    if (!bGunSpawned) SpawnWeaponAtPose();
-    if (!bGunSpawned) return;
-    if (Pose.bDesktop) {
-        if (Pose.bRightTracked) { LastGunPosition=Pose.Right;LastGunRotation=Pose.RightRotation; }
+    if (!CanAct()) {
         ServerReload.Reset();return;
     }
-    const bool RightValid=Pose.bRightTracked && Pose.RightFingers.bValid;
-    const float Grip=Pose.RightFingers.GripCurl();
-    if (bGunHeld) {
-        if (!RightValid || Grip<.35f) DropWeapon();
-        else { LastGunPosition=Pose.Right;LastGunRotation=Pose.RightRotation; }
-    } else if (RightValid && Grip>.60f && FVector::DistSquared(Pose.Right,GunRestLocation)<=FMath::Square(20.)) {
-        bGunHeld=true;LastGunPosition=Pose.Right;LastGunRotation=Pose.RightRotation;ForceNetUpdate();
-        UE_LOG(LogMRFPSWeapon,Display,TEXT("MRFPS_GUN_GRAB slot=%d"),GetSlot());
-    }
+    if (Pose.bDesktop) { ServerReload.Reset();return; }
     const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
-    const bool Eligible=bGunHeld && RightValid && Pose.bLeftTracked && Pose.LeftFingers.bValid &&
+    const bool Eligible=Pose.bRightTracked && Pose.bLeftTracked && Pose.LeftFingers.bValid &&
         GS && !GS->bCombatPaused && GS->Phase!=EMRFPSMatchPhase::Finished && MagazineRounds<MagazineCapacity;
     const FVector Relative=Pose.RightRotation.UnrotateVector(FVector(Pose.Left)-FVector(Pose.Right));
     if (ServerReload.Update(Relative,Now,Eligible) && Now-LastReloadAt>=.5) {
@@ -132,7 +86,7 @@ void AMRFPSPawn::DesktopReload() { if (!IsXR()) ServerDesktopReload(); }
 void AMRFPSPawn::ServerDesktopReload_Implementation()
 {
     const double Now=GetWorld()->GetTimeSeconds();
-    if (!HasAuthority() || !Pose.bDesktop || !CanAct() || !bGunHeld || Now-LastReloadAt<.5) return;
+    if (!HasAuthority() || !Pose.bDesktop || !CanAct() || Now-LastReloadAt<.5) return;
     MagazineRounds=MagazineCapacity;LastReloadAt=Now;ForceNetUpdate();
 }
 
@@ -147,6 +101,14 @@ void AMRFPSPawn::UpdatePlayerHud()
     const auto Font=[](int32 Size) { return FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size); };
     PlayerHudSlate=SNew(SOverlay)
         +SOverlay::Slot()[ SNew(SMRFPSPlayerHudFrame).Pawn(Weak) ]
+        +SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(FMargin(0,2,0,0))
+        [ SNew(STextBlock).Font(Font(15)).ColorAndOpacity(FSlateColor(FLinearColor(1.f,.68f,.2f)))
+          .Text_Lambda([Weak]() {
+              if (!Weak.IsValid()) return FText::GetEmpty();
+              const auto* PS=Weak->GetPlayerState<AMRFPSPlayerState>();
+              return Weak->GetNetMode()==NM_Client && PS && PS->bAuthenticated
+                  ? FText::GetEmpty() : FText::FromString(TEXT("接続待ち"));
+          }) ]
         +SOverlay::Slot().Padding(FMargin(22,22,22,25))
         [ SNew(SHorizontalBox)
           +SHorizontalBox::Slot().FillWidth(.48f).VAlign(VAlign_Center)
