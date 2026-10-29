@@ -47,6 +47,9 @@ class WindowStateAPI:
         u.SetForegroundWindow.argtypes = [wintypes.HWND]; u.SetForegroundWindow.restype = wintypes.BOOL
         u.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
         u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        self.imm = ctypes.WinDLL("imm32", use_last_error=True)
+        self.imm.ImmGetDefaultIMEWnd.argtypes = [wintypes.HWND]
+        self.imm.ImmGetDefaultIMEWnd.restype = wintypes.HWND
 
     @contextmanager
     def dpi(self):
@@ -106,6 +109,52 @@ class WindowStateAPI:
         if not completed and not found:
             raise RuntimeError("cannot inspect owned windows")
         return bool(found)
+
+    def rect_owned_snapshot(self, identity: dict) -> dict:
+        """Read the exact owner chain, including hidden windows; do not move it."""
+        self.validate(identity)
+        hwnd = identity["target"]["hwnd"]
+        default_ime = int(self.imm.ImmGetDefaultIMEWnd(hwnd) or 0)
+        found, errors = [], []
+
+        @self.identity_api.callback_type
+        def visit(candidate, _):
+            try:
+                candidate = int(candidate)
+                if candidate == hwnd:
+                    return True
+                current, chain, seen = candidate, [], set()
+                while current:
+                    if current in seen or len(seen) >= 64:
+                        raise RuntimeError("invalid window ownership chain")
+                    seen.add(current)
+                    current = int(self.user.GetWindow(current, 4) or 0)  # GW_OWNER
+                    if current:
+                        chain.append(current)
+                    if current == hwnd:
+                        break
+                if not chain or chain[-1] != hwnd:
+                    return True
+                pid = wintypes.DWORD()
+                thread = int(self.user.GetWindowThreadProcessId(candidate, ctypes.byref(pid)))
+                class_name = ctypes.create_unicode_buffer(256)
+                if (not self.user.IsWindow(candidate) or not thread or not pid.value or
+                        not self.user.GetClassNameW(candidate, class_name, len(class_name))):
+                    raise RuntimeError("owned window changed during inspection")
+                found.append((candidate, tuple(chain), pid.value, thread, class_name.value,
+                              bool(self.user.IsWindowVisible(candidate))))
+                if not self.user.IsWindow(candidate):
+                    raise RuntimeError("owned window disappeared during inspection")
+                return True
+            except Exception as error:
+                errors.append(error)
+                return False
+
+        completed = self.user.EnumWindows(visit, 0)
+        if errors or not completed:
+            raise RuntimeError("cannot inspect owned windows")
+        self.validate(identity)
+        return {"default_ime": default_ime, "windows": tuple(sorted(found))}
 
     def dispatch(self, hwnd: int, desired: dict) -> None:
         if "rect" in desired:
@@ -209,6 +258,30 @@ def result_matches(before: dict, current: dict, desired: dict) -> bool:
             current["minimized"] == before["minimized"] and current["maximized"] == before["maximized"])
 
 
+def rect_owned_windows_safe(snapshot: dict, identity: dict) -> bool:
+    """Only the actual default IME and its hidden TSF child may accompany a move."""
+    windows = snapshot["windows"]
+    if not windows:
+        return True
+    hwnd = identity["target"]["hwnd"]
+    pid = identity["process"]["pid"]
+    thread = identity["target"]["thread"]
+    ime = snapshot["default_ime"]
+    if not ime or ime == hwnd:
+        return False
+    root_found = False
+    for child, chain, owner_pid, owner_thread, class_name, visible in windows:
+        if visible or owner_pid != pid or owner_thread != thread:
+            return False
+        if child == ime and chain == (hwnd,) and class_name == "IME":
+            root_found = True
+        elif chain == (ime, hwnd) and class_name == "MSCTFIME UI":
+            pass
+        else:
+            return False
+    return root_found
+
+
 def ensure(root: Path, identity_id: str, snapshot_id: str, operation_id: str, desired: dict,
            api: WindowStateAPI, *, now=time.monotonic, sleep=time.sleep) -> dict:
     identity_id = capture.valid_id(identity_id)
@@ -258,29 +331,38 @@ def ensure(root: Path, identity_id: str, snapshot_id: str, operation_id: str, de
                     receipt.update(status="error", code="restore_before_foreground")
                 elif "minimized" in desired and desired["minimized"] and before["foreground"]:
                     receipt.update(status="error", code="minimize_foreground_unsupported")
-                elif api.has_owned_window(hwnd):
-                    receipt.update(status="error", code="owned_windows_prevent_operation")
                 else:
-                    if api.read(identity) != before:
-                        raise RuntimeError("window state changed before dispatch")
-                    if api.has_owned_window(hwnd):
-                        raise RuntimeError("owned windows changed before dispatch")
-                    api.validate(identity)
-                    api.dispatch(hwnd, desired)
-                    deadline = now() + SETTLE_TIMEOUT
-                    while True:
-                        current = api.read(identity)
-                        if api.has_owned_window(hwnd):
-                            raise RuntimeError("owned windows changed during operation")
-                        if result_matches(before, current, desired):
-                            api.validate(identity)
-                            receipt.update(status="ok", code="applied", state=current)
-                            break
-                        if current["foreground"] != before["foreground"] and "foreground" not in desired:
-                            raise RuntimeError("foreground changed during operation")
-                        if current["move_size"] or now() >= deadline:
-                            raise RuntimeError("window state did not settle")
-                        sleep(0.05)
+                    # SetWindowPos does not hide/show owned windows. Permit only
+                    # the target thread's verified, hidden default IME chain for
+                    # rect operations, and compare that entire chain repeatedly.
+                    rect_operation = "rect" in desired
+                    ownership = api.rect_owned_snapshot(identity) if rect_operation else api.has_owned_window(hwnd)
+                    blocked = (not rect_owned_windows_safe(ownership, identity)) if rect_operation else ownership
+                    if blocked:
+                        receipt.update(status="error", code="owned_windows_prevent_operation")
+                    else:
+                        if api.read(identity) != before:
+                            raise RuntimeError("window state changed before dispatch")
+                        current_ownership = api.rect_owned_snapshot(identity) if rect_operation else api.has_owned_window(hwnd)
+                        if current_ownership != ownership:
+                            raise RuntimeError("owned windows changed before dispatch")
+                        api.validate(identity)
+                        api.dispatch(hwnd, desired)
+                        deadline = now() + SETTLE_TIMEOUT
+                        while True:
+                            current = api.read(identity)
+                            current_ownership = api.rect_owned_snapshot(identity) if rect_operation else api.has_owned_window(hwnd)
+                            if current_ownership != ownership:
+                                raise RuntimeError("owned windows changed during operation")
+                            if result_matches(before, current, desired):
+                                api.validate(identity)
+                                receipt.update(status="ok", code="applied", state=current)
+                                break
+                            if current["foreground"] != before["foreground"] and "foreground" not in desired:
+                                raise RuntimeError("foreground changed during operation")
+                            if current["move_size"] or now() >= deadline:
+                                raise RuntimeError("window state did not settle")
+                            sleep(0.05)
         except Exception:
             # The operation may have been posted despite a lost response or
             # interruption. Never repeat this UUID automatically.

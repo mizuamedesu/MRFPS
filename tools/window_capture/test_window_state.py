@@ -1,4 +1,6 @@
 from contextlib import nullcontext
+import ctypes
+from ctypes import wintypes
 from copy import deepcopy
 from pathlib import Path
 import tempfile
@@ -24,6 +26,7 @@ class FakeStateAPI:
         self.reads = 0
         self.before_read = None
         self.owned = False
+        self.rect_ownership = {"default_ime": 0, "windows": ()}
         self.fail_validation = False
         self.apply = True
         self.throw_after_dispatch = False
@@ -45,7 +48,13 @@ class FakeStateAPI:
         return result
 
     def has_owned_window(self, hwnd):
-        return self.owned
+        return self.owned or bool(self.rect_ownership["windows"])
+
+    def rect_owned_snapshot(self, identity):
+        self.validate(identity)
+        if self.owned:
+            return {"default_ime": 0, "windows": ((200, (102,), 42, 7, "Other", False),)}
+        return deepcopy(self.rect_ownership)
 
     def dispatch(self, hwnd, desired):
         self.actions.append((hwnd, deepcopy(desired)))
@@ -176,6 +185,119 @@ class WindowStateTests(unittest.TestCase):
             with self.subTest(desired=desired):
                 self.assertEqual(self.execute(snapshot_id, desired)["code"], "owned_windows_prevent_operation")
         self.assertFalse(self.api.actions)
+
+    def ime_ownership(self):
+        return {"default_ime": 201, "windows": (
+            (201, (102,), 42, 7, "IME", False),
+            (202, (201, 102), 42, 7, "MSCTFIME UI", False),
+        )}
+
+    def test_rectangle_allows_verified_hidden_default_ime_only(self):
+        self.api.rect_ownership = self.ime_ownership()
+        snapshot_id, _ = self.inspect()
+        op = uid()
+        desired = {"rect": {"x": 18, "y": 20, "width": 800, "height": 600}}
+        result = self.execute(snapshot_id, desired, op)
+        self.assertEqual((result["status"], result["code"]), ("ok", "applied"))
+        self.assertEqual(self.api.actions, [(102, desired)])
+        self.assertEqual(self.execute(snapshot_id, desired, op), result)
+        self.assertEqual(len(self.api.actions), 1)
+
+    def test_ime_does_not_exempt_show_or_foreground_operations(self):
+        self.api.rect_ownership = self.ime_ownership()
+        for desired in ({"minimized": True}, {"foreground": True}):
+            snapshot_id, _ = self.inspect()
+            with self.subTest(desired=desired):
+                self.assertEqual(self.execute(snapshot_id, desired)["code"], "owned_windows_prevent_operation")
+        self.api.state["maximized"] = True
+        snapshot_id, _ = self.inspect()
+        self.assertEqual(self.execute(snapshot_id, {"normal": True})["code"], "owned_windows_prevent_operation")
+        self.assertFalse(self.api.actions)
+
+    def test_visible_foreign_or_non_ime_owned_windows_block_rectangle(self):
+        root = (201, (102,), 42, 7, "IME", False)
+        child = (202, (201, 102), 42, 7, "MSCTFIME UI", False)
+        cases = {
+            "missing default": {"default_ime": 0, "windows": (root, child)},
+            "other default": {"default_ime": 203, "windows": (root, child)},
+            "root visible": {"default_ime": 201, "windows": ((201, (102,), 42, 7, "IME", True), child)},
+            "candidate visible": {"default_ime": 201, "windows": (root, (202, (201, 102), 42, 7, "MSCTFIME UI", True))},
+            "foreign process": {"default_ime": 201, "windows": (root, (202, (201, 102), 43, 7, "MSCTFIME UI", False))},
+            "foreign thread": {"default_ime": 201, "windows": (root, (202, (201, 102), 42, 8, "MSCTFIME UI", False))},
+            "foreign root process": {"default_ime": 201, "windows": ((201, (102,), 43, 7, "IME", False), child)},
+            "foreign root thread": {"default_ime": 201, "windows": ((201, (102,), 42, 8, "IME", False), child)},
+            "wrong root class": {"default_ime": 201, "windows": ((201, (102,), 42, 7, "Other", False), child)},
+            "wrong child class": {"default_ime": 201, "windows": (root, (202, (201, 102), 42, 7, "Other", False))},
+            "missing root": {"default_ime": 201, "windows": (child,)},
+            "extra dialog": {"default_ime": 201, "windows": (root, child, (203, (102,), 42, 7, "UnrealWindow", False))},
+            "wrong chain": {"default_ime": 201, "windows": (root, (202, (203, 201, 102), 42, 7, "MSCTFIME UI", False))},
+        }
+        desired = {"rect": {"x": 18, "y": 20, "width": 800, "height": 600}}
+        for name, ownership in cases.items():
+            with self.subTest(name=name):
+                self.api.rect_ownership = ownership
+                snapshot_id, _ = self.inspect()
+                self.assertEqual(self.execute(snapshot_id, desired)["code"], "owned_windows_prevent_operation")
+        self.assertFalse(self.api.actions)
+
+    def test_ime_change_before_dispatch_is_unknown_without_action(self):
+        self.api.rect_ownership = self.ime_ownership()
+        snapshot_id, _ = self.inspect()
+        reads = self.api.reads
+        def change(n):
+            if n == reads + 2:
+                self.api.rect_ownership = {"default_ime": 201, "windows": (
+                    (201, (102,), 42, 7, "IME", False),
+                    (202, (201, 102), 42, 7, "MSCTFIME UI", True),
+                )}
+        self.api.before_read = change
+        desired = {"rect": {"x": 18, "y": 20, "width": 800, "height": 600}}
+        self.assertEqual(self.execute(snapshot_id, desired)["status"], "unknown")
+        self.assertFalse(self.api.actions)
+
+    def test_ime_visibility_change_during_rect_is_unknown_and_not_repeated(self):
+        self.api.rect_ownership = self.ime_ownership()
+        snapshot_id, _ = self.inspect()
+        reads = self.api.reads
+        def change(n):
+            if n == reads + 3:
+                self.api.rect_ownership = {"default_ime": 201, "windows": (
+                    (201, (102,), 42, 7, "IME", False),
+                    (202, (201, 102), 42, 7, "MSCTFIME UI", True),
+                )}
+        self.api.before_read = change
+        op = uid(); desired = {"rect": {"x": 18, "y": 20, "width": 800, "height": 600}}
+        result = self.execute(snapshot_id, desired, op)
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(self.execute(snapshot_id, desired, op), result)
+        self.assertEqual(len(self.api.actions), 1)
+
+    def test_rect_owned_snapshot_enumerates_exact_target_ownership(self):
+        class User:
+            owners = {201: 102, 202: 201, 203: 999}
+            classes = {201: "IME", 202: "MSCTFIME UI", 203: "Other"}
+            def GetWindow(self, hwnd, command):
+                assert command == 4
+                return self.owners.get(hwnd)
+            def EnumWindows(self, callback, _):
+                return all(callback(hwnd, 0) for hwnd in (201, 202, 203))
+            def GetWindowThreadProcessId(self, hwnd, pointer):
+                ctypes.cast(pointer, ctypes.POINTER(wintypes.DWORD))[0] = 42
+                return 7
+            def IsWindow(self, hwnd): return True
+            def GetClassNameW(self, hwnd, output, size):
+                output.value = self.classes[hwnd]
+                return len(output.value)
+            def IsWindowVisible(self, hwnd): return False
+        class Imm:
+            def ImmGetDefaultIMEWnd(self, hwnd): return 201
+        api = window_state.WindowStateAPI.__new__(window_state.WindowStateAPI)
+        api.user, api.imm = User(), Imm()
+        api.identity_api = mock.Mock(callback_type=lambda func: func)
+        actual = api.rect_owned_snapshot(self.identity)
+        self.assertEqual(actual, self.ime_ownership())
+        self.assertTrue(window_state.rect_owned_windows_safe(actual, self.identity))
+        self.assertEqual(api.identity_api.validate.call_count, 2)
 
     def test_owned_window_appearing_after_dispatch_marks_unknown(self):
         snapshot_id, _ = self.inspect()

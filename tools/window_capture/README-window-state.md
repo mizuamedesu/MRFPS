@@ -44,7 +44,7 @@ $operationId = [guid]::NewGuid().ToString()
 & $python .\tools\window_capture\window_state.py ensure --identity-id $identityId --snapshot-id $snapshotId --operation-id $operationId --foreground true
 ```
 
-`--foreground false` は対象が既に前面でなければ成功します。前面にある対象を他アプリへ切り替えずに確実に前面解除する方法はないため、`foreground_release_unsupported` を返して操作しません。これは観戦画面内の Esc や既存 `focus.set` のマウスカーソル解放とは別の状態です。対象が owner となるウィンドウがある場合は、OS による他ウィンドウの連動を避けるため状態変更を拒否します。
+`--foreground false` は対象が既に前面でなければ成功します。前面にある対象を他アプリへ切り替えずに確実に前面解除する方法はないため、`foreground_release_unsupported` を返して操作しません。これは観戦画面内の Esc や既存 `focus.set` のマウスカーソル解放とは別の状態です。対象が owner となるウィンドウがある場合は、OS による他ウィンドウの連動を避けるため状態変更を拒否します。ただし位置・サイズ変更だけは、対象の ImmGetDefaultIMEWnd で確認した不可視の既定 IME と、その同じプロセス・同じスレッドの不可視 MSCTFIME UI 所有窓だけがある場合に許可します。表示中の IME 候補や他の所有窓がある場合は拒否し、操作中に所有関係や表示状態が変われば unknown とします。最小化・復元・前面化には例外を適用しません。
 
 `ok` は要求した状態を観測した結果、`already_applied` は変更不要を意味します。OS の非同期処理は受付だけでは完了としません。対象が変わった場合、タイムアウト、応答喪失、途中中断や競合時は `unknown` です。同じ操作 ID と同じ内容の再実行は元の結果を返し、操作を再送しません。別内容に同じ ID を使うと拒否します。`unknown` の後は保留中の Windows メッセージが後から適用され得るため、自動で新 ID を作って再試行しないでください。対象と OS 状態を確認してから、必要な次の操作を判断してください。共有ロックが取得できない場合は呼び出し自体を開始せずエラーを返します。
 
