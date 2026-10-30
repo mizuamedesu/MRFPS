@@ -15,6 +15,7 @@ public:
     double BeginCaptureConsentPause(double Seconds);
     double BeginCaptureConsentPauseUntil(double Deadline);
     void EndCaptureConsentPause();
+    bool IsCaptureConsentPaused(double Now) const { return CaptureConsentLease.IsActive(Now); }
 private:
     MRFPSConsent::FPauseLease CaptureConsentLease;
 };

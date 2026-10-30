@@ -33,6 +33,9 @@ public:
     UFUNCTION(BlueprintPure, Category="MRFPS|Headset View")
     bool IsCapturing() const;
 
+    /** Game-thread local session/intent state; this does not assert live frames or OS cleanup. */
+    bool HasCaptureSession() const { return CaptureSession != 0; }
+
     /** True while Android still has an unresolved OS consent request. Never grants consent. */
     bool IsCaptureRequestPending() const;
 

@@ -12,6 +12,7 @@
 #include "Engine/GameInstance.h"
 #include "MRFPSAuthVerifier.h"
 #include "MRFPSVideoProtocol.h"
+#include "MRFPSVideoControlPolicy.h"
 #include "MRFPSGeometryProtocol.h"
 #include "MRFPSArenaLayout.h"
 #include "MRFPSBuild.h"
@@ -37,6 +38,7 @@ class UMRFPSLoginMenu;
 class UTexture2D;
 class UMRFPSAdminPanel;
 class UMRFPSAvatarComponent;
+class UMRFPSViewCaptureSubsystem;
 class SWindow;
 class SWidget;
 
@@ -426,6 +428,8 @@ private:
     bool DesktopAutomationAllowed() const;
     void ClearAutomationInput();
     void TickAutomationInput(float DeltaSeconds);
+    MRFPSVideoControl::FState CaptureControlState(const UMRFPSViewCaptureSubsystem* Capture, double Now, bool ReadLive) const;
+    bool StopVideoSharing(UMRFPSViewCaptureSubsystem* Capture, double Now);
     TWeakPtr<SWindow> PlayerVideoWindows[2];
     TWeakPtr<SWindow> InspectorViewWindow;
     UPROPERTY(Transient) TObjectPtr<USceneCaptureComponent2D> InspectorWindowCamera;

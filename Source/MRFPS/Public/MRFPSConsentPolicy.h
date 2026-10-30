@@ -50,6 +50,13 @@ private:
 };
 
 enum class EPhase : std::uint8_t { Idle, AwaitingGrant, AwaitingConsent, AwaitingResumeAck };
+struct FStopPlan
+{
+    std::uint32_t Request = 0;
+    bool SendFinish = false;
+    bool EndLocalPause = false;
+    bool WaitForAck = false;
+};
 class FClientFlow
 {
 public:
@@ -78,6 +85,21 @@ public:
     {
         if (Phase!=EPhase::AwaitingResumeAck || Id!=Request || !std::isfinite(Now) || Now<RequestAt || Now>=Deadline) return false;
         Abort(); return true;
+    }
+    // Stop never opens or dismisses OS consent. A granted lease remains active
+    // locally until a real resume ACK, unless the bounded deadline has expired.
+    FStopPlan Stop(double Now, bool LocalPauseActive)
+    {
+        FStopPlan Plan; Plan.Request=Request;
+        if (Phase==EPhase::Idle) {
+            Plan.SendFinish=LocalPauseActive && Request!=0;
+            Plan.EndLocalPause=true;
+            return Plan;
+        }
+        Plan.SendFinish=Request!=0;
+        if (Phase==EPhase::AwaitingConsent && Finish(Now)) { Plan.WaitForAck=true; return Plan; }
+        if (Phase==EPhase::AwaitingResumeAck && !IsExpired(Now)) { Plan.WaitForAck=true; return Plan; }
+        Abort(); Plan.EndLocalPause=true; return Plan;
     }
     void Abort() { Phase=EPhase::Idle; Deadline=HardDeadline=RequestAt=0; }
     bool IsExpired(double Now) const { return Phase!=EPhase::Idle && (!std::isfinite(Now) || Now<RequestAt || Now>=Deadline); }

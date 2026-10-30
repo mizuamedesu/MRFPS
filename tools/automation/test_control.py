@@ -44,6 +44,23 @@ class ControlQueueTests(unittest.TestCase):
                 self.assertEqual(archive_local_locked(directory,10)['archived'],1)
             self.assertEqual(submit(directory,request),directory/'archive'/operation_id/'result.json')
 
+    def test_capture_stop_replay_preserves_submitted_receipt_and_rejects_enable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=pathlib.Path(temporary); operation_id=str(uuid.uuid4())
+            request={'version':1,'id':operation_id,'operation':'capture.set','parameters':{'enabled':False}}
+            result=submit(directory,request)
+            started=directory/operation_id/'started'; started.write_text('started',encoding='utf-8')
+            receipt={'id':operation_id,'status':'submitted','code':'CAPTURE_STOP_SUBMITTED'}
+            atomic_write(result,encode(receipt))
+            self.assertEqual(submit(directory,request),result)
+            self.assertEqual(json.loads(result.read_text()),receipt)
+            self.assertTrue(started.is_file())
+            with self.assertRaises(ValueError):
+                submit(directory,{**request,'parameters':{'enabled':True}})
+            with lock_directory(directory):
+                self.assertEqual(archive_local_locked(directory,10)['archived'],0)
+            self.assertEqual(submit(directory,request),result)
+
     def test_atomic_publish_leaves_no_partial_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)

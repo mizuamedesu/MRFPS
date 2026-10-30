@@ -31,9 +31,24 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `player.input.clear` | `{}` | Immediately clear the automation input lease |
 | `player.reload`, `player.wall` | `{}` | Submit one desktop reload or deploy-wall input through the existing server RPC |
 | `haptics.set` | `{"state":"connected|armed|stopped|disconnected"}` | Submit local MoBits connection/arm/stop/disconnect; arming must be deliberate |
-| `capture.set` | `{"enabled":true}` | Request Quest view sharing or stop it; the Quest OS consent still requires user approval |
+| `capture.set` | `{"enabled":true}` | Request Quest view sharing or retire the current sharing session; the Quest OS consent still requires user approval |
 
 `status` is a snapshot, so use a new operation UUID for a fresh snapshot. The layout/control revisions and expected wall shape must come from a recent result; a stale request is rejected rather than overwriting a concurrent change. For `object.ensure`, `surface` is the expected placement surface, while `origin` and the unit `direction` are the authoritative placement ray. World distances are centimetres. A matching existing object is reused; a new one uses the same placement limits as the GUI.
+
+For `capture.set`, a session with temporarily stale/no frames remains an active
+session: `enabled:true` reports `CAPTURE_WAITING_FRAME` without opening a new
+OS dialog, while `enabled:false` retires it and reports `CAPTURE_STOP_SUBMITTED`.
+Stopping during a consent exchange fences a late grant and sends the matching
+server finish request; the client retains timeout protection while awaiting its
+resume ACK. A visible Quest OS dialog is not dismissed or approved by this
+command, and its eventual old result cannot start sharing. `submitted` does not
+prove service cleanup or server receipt. A subsequent `status.video_capture`
+reports `capture_session_active`, `capture_fresh`, `capture_error`,
+`client_consent_pause_active`, and `server_stream_snapshot_open`; the latter is a
+replicated snapshot of unknown age, not an acknowledgment. `consent_pending`
+describes the app's active flow and does not prove that an older system dialog
+has closed. Repeating the same UUID returns its existing receipt; a new UUID is
+needed for a new state observation or a later deliberate action.
 
 `status.player` reports the locally owned player's health, magazine and shield from the latest replicated snapshot, which has no independently verified age. Its tracked-head/hand, glove-finger and glove-controller flags use the most recent local sampling pass; glove flags additionally require the glove subsystem's current fresh sample. `local_pose_sample_age_seconds=-1` means no local pass has occurred; this measures the sampling pass rather than each sensor's packet age. A stale pass never reports tracked or glove flags as true. Desktop input fields report the requested local lease, not proof of an accepted shot. `status.video_capture` distinguishes an OS consent request, a requested share and a fresh capture. On an inspector, `video_streams` contains two slots; `current_stream_texture_fresh` checks the authenticated publisher's current stream generation. Frame counters are lifetime counters and can include earlier streams. Neither a fresh texture nor a counter proves the image contents; inspect a capture of the target application window separately. The OS consent must still be given by the user.
 

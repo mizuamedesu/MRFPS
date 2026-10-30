@@ -23,7 +23,7 @@ $text=Get-Content (Join-Path $ReportDirectory execution.log) -Raw
 $match=[regex]::Match($text,'CONSENT_LIFECYCLE_PASS checks=(\d+)')
 if(-not $match.Success){throw 'CONSENT_POLICY_PASS_MARKER_MISSING'}
 $policyHashes=[ordered]@{}
-foreach($relative in @('Source/MRFPS/Public/MRFPSConsentPolicy.h','Plugins/MRFPSAuth/Source/MRFPSAuth/Public/MRFPSAuthClientUsePolicy.h')){
+foreach($relative in @('Source/MRFPS/Public/MRFPSConsentPolicy.h','Source/MRFPS/Public/MRFPSVideoControlPolicy.h','Plugins/MRFPSAuth/Source/MRFPSAuth/Public/MRFPSAuthClientUsePolicy.h')){
     $policyHashes[$relative]=(Get-FileHash -Algorithm SHA256 (Join-Path $root $relative)).Hash.ToLowerInvariant()
 }
 [ordered]@{TimestampUtc=[DateTime]::UtcNow.ToString('o');Passed=$true;Scope='Actual portable consent/reconnect policies, compiled with MSVC; UE integration and physical headset not exercised';Checks=[int]$match.Groups[1].Value;UEStarted=$false;DeviceUsed=$false;ServerTouched=$false;SigningKeyRead=$false;HeavyBuildRun=$false;SourceSHA256=(Get-FileHash -Algorithm SHA256 $source).Hash.ToLowerInvariant();PolicySHA256=$policyHashes}|ConvertTo-Json -Depth 4|Set-Content (Join-Path $ReportDirectory report.json) -Encoding UTF8

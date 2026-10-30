@@ -263,10 +263,15 @@ void AMRFPSPlayerController::TickAutomation()
             }
             if (auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>()) {
                 auto Video=MakeShared<FJsonObject>();
+                const auto CaptureState=CaptureControlState(Capture,FPlatformTime::Seconds(),true);
                 Video->SetBoolField(TEXT("publisher_session_valid"),IsVideoSessionValid(true));
-                Video->SetBoolField(TEXT("capture_requested"),bViewSharingRequested);
-                Video->SetBoolField(TEXT("consent_pending"),Capture->IsCaptureRequestPending() || VideoConsentFlow.IsBusy());
-                Video->SetBoolField(TEXT("capture_fresh"),Capture->IsCapturing());
+                Video->SetBoolField(TEXT("capture_requested"),CaptureState.Requested);
+                Video->SetBoolField(TEXT("capture_session_active"),CaptureState.Session);
+                Video->SetBoolField(TEXT("capture_error"),CaptureState.Error);
+                Video->SetBoolField(TEXT("consent_pending"),CaptureState.ConsentPending || CaptureState.FlowBusy);
+                Video->SetBoolField(TEXT("client_consent_pause_active"),CaptureState.LocalPause);
+                Video->SetBoolField(TEXT("server_stream_snapshot_open"),CaptureState.ServerStream);
+                Video->SetBoolField(TEXT("capture_fresh"),CaptureState.Fresh);
                 Video->SetStringField(TEXT("capture_status"),Capture->GetSafeStatus());
                 Video->SetNumberField(TEXT("publisher_frames_queued_lifetime"),double(VideoPublisherQueue.PushedFrames));
                 Video->SetNumberField(TEXT("publisher_frames_sent_lifetime"),double(VideoPublisherQueue.FinishedFrames));
@@ -450,9 +455,24 @@ void AMRFPSPlayerController::TickAutomation()
         } else if(Operation==TEXT("capture.set")) {
             bool Enabled=false; auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>();
             if(!Params->TryGetBoolField(TEXT("enabled"),Enabled)||!Capture||!IsVideoSessionValid(true)) { Ok=false; Code=TEXT("CAPTURE_UNAVAILABLE"); }
-            else if(Capture->IsCaptureRequestPending()||VideoConsentFlow.IsBusy()) { Submitted=Enabled; Ok=Enabled; Code=TEXT("CAPTURE_CONSENT_PENDING"); }
-            else if(Capture->IsCapturing()==Enabled) Already=true;
-            else { MRFPSShareView(); Submitted=true; Code=TEXT("CAPTURE_SUBMITTED"); }
+            else {
+                const auto State=CaptureControlState(Capture,Now,Enabled);
+                switch (MRFPSVideoControl::Decide(Enabled,State)) {
+                case MRFPSVideoControl::EAction::AlreadyStopped:
+                case MRFPSVideoControl::EAction::AlreadyLive: Already=true; break;
+                case MRFPSVideoControl::EAction::Stop:
+                    if (StopVideoSharing(Capture,Now)) { Submitted=true; Code=TEXT("CAPTURE_STOP_SUBMITTED"); }
+                    else Already=true;
+                    break;
+                case MRFPSVideoControl::EAction::AwaitConsent: Submitted=true; Code=TEXT("CAPTURE_CONSENT_PENDING"); break;
+                case MRFPSVideoControl::EAction::AwaitFrame: Submitted=true; Code=TEXT("CAPTURE_WAITING_FRAME"); break;
+                case MRFPSVideoControl::EAction::Start:
+                    MRFPSShareView();
+                    if (VideoConsentFlow.IsBusy() || Capture->HasCaptureSession()) { Submitted=true; Code=TEXT("CAPTURE_SUBMITTED"); }
+                    else { Ok=false; Code=TEXT("CAPTURE_START_FAILED"); }
+                    break;
+                }
+            }
         } else if(Operation==TEXT("admin.action")||Operation==TEXT("object.ensure")||Operation==TEXT("object.remove")||Operation==TEXT("wall.set")) {
             if(!IsAdmin()||!GS) { Ok=false; Code=TEXT("ADMIN_REQUIRED"); }
             else {

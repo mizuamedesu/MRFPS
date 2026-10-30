@@ -24,6 +24,54 @@ bool AMRFPSPlayerController::IsVideoSessionValid(bool Publisher) const
         (Publisher ? (!PS->bInspector && PS->Slot>=0 && PS->Slot<2) : PS->bInspector);
 }
 
+MRFPSVideoControl::FState AMRFPSPlayerController::CaptureControlState(const UMRFPSViewCaptureSubsystem* Capture, double Now, bool ReadLive) const
+{
+    MRFPSVideoControl::FState State;
+#if !UE_SERVER
+    if (Capture) {
+        State.Session=Capture->HasCaptureSession();
+        State.Error=Capture->HasCaptureError();
+        if (ReadLive) { State.ConsentPending=Capture->IsCaptureRequestPending(); State.Fresh=Capture->IsCapturing(); }
+    }
+    State.FlowBusy=VideoConsentFlow.IsBusy();
+    State.Requested=bViewSharingRequested; State.HadFrames=bHadCaptureFrames;
+    State.Queued=VideoPublisherQueue.HasData();
+    const auto* PS=GetPlayerState<AMRFPSPlayerState>();
+    State.ServerStream=PS && PS->VideoStreamId!=0;
+    const auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection());
+    State.LocalPause=Connection && Connection->IsCaptureConsentPaused(Now);
+#else
+    (void)Capture; (void)Now; (void)ReadLive;
+#endif
+    return State;
+}
+
+bool AMRFPSPlayerController::StopVideoSharing(UMRFPSViewCaptureSubsystem* Capture, double Now)
+{
+#if !UE_SERVER
+    if (!Capture || !IsLocalController() || !IsVideoSessionValid(true)) return false;
+    const auto State=CaptureControlState(Capture,Now,false);
+    return MRFPSVideoControl::ApplyStop(State,VideoConsentFlow,Now,[this,Capture](MRFPSVideoControl::EStopEffect Effect,std::uint32_t Request) {
+        switch (Effect) {
+        // Retire native state immediately; OS/service cleanup remains async and
+        // the command never dismisses an outstanding headset consent dialog.
+        case MRFPSVideoControl::EStopEffect::RetireCapture: Capture->StopCapture(); break;
+        case MRFPSVideoControl::EStopEffect::ResetLocalQueue:
+            bViewSharingRequested=false; bHadCaptureFrames=false; VideoPublisherQueue.Reset(); break;
+        case MRFPSVideoControl::EStopEffect::EndLocalPause:
+            if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause(); break;
+        // Reliable RPCs follow the prior request for this same lease. A granted
+        // client lease remains until its matching resume ACK or bounded deadline.
+        case MRFPSVideoControl::EStopEffect::FinishServerPause: ServerFinishVideoConsentPause(Request); break;
+        case MRFPSVideoControl::EStopEffect::StopServerStream: ServerStopQuestVideo(VideoPublishSequence); break;
+        }
+    });
+#else
+    (void)Capture; (void)Now;
+    return false;
+#endif
+}
+
 void AMRFPSPlayerController::MRFPSShareView()
 {
 #if !UE_SERVER

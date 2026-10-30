@@ -1,7 +1,9 @@
 #include "../../Source/MRFPS/Public/MRFPSConsentPolicy.h"
+#include "../../Source/MRFPS/Public/MRFPSVideoControlPolicy.h"
 #include "../../Plugins/MRFPSAuth/Source/MRFPSAuth/Public/MRFPSAuthClientUsePolicy.h"
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 namespace
 {
@@ -121,6 +123,85 @@ int main()
         Check(!ExpiredConsent.Resume(ExpiredId,151),"late resume callback after abort cannot resurrect publication");
         Check(ExpiredConsent.Begin(160),"later explicit action can start a new independent exchange");
         Check(!ExpiredConsent.Grant(ExpiredId,180,161,1000),"retired generation cannot affect the new exchange");
+
+        using namespace MRFPSVideoControl;
+        FState Capture;
+        Check(Decide(false,Capture)==EAction::AlreadyStopped,"an empty capture is already stopped");
+        Capture.Session=true;
+        Check(Decide(false,Capture)==EAction::Stop,"silent capture session must be stopped even with no fresh frame");
+        Check(Decide(true,Capture)==EAction::AwaitFrame,"silent live session waits for its existing stream instead of re-prompting");
+        Capture.Fresh=true;
+        Check(Decide(true,Capture)==EAction::AlreadyLive,"a recovered frame makes the same session live again");
+        Capture.Fresh=false; Capture.Error=true;
+        Check(Decide(false,Capture)==EAction::Stop,"a failed but retained session still needs retirement");
+        Check(Decide(true,Capture)==EAction::Start,"an errored session requires an explicit restart");
+        Capture={}; Capture.FlowBusy=true;
+        Check(Decide(false,Capture)==EAction::Stop,"a pending grant can be cancelled before capture begins");
+        Check(Decide(true,Capture)==EAction::AwaitConsent,"duplicate enable does not open another dialog while pending");
+        Capture={}; Capture.Queued=true;
+        Check(Decide(false,Capture)==EAction::Stop && Capture.NeedsServerStop(),"queued frames are retired on stop");
+        Capture={}; Capture.ServerStream=true;
+        Check(Decide(false,Capture)==EAction::Stop && Capture.NeedsServerStop(),"an open replicated stream snapshot is retired");
+        Capture={}; Capture.LocalPause=true;
+        Check(Decide(false,Capture)==EAction::Stop,"a lingering local consent lease is retired");
+
+        FClientFlow StopGrant;
+        Check(StopGrant.Begin(500),"stop-grant flow starts");
+        const auto GrantId=StopGrant.GetRequest();
+        const FStopPlan GrantStop=StopGrant.Stop(500.5,false);
+        Check(GrantStop.SendFinish && GrantStop.EndLocalPause && !GrantStop.WaitForAck && GrantStop.Request==GrantId,
+              "stop during grant retires server request and immediately ends any local pause");
+        Check(!StopGrant.IsBusy() && !StopGrant.Grant(GrantId,180,501,1000),"late grant cannot reopen stopped consent");
+
+        FClientFlow StopConsent; FPauseLease StopClientLease,StopServerLease;
+        Check(StopConsent.Begin(600),"stop-consent flow starts");
+        const auto ConsentId=StopConsent.GetRequest();
+        Check(StopConsent.Grant(ConsentId,180,600.1,1000),"server grant permits a real consent request");
+        Check(StopClientLease.BeginUntil(600.1,StopConsent.GetHardDeadline())>0 && StopServerLease.Begin(600.1,180)>0,
+              "both peers have bounded timeout protection");
+        const FStopPlan ConsentStop=StopConsent.Stop(601,true);
+        Check(ConsentStop.SendFinish && ConsentStop.WaitForAck && !ConsentStop.EndLocalPause &&
+              StopConsent.GetPhase()==EPhase::AwaitingResumeAck,"stop during OS consent waits for the real server resume ACK");
+        StopServerLease.End();
+        Check(StopClientLease.IsActive(601.1) && !StopServerLease.IsActive(601.1),"local timeout protection survives until reply");
+        const FStopPlan RetryBeforeAck=StopConsent.Stop(601.2,true);
+        Check(RetryBeforeAck.SendFinish && RetryBeforeAck.WaitForAck && !RetryBeforeAck.EndLocalPause,
+              "repeated desired stop cannot open another consent request or release the client lease early");
+        Check(!StopConsent.Grant(ConsentId,180,601.3,1000),"late duplicate grant cannot recreate the stopped session");
+        Check(StopConsent.Resume(ConsentId,601.4),"matching resume ACK completes the stopped consent flow");
+        StopClientLease.End();
+        Check(!StopConsent.IsBusy() && !StopClientLease.IsActive(601.4),"both consent leases are retired after ACK");
+
+        FClientFlow StopExpired;
+        Check(StopExpired.Begin(700) && StopExpired.Grant(StopExpired.GetRequest(),180,700.1,1000),"deadline fixture starts");
+        const auto DeadlineId=StopExpired.GetRequest();
+        const auto ExpiredStop=StopExpired.Stop(StopExpired.GetHardDeadline(),true);
+        Check(ExpiredStop.SendFinish && ExpiredStop.EndLocalPause && !ExpiredStop.WaitForAck && !StopExpired.IsBusy(),
+              "an expired consent lease is ended without extending its original deadline");
+        Check(!StopExpired.Resume(DeadlineId,1000),"an expired ACK cannot revive the stopped flow");
+
+        // Execute the same effects coordinator used by the controller, with
+        // fake local/server effects so stale capture and lease ordering are observable.
+        FClientFlow ApplyFlow;
+        FState Live; Live.Session=true; Live.Requested=true; Live.HadFrames=true; Live.Queued=true; Live.ServerStream=true;
+        std::vector<EStopEffect> Applied;
+        auto Record=[&](EStopEffect Effect,std::uint32_t) { Applied.push_back(Effect); };
+        Check(ApplyStop(Live,ApplyFlow,800,Record),"silent active session executes the stop coordinator");
+        Check(Applied==std::vector<EStopEffect>({EStopEffect::RetireCapture,EStopEffect::ResetLocalQueue,
+              EStopEffect::EndLocalPause,EStopEffect::StopServerStream}),"stop retires capture, queue and server stream in order");
+        Applied.clear(); Live={};
+        Check(!ApplyStop(Live,ApplyFlow,801,Record) && Applied.empty(),"a completed stop has no repeated effects");
+        Check(ApplyFlow.Begin(810) && ApplyFlow.Grant(ApplyFlow.GetRequest(),180,810.1,1000),"pending stop fixture obtains grant");
+        const auto ApplyId=ApplyFlow.GetRequest();
+        FState Pending; Pending.Session=true; Pending.FlowBusy=true; Pending.LocalPause=true; Pending.ServerStream=true;
+        std::uint32_t FinishedId=0;
+        auto PendingEffects=[&](EStopEffect Effect,std::uint32_t Id) { Applied.push_back(Effect); if(Effect==EStopEffect::FinishServerPause) FinishedId=Id; };
+        Check(ApplyStop(Pending,ApplyFlow,811,PendingEffects),"pending consent can be stopped");
+        Check(Applied==std::vector<EStopEffect>({EStopEffect::RetireCapture,EStopEffect::ResetLocalQueue,
+              EStopEffect::FinishServerPause,EStopEffect::StopServerStream}) && FinishedId==ApplyId,
+              "pending stop sends the matching finish without releasing the local lease before ACK");
+        Check(ApplyFlow.GetPhase()==EPhase::AwaitingResumeAck && ApplyFlow.Resume(ApplyId,811.1),
+              "the stopped pending flow completes only after its real ACK");
 
         using namespace MRFPSAuthClientPolicy;
         FConnectionUses Uses(2);
