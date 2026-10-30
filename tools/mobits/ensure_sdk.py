@@ -112,23 +112,33 @@ def apply_unreal_compatibility(target: Path) -> None:
             output.write(updated)
     elif count != 0 or len(re.findall(r"\bmrfps_profile_check(?=\s*\()", text)) != 3:
         raise RuntimeError("Unexpected MoBits profile helper; compatibility patch was not applied")
-    # A repeated Start while its previous setup command is busy must not drop
-    # an already-owned runtime. Otherwise subsequent Scan/Pair calls cannot
-    # run and the heartbeat is lost, even though initialization already began.
+    # A Start rejected while another setup request is outstanding, or while
+    # Android has temporarily taken focus, must retain ownership so the
+    # heartbeat and vendor status continue and the wearer can retry on return.
     component = target / "Source/MoBitsSDK/Private/MoBitsQuestStandaloneComponent.cpp"
     text = component.read_text(encoding="utf-8")
     original_start = """    Owner = this; bOwnsRuntime = true; SetComponentTickEnabled(true);
     if (Send(0)) return true;
     Owner.Reset(); bOwnsRuntime = false; return false;"""
-    corrected_start = """    const bool AlreadyOwned = bOwnsRuntime && Owner.Get() == this;
+    previous_start = """    const bool AlreadyOwned = bOwnsRuntime && Owner.Get() == this;
     Owner = this; bOwnsRuntime = true; SetComponentTickEnabled(true);
     if (Send(0)) return true;
     if (!AlreadyOwned) { Owner.Reset(); bOwnsRuntime = false; }
     return false;"""
-    if text.count(original_start) == 1 and corrected_start not in text:
+    corrected_start = """    const bool AlreadyOwned = bOwnsRuntime && Owner.Get() == this;
+    Owner = this; bOwnsRuntime = true; SetComponentTickEnabled(true);
+    if (Send(0)) return true;
+    if (!AlreadyOwned && CurrentStatus.Message != TEXT("Request was not queued. Check status and wait for the current setup operation.")) {
+        Owner.Reset(); bOwnsRuntime = false;
+    }
+    return false;"""
+    if (text.count(original_start) == 1 and previous_start not in text and corrected_start not in text):
         with component.open("w", encoding="utf-8", newline="\n") as output:
             output.write(text.replace(original_start, corrected_start))
-    elif original_start in text or text.count(corrected_start) != 1:
+    elif text.count(previous_start) == 1 and original_start not in text and corrected_start not in text:
+        with component.open("w", encoding="utf-8", newline="\n") as output:
+            output.write(text.replace(previous_start, corrected_start))
+    elif original_start in text or previous_start in text or text.count(corrected_start) != 1:
         raise RuntimeError("Unexpected MoBits runtime ownership logic; compatibility patch was not applied")
     # UE 5.8 stages BuildDir/libs under app/src/main/libs, not app/libs.
     upl = target / "Source/Standalone/MoBitsQuestStandalone_UPL.xml"
