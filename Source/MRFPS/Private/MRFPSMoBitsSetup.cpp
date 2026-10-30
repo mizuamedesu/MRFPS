@@ -64,7 +64,8 @@ FString ErrorText(const FMoBitsQuestStatus& Status)
     if (Status.Code==0) return FString();
     const FString& M=Status.Message;
     const TCHAR* Text=TEXT("処理できませんでした。状態を確認して再操作してください。");
-    if (M.Contains(TEXT("Stopped: make a new explicit request"),ESearchCase::IgnoreCase)) Text=TEXT("停止後です。「開始・権限」を押し、もう一度操作してください。");
+    if (Status.Code==188) Text=TEXT("Bluetooth登録の準備に失敗しました。他アプリの接続を終了し、機器を探し直してください。");
+    else if (M.Contains(TEXT("Stopped: make a new explicit request"),ESearchCase::IgnoreCase)) Text=TEXT("停止後です。「開始・権限」を押し、もう一度操作してください。");
     else if (M.Contains(TEXT("Game is not advancing"),ESearchCase::IgnoreCase)) Text=TEXT("Questを装着してゲームに戻り、もう一度操作してください。");
     else if (M.Contains(TEXT("Select a fresh EVT5 pairing advertisement"),ESearchCase::IgnoreCase)) Text=TEXT("機器をペアリングモードにし、「機器を探す」から選び直してください。");
     else if (M.Contains(TEXT("Scan before selecting"),ESearchCase::IgnoreCase)) Text=TEXT("先に「機器を探す」を押し、接続する機器を選んでください。");
@@ -232,7 +233,7 @@ void UMRFPSMoBitsSetup::Pair()
     const auto& D=L[Candidate];
     if (D.bConnected) { Note(TEXT("接続済みです。左右の腕に割り当ててください。")); return; }
     if (!D.bPairing) { Note(TEXT("未接続の場合は機器をペアリングモードにしてください。")); return; }
-    if (R->PairDevice(D.Id)) Note(TEXT("接続を要求しました。接続済みになるまでお待ちください。"));
+    if (R->PairDevice(D.Id)) Note(TEXT("接続中です。Questのペアリング確認が出たら許可してください。"));
 }
 void UMRFPSMoBitsSetup::AssignLeft()
 {

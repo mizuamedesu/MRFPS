@@ -4,7 +4,7 @@ Quest 版は [MoBits UE5 SDK](https://github.com/MoBits-Project/UE5_SDK) の Que
 
 同じ機器を別の MoBits アプリでも使用している場合は、そちらのセッションを安全に停止してからゲームに接続します。機器の登録情報はゲームごとに保存されるため、初回登録はゲーム内で行います。
 
-エラー 144 は操作時の状態が条件に合わないことを表します。画面に表示される案内を確認し、候補が古い場合は「機器を探す」から選び直します。原因の特定には `tools/automation/control.py` の `status` が返す `quest_mobits_message` も参照できます。
+エラー 144 は操作時の状態が条件に合わないことを表します。188 は Bluetooth 登録の準備に失敗したことを表します。別アプリの接続を終了し、画面に表示される案内を確認して「機器を探す」から選び直します。Quest のペアリング確認が表示された場合は本人が許可してください。原因の特定には `tools/automation/control.py` の `status` が返す `quest_mobits_message` も参照できます。
 
 ## ゲーム内の準備
 
