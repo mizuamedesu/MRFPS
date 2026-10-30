@@ -8,6 +8,7 @@
 #include "Engine/GameInstance.h"
 #include "Components/WidgetComponent.h"
 #include "Misc/Paths.h"
+#include "Misc/App.h"
 #include "Rendering/DrawElements.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/SLeafWidget.h"
@@ -139,13 +140,19 @@ void AMRFPSPawn::UpdatePlayerHud()
             ];
         RoundHud->SetSlateWidget(RoundHudSlate);
     }
+    // Count only foreground time after the actual 3D widget has a render target.
+    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>())
+        Instance->ConnectionStatus.AdvanceVisible(FApp::GetDeltaTime(),FApp::HasFocus(),
+            PlayerHud->IsWidgetVisible() && PlayerHud->GetRenderTarget()!=nullptr);
     if (PlayerHudSlate.IsValid()) return;
     PlayerHudSlate=SNew(SOverlay)
         +SOverlay::Slot()[ SNew(SMRFPSPlayerHudFrame).Pawn(Weak) ]
         +SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(FMargin(0,2,0,0))
-        [ SNew(STextBlock).Font(Font(15)).ColorAndOpacity(FSlateColor(FLinearColor(1.f,.68f,.2f)))
+        [ SNew(STextBlock).Font(Font(19)).ColorAndOpacity(FSlateColor(FLinearColor(1.f,.68f,.2f)))
           .Text_Lambda([Weak]() {
               if (!Weak.IsValid()) return FText::GetEmpty();
+              const auto* Instance=Weak->GetGameInstance<UMRFPSGameInstance>();
+              if (Instance && Instance->ConnectionStatus.ShowSuccess()) return FText::FromString(TEXT("サーバー接続成功"));
               const auto* PS=Weak->GetPlayerState<AMRFPSPlayerState>();
               return Weak->GetNetMode()==NM_Client && PS && PS->bAuthenticated
                   ? FText::GetEmpty() : FText::FromString(TEXT("接続待ち"));

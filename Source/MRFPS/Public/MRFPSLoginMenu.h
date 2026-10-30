@@ -45,6 +45,7 @@ public:
     void LoginCodeFromFile(const FString& File, const FString& Role);
     void InsertKey(const FString& Key);
     void CloseLogin();
+    void ShowConnectionFailure();
     /** Poll on the owning player's game tick, even when Slate is not painting. */
     void TickControlFile();
     void TickXRPointerAfterPaint(UWidgetComponent* PaintedComponent,float DeltaTime);
@@ -70,6 +71,7 @@ private:
     friend class FMRFPSLoginControlTickTest;
     friend class FMRFPSQuestLoginToggleTest;
     friend class FMRFPSLoginWidgetPaintScenario;
+    friend class FMRFPSLoginStatusPropagationTest;
     FString TestControlPath;
     bool bTestAndroidControl=false;
     bool bUseTestWeapon=false;

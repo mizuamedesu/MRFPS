@@ -247,6 +247,14 @@ void AMRFPSPlayerController::TickAutomation()
                 Data->SetStringField(TEXT("session_menu_tab"),SessionMenu->IsRosterVisible()?TEXT("participants"):TEXT("settings"));
             Data->SetBoolField(TEXT("admin_panel"),AdminPanel&&AdminPanel->IsInViewport());
             Data->SetBoolField(TEXT("login_panel"),DeviceLogin&&DeviceLogin->IsOpen());
+            if (const auto* Instance=GetGameInstance<UMRFPSGameInstance>()) {
+                using MRFPSConnectionStatus::EPhase;
+                const auto Phase=Instance->ConnectionStatus.Phase;
+                Data->SetStringField(TEXT("connection_status"),Phase==EPhase::Connecting?TEXT("connecting"):
+                    Phase==EPhase::Joined?TEXT("joined"):Phase==EPhase::Failure?TEXT("failed"):TEXT("idle"));
+                Data->SetBoolField(TEXT("join_notice_pending"),Instance->ConnectionStatus.ShowSuccess());
+                if (Phase==EPhase::Failure) Data->SetStringField(TEXT("connection_message"),Instance->ConnectionFailureMessage());
+            }
             if(const auto* Fighter=GetPawn<AMRFPSPawn>(); Fighter && Fighter->IsLocallyControlled()) {
                 auto PlayerInfo=MakeShared<FJsonObject>();
                 PlayerInfo->SetStringField(TEXT("combat_source"),TEXT("replicated_snapshot_age_unknown"));

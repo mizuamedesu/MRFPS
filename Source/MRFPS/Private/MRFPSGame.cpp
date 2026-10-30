@@ -59,6 +59,7 @@
 #include "Misc/Parse.h"
 #include "Misc/PackageName.h"
 #include "Misc/NetworkVersion.h"
+#include "Misc/App.h"
 #include "Materials/MaterialInterface.h"
 #include "TimerManager.h"
 #if !UE_SERVER
@@ -77,6 +78,24 @@ static constexpr ECollisionChannel WeaponChannel = ECC_GameTraceChannel1;
 
 namespace MRFPS
 {
+    static MRFPSConnectionStatus::ERole ConnectionRole(const FString& Role)
+    {
+        return Role==TEXT("player")?MRFPSConnectionStatus::ERole::Player:
+            Role==TEXT("inspector")?MRFPSConnectionStatus::ERole::Inspector:
+            Role==TEXT("admin")?MRFPSConnectionStatus::ERole::Admin:MRFPSConnectionStatus::ERole::Unknown;
+    }
+    static MRFPSConnectionStatus::EFailure FailureKind(const FString& SafeCode)
+    {
+        if (SafeCode==TEXT("ARENA_FULL") || SafeCode==TEXT("ADMIN_FULL")) return MRFPSConnectionStatus::EFailure::Capacity;
+        if (SafeCode.StartsWith(TEXT("AUTH_")) || SafeCode.StartsWith(TEXT("DTLS_"))) return MRFPSConnectionStatus::EFailure::Authentication;
+        return MRFPSConnectionStatus::EFailure::Connection;
+    }
+    static bool StableLoginWorld(UWorld* World)
+    {
+        if (!World || World->bIsTearingDown || World->IsInSeamlessTravel()) return false;
+        const FWorldContext* Context=GEngine?GEngine->GetWorldContextFromWorld(World):nullptr;
+        return Context && Context->TravelURL.IsEmpty() && !Context->PendingNetGame;
+    }
     static void QueryOnly(UPrimitiveComponent* C)
     {
         C->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
@@ -1107,6 +1126,9 @@ void AMRFPSPlayerController::OpenDeviceLogin()
         if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->RequestLoginScreen();
         ClientTravel(TEXT("/Game/Maps/MRFPSArena"),TRAVEL_Absolute); return;
     }
+    // A failure can be reported before UE finishes returning to the local map.
+    // Do not create a panel in a world that is about to be replaced.
+    if (!MRFPS::StableLoginWorld(GetWorld())) return;
     DeviceLogin=UMRFPSLoginMenu::CreateFor(this);
 }
 void AMRFPSPlayerController::SetQuestDeviceLoginVisible(bool bVisible)
@@ -1137,6 +1159,16 @@ void AMRFPSPlayerController::SetQuestDeviceLoginVisible(bool bVisible)
         if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->ClearLoginScreenRequest();
     }
 }
+void AMRFPSPlayerController::ReportConnectionAttemptFailure()
+{
+    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) {
+        Instance->SetConnectionFailure(MRFPS::FailureKind(ConnectionError));
+        Instance->RequestLoginScreen();
+        if (DeviceLogin && DeviceLogin->IsOpen() && MRFPS::StableLoginWorld(GetWorld())) {
+            DeviceLogin->ShowConnectionFailure(); Instance->ClearLoginScreenRequest();
+        }
+    }
+}
 void AMRFPSPlayerController::MRFPSConfigureServer(const FString& Address)
 {
     OpenDeviceLogin(); if (DeviceLogin && DeviceLogin->IsOpen()) DeviceLogin->SetEndpoint(Address);
@@ -1157,9 +1189,9 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
     const FString Destination=Address;
     const FString ExpectedRole=RequestedRole;
     GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
-    if (Destination.IsEmpty() || Destination.Len()>255) return;
+    if (Destination.IsEmpty() || Destination.Len()>255) { ConnectionError=TEXT("INVALID_ADDRESS"); ReportConnectionAttemptFailure(); return; }
     for (const TCHAR C:Destination) if (!FChar::IsAlnum(C) && C!='.' && C!=':' && C!='-' && C!='[' && C!=']') {
-        ConnectionError=TEXT("Enter a hostname or IP address, with optional :port"); return;
+        ConnectionError=TEXT("INVALID_ADDRESS"); ReportConnectionAttemptFailure(); return;
     }
     auto* Credentials=GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>();
     bool Ready=Credentials && Credentials->ValidateForNewConnection(ExpectedRole,ConnectionError);
@@ -1168,9 +1200,9 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
     if (!Ready && Credentials) Ready=Credentials->ReloadTokenFile(ConnectionError) && Credentials->ValidateForNewConnection(ExpectedRole,ConnectionError);
     if (!Ready) {
         if (ConnectionError.IsEmpty()) ConnectionError=TEXT("AUTH_MISSING");
-        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_CLIENT_REJECT code=%s role=%s"),*ConnectionError,*ExpectedRole); return;
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_CLIENT_REJECT code=%s role=%s"),*ConnectionError,*ExpectedRole); ReportConnectionAttemptFailure(); return;
     }
-    if (!FMRFPSTransportModule::SetClientServerFingerprint(Credentials->GetServerFingerprint(),ConnectionError)) return;
+    if (!FMRFPSTransportModule::SetClientServerFingerprint(Credentials->GetServerFingerprint(),ConnectionError)) { ReportConnectionAttemptFailure(); return; }
     const double ActivationDelay = FMRFPSTransportModule::GetClientCertificateActivationDelay();
     if (ActivationDelay > 0.0) {
         ConnectionError=TEXT("Connecting...");
@@ -1184,9 +1216,9 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
     }
     ConnectionError.Empty();
     if (!Credentials->BeginConnectionAttempt(ExpectedRole,ConnectionError)) {
-        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_CLIENT_REJECT code=%s role=%s"),*ConnectionError,*ExpectedRole); return;
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_AUTH_CLIENT_REJECT code=%s role=%s"),*ConnectionError,*ExpectedRole); ReportConnectionAttemptFailure(); return;
     }
-    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->RememberConnectionAttempt(Destination,ExpectedRole);
+    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->RememberConnectionAttempt(Destination,ExpectedRole,GetWorld());
     HandleSessionDisconnected();
     const FString RoleOptions=ExpectedRole==TEXT("admin")?TEXT("?Admin=1?Inspector=1"):ExpectedRole==TEXT("inspector")?TEXT("?Inspector=1"):TEXT("");
     ClientTravel(Destination+RoleOptions+TEXT("?EncryptionToken=")+FMRFPSTransportModule::GetHelloMarker(),TRAVEL_Absolute);
@@ -1207,10 +1239,19 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
     TickAutomation();
     TickAutomationInput(Dt);
     if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) {
-        if (Instance->IsLoginScreenRequested() && GetNetMode()==NM_Standalone && GetPawn()) {
-            OpenDeviceLogin(); if (DeviceLogin && DeviceLogin->IsOpen()) Instance->ClearLoginScreenRequest();
+        if (Instance->IsLoginScreenRequested() && GetNetMode()==NM_Standalone && GetPawn() && MRFPS::StableLoginWorld(GetWorld())) {
+            OpenDeviceLogin();
+            if (DeviceLogin && DeviceLogin->IsOpen()) { DeviceLogin->ShowConnectionFailure(); Instance->ClearLoginScreenRequest(); }
         }
         if (!(DeviceLogin && DeviceLogin->IsOpen())) Instance->TickAutoReconnect();
+        const auto* Driver=GetWorld()?GetWorld()->GetNetDriver():nullptr;
+        const auto* Connection=Driver?Driver->ServerConnection.Get():nullptr;
+        const auto* PS=GetPlayerState<AMRFPSPlayerState>();
+        if (Instance->ConnectionStatus.ObserveJoin(Instance->IsNewConnectionWorld(GetWorld()) && GetNetMode()==NM_Client,
+            Connection && Connection->GetConnectionState()==USOCK_Open && Connection->PlayerController==this,
+            PS && PS->bAuthenticated && PS->AuthExpiresAt>FDateTime::UtcNow().ToUnixTimestamp(),
+            GetPawn()!=nullptr,PS && PS->bAdmin,PS && PS->bInspector,PS?PS->Slot:-1))
+            UE_LOG(LogMRFPS,Display,TEXT("MRFPS_CLIENT_JOIN_CONFIRMED"));
     }
 #if !UE_SERVER
     // A minimized or hidden window is not painted, so UUserWidget::NativeTick
@@ -1376,6 +1417,14 @@ void AMRFPSHUD::DrawHUD()
     const bool CompactInspector=Inspector && InspectorLayout.bCompact;
     if(PC->IsAdmin()) Text(PC->AdminFeedback(),30,CompactInspector?Canvas->SizeY-74:138,15,FLinearColor(.7,.95,.85));
     if(!PC->ConnectionError.IsEmpty()) Text(TEXT("接続を確認してください"),30,CompactInspector?Canvas->SizeY-54:165,15,FLinearColor(1,.4,.4));
+    if (auto* Instance=PC->GetGameInstance<UMRFPSGameInstance>()) {
+        const auto* LocalPawn=PC->GetPawn<AMRFPSPawn>();
+        const bool XRPlayer=LocalPawn && LocalPawn->IsXR();
+        if (!XRPlayer && Instance->ConnectionStatus.ShowSuccess()) {
+            Text(TEXT("サーバー接続成功"),Canvas->SizeX*.5f-90.f,110.f,18,FLinearColor(.55f,1.f,.8f));
+            Instance->ConnectionStatus.AdvanceVisible(FApp::GetDeltaTime(),FApp::HasFocus(),Canvas->SizeX>0 && Canvas->SizeY>0);
+        }
+    }
 }
 
 bool AMRFPSGameSession::AtCapacity(bool /*bSpectator*/)
@@ -1627,7 +1676,10 @@ void UMRFPSGameInstance::Init()
     // cook to fail. Set it in the desktop app instead, including direct launch.
     if (auto* Idle=IConsoleManager::Get().FindConsoleVariable(TEXT("t.IdleWhenNotForeground"))) Idle->Set(0,ECVF_SetByCode);
 #endif
-    if (GEngine) GEngine->OnNetworkFailure().AddUObject(this,&UMRFPSGameInstance::NetworkFailure);
+    if (GEngine) {
+        GEngine->OnNetworkFailure().AddUObject(this,&UMRFPSGameInstance::NetworkFailure);
+        GEngine->OnTravelFailure().AddUObject(this,&UMRFPSGameInstance::TravelFailure);
+    }
 }
 void UMRFPSGameInstance::OnStart()
 {
@@ -1662,17 +1714,58 @@ void UMRFPSGameInstance::NetworkFailure(UWorld* World,UNetDriver* Driver,ENetwor
     UE_LOG(LogMRFPS,Error,TEXT("MRFPS_NETWORK_FAILURE %s"),*Error);
     FString ExplicitTokenFile;
     const bool bHasExplicitTokenFile=FParse::Value(FCommandLine::Get(),TEXT("MRFPSAuthTokenFile="),ExplicitTokenFile) && !ExplicitTokenFile.IsEmpty();
+    const auto Reason=Type==ENetworkFailure::ConnectionTimeout?MRFPSConnectionStatus::EFailure::Timeout:
+        Type==ENetworkFailure::OutdatedClient?MRFPSConnectionStatus::EFailure::Version:MRFPS::FailureKind(Error);
+    SetConnectionFailure(Reason);
     PrepareForNetworkFailure(bHasExplicitTokenFile);
     if (auto* PC=Cast<AMRFPSPlayerController>(GetFirstLocalPlayerController())) {
         PC->HandleSessionDisconnected();
         PC->ConnectionError=TEXT("接続が切れました。新しい認証情報で再接続してください");
     }
 }
-void UMRFPSGameInstance::RememberConnectionAttempt(const FString& Address,const FString& Role)
+void UMRFPSGameInstance::TravelFailure(UWorld* World,ETravelFailure::Type /*Type*/,const FString& /*Error*/)
+{
+    if (!World || World->GetGameInstance()!=this) return;
+    // UE may report both a network and travel failure for one attempt. Keep
+    // the more specific first reason and never expose the raw travel URL.
+    if (ConnectionStatus.Phase!=MRFPSConnectionStatus::EPhase::Failure)
+        SetConnectionFailure(MRFPSConnectionStatus::EFailure::Connection);
+    FString ExplicitTokenFile;
+    const bool HasTokenFile=FParse::Value(FCommandLine::Get(),TEXT("MRFPSAuthTokenFile="),ExplicitTokenFile) && !ExplicitTokenFile.IsEmpty();
+    PrepareForNetworkFailure(HasTokenFile);
+}
+void UMRFPSGameInstance::RememberConnectionAttempt(const FString& Address,const FString& Role,UWorld* OriginWorld)
 {
     LastServerAddress=Address; LastServerRole=Role;
+    ConnectionOriginWorld=OriginWorld; bConnectionOriginKnown=OriginWorld!=nullptr;
     bLastConnectionFromDevice=bNextConnectionFromDevice; bNextConnectionFromDevice=false;
     bReconnectPending=false;
+    ConnectionStatus.Begin(MRFPS::ConnectionRole(Role));
+}
+bool UMRFPSGameInstance::IsNewConnectionWorld(const UWorld* World) const
+{
+    // Even if the old world has been garbage-collected, its weak identity is
+    // distinct from the new one. Never accept the old live connection.
+    return bConnectionOriginKnown && World && ConnectionOriginWorld.Get()!=World;
+}
+void UMRFPSGameInstance::SetConnectionFailure(MRFPSConnectionStatus::EFailure Reason)
+{
+    if (ConnectionStatus.Phase==MRFPSConnectionStatus::EPhase::Failure &&
+        Reason==MRFPSConnectionStatus::EFailure::Connection &&
+        ConnectionStatus.Failure!=MRFPSConnectionStatus::EFailure::Connection) return;
+    ConnectionStatus.Fail(Reason);
+}
+FString UMRFPSGameInstance::ConnectionFailureMessage() const
+{
+    using MRFPSConnectionStatus::EFailure;
+    switch (ConnectionStatus.Failure) {
+    case EFailure::Timeout: return TEXT("接続がタイムアウトしました。接続先と新しいコードを確認");
+    case EFailure::Version: return TEXT("アプリのバージョンが一致しません");
+    case EFailure::Capacity: return TEXT("定員に達しています。新しいコードで再試行");
+    case EFailure::Authentication: return TEXT("認証できません。新しいコードで再試行");
+    case EFailure::Connection: return TEXT("接続できません。接続先と新しいコードを確認");
+    default: return FString();
+    }
 }
 void UMRFPSGameInstance::PrepareForNetworkFailure(bool bHasExplicitTokenFile)
 {

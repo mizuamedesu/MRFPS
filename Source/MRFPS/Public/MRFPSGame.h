@@ -5,6 +5,7 @@
 #include "MRFPSOpenPalm.h"
 #include "MRFPSFireReleaseGate.h"
 #include "MRFPSWeaponPose.h"
+#include "MRFPSConnectionStatus.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
@@ -424,6 +425,7 @@ public:
     /** Set the Quest panel explicitly without leaving an existing session. */
     void SetQuestDeviceLoginVisible(bool bVisible);
     void HandleSessionDisconnected();
+    void ReportConnectionAttemptFailure();
     UFUNCTION(Exec) void MRFPSView(int32 Slot);
     UFUNCTION(Exec) void MRFPSReady();
     UFUNCTION(Exec) void MRFPSShareView();
@@ -678,7 +680,9 @@ public:
     virtual void ReceivedNetworkEncryptionAck(const FOnEncryptionKeyResponse& Delegate) override;
     virtual EEncryptionFailureAction ReceivedNetworkEncryptionFailure(UNetConnection* Connection) override;
     void NetworkFailure(UWorld* World, class UNetDriver* Driver, ENetworkFailure::Type Type, const FString& Error);
-    void RememberConnectionAttempt(const FString& Address,const FString& Role);
+    void TravelFailure(UWorld* World, ETravelFailure::Type Type, const FString& Error);
+    void RememberConnectionAttempt(const FString& Address,const FString& Role,UWorld* OriginWorld=nullptr);
+    bool IsNewConnectionWorld(const UWorld* World) const;
     void ReconnectWithFreshToken();
     void TickAutoReconnect();
     /** Device-code sessions return to login; explicit file sessions can wait
@@ -686,14 +690,19 @@ public:
     void MarkNextConnectionAsDeviceLogin() { bNextConnectionFromDevice=true; }
     void CancelNextDeviceConnection() { bNextConnectionFromDevice=false; }
     void PrepareForNetworkFailure(bool bHasExplicitTokenFile);
+    void SetConnectionFailure(MRFPSConnectionStatus::EFailure Reason);
+    FString ConnectionFailureMessage() const;
     bool IsAutoReconnectPending() const { return bReconnectPending; }
     void RequestLoginScreen() { bShowLoginAfterFailure=true; bReconnectPending=false; }
     bool IsLoginScreenRequested() const { return bShowLoginAfterFailure; }
     void ClearLoginScreenRequest() { bShowLoginAfterFailure=false; }
     MRFPSFireRelease::FTransitionGate FireTransition;
+    MRFPSConnectionStatus::FState ConnectionStatus;
 private:
     FString LastServerAddress;
     FString LastServerRole;
+    TWeakObjectPtr<UWorld> ConnectionOriginWorld;
+    bool bConnectionOriginKnown=false;
     bool bReconnectPending=false;
     bool bShowLoginAfterFailure=false;
     bool bNextConnectionFromDevice=false;

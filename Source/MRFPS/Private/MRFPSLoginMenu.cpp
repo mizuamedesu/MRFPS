@@ -22,6 +22,7 @@
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
+#include "Components/VerticalBoxSlot.h"
 #include "Components/WidgetComponent.h"
 #include "Components/WidgetInteractionComponent.h"
 #include "Dom/JsonObject.h"
@@ -155,6 +156,9 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         if (auto* GI=Cast<UMRFPSGameInstance>(Owner->GetGameInstance())) GI->FireTransition.BeginLogin();
         Menu->AddToViewport(120);
     }
+    // This also covers manual menu openings, which need not have a pending
+    // automatic login-screen request after a world transition.
+    Menu->ShowConnectionFailure();
     return Menu;
 }
 
@@ -190,11 +194,14 @@ void UMRFPSLoginMenu::NativeOnInitialized()
     if (WidgetTree->RootWidget) return;
     auto* Root=WidgetTree->ConstructWidget<UBorder>();
     Root->SetBrush(FSlateRoundedBoxBrush(Surface,10)); Root->SetPadding(FMargin(24,18)); WidgetTree->RootWidget=Root;
-    auto* Outer=WidgetTree->ConstructWidget<UScrollBox>(); Root->SetContent(Outer);
+    // Keep the connection result in view even when the keyboard is scrolled.
+    auto* PanelColumn=WidgetTree->ConstructWidget<UVerticalBox>(); Root->SetContent(PanelColumn);
+    Heading=Text(WidgetTree,TEXT("サーバー設定"),28,White); PanelColumn->AddChild(Heading); AddSpace(WidgetTree,PanelColumn,12);
+    Status=Text(WidgetTree,TEXT("接続先を確認してください"),16,Muted); PanelColumn->AddChild(Status); AddSpace(WidgetTree,PanelColumn,8);
+    PointerHint=Text(WidgetTree,TEXT("コントローラーを確認"),14,Muted); PanelColumn->AddChild(PointerHint);
+    auto* Outer=WidgetTree->ConstructWidget<UScrollBox>();
+    PanelColumn->AddChildToVerticalBox(Outer)->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
     auto* Body=WidgetTree->ConstructWidget<UVerticalBox>(); Outer->AddChild(Body);
-    Heading=Text(WidgetTree,TEXT("サーバー設定"),28,White); Body->AddChild(Heading); AddSpace(WidgetTree,Body,12);
-    Status=Text(WidgetTree,TEXT("接続先を確認してください"),16,Muted); Body->AddChild(Status); AddSpace(WidgetTree,Body,8);
-    PointerHint=Text(WidgetTree,TEXT("コントローラーを確認"),14,Muted); Body->AddChild(PointerHint);
     AddressPage=WidgetTree->ConstructWidget<UVerticalBox>(); Body->AddChild(AddressPage);
     auto Field=FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
     Field.SetFont(FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),20));
@@ -721,6 +728,16 @@ void UMRFPSLoginMenu::SetStatus(const FString& Message,bool Error)
 {
     if (Status) { Status->SetText(FText::FromString(Message)); Status->SetColorAndOpacity(FSlateColor(Error?FLinearColor(1,.4f,.4f,1):Muted)); }
 }
+void UMRFPSLoginMenu::ShowConnectionFailure()
+{
+    if (!bOpen) return;
+    auto* PC=Controller.Get(); auto* Instance=PC?PC->GetGameInstance<UMRFPSGameInstance>():nullptr;
+    if (!Instance || Instance->ConnectionStatus.Phase!=MRFPSConnectionStatus::EPhase::Failure) return;
+    const FString Message=Instance->ConnectionFailureMessage();
+    if (Message.IsEmpty()) return;
+    if (bExchanging || bLoginPage) { bExchanging=false; SetStage(false); }
+    SetStatus(Message,true);
+}
 void UMRFPSLoginMenu::SetStage(bool Login)
 {
     // The old page's Slate hit grid remains valid until the next completed
@@ -775,6 +792,9 @@ void UMRFPSLoginMenu::Exchange()
     if (bExchanging || !bLoginPage || !CodeBox) return;
     FString Code=CodeBox->GetText().ToString().TrimStartAndEnd();
     if (Code.Len()!=6 || !Code.IsNumeric()) { SetStatus(TEXT("6桁の数字を入力してください"),true); return; }
+    if (auto* PC=Controller.Get()) if (auto* Instance=PC->GetGameInstance<UMRFPSGameInstance>()) {
+        Instance->ConnectionStatus.ClearFailure(); PC->ConnectionError.Empty();
+    }
     FString URL=AuthUrl;
 #if !UE_BUILD_SHIPPING
     FString TestURL;
@@ -830,7 +850,7 @@ void UMRFPSLoginMenu::HandleExchange(FHttpRequestPtr Request,FHttpResponsePtr Re
         return;
     }
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_DEVICE_EXCHANGE_VERIFIED role=%s"),*Role);
-    TrustButton->SetVisibility(ESlateVisibility::Collapsed); bExchanging=true; SetStatus(TEXT("ログイン成功。サーバーに接続します"));
+    TrustButton->SetVisibility(ESlateVisibility::Collapsed); bExchanging=true; SetStatus(TEXT("コードを確認しました。サーバーに接続中…"));
     FTimerHandle Handle; GetWorld()->GetTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this]() { ConnectAfterLogin(); }),1.5f,false);
 }
 void UMRFPSLoginMenu::ResetTrust()
@@ -844,15 +864,15 @@ void UMRFPSLoginMenu::ConnectAfterLogin()
     auto* PC=Controller.Get(); if (!PC || !bOpen) return;
     const FString Address=Destination, SelectedRole=Role;
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_DEVICE_CONNECT role=%s"),*SelectedRole);
-    CloseLogin(); PC->ConnectionError.Empty();
+    // Keep the status visible while UE connects. EndPlay closes the old
+    // world widget on successful travel; a failure can update this same menu.
+    PC->ConnectionError.Empty();
     auto* Instance=PC->GetGameInstance<UMRFPSGameInstance>();
     if (Instance) Instance->MarkNextConnectionAsDeviceLogin();
     if (SelectedRole==TEXT("admin")) PC->MRFPSConnectAdmin(Address);
     else PC->MRFPSConnect(Address,SelectedRole==TEXT("inspector"));
     if (!PC->ConnectionError.IsEmpty() && PC->ConnectionError!=TEXT("Connecting...") && PC->GetNetMode()==NM_Standalone) {
         if (Instance) Instance->CancelNextDeviceConnection();
-        PC->OpenDeviceLogin();
-        if (PC->DeviceLogin) PC->DeviceLogin->SetStatus(TEXT("サーバーに接続できません"),true);
     }
 }
 void UMRFPSLoginMenu::LoginCodeFromFile(const FString& File,const FString& RequestedRole)
