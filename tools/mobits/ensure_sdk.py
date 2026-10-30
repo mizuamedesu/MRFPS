@@ -19,9 +19,11 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-REVISION = "2aba57a51923fb2252347407f023db8457e05804"
+REVISION = "42149ded25702fe329967727328e58498c2a501a"
 ORIGIN = "https://github.com/MoBits-Project/UE5_SDK.git"
-AAR_SHA256 = "b877e2ecbea3538e6065ec2d5056186191ab994b273bd0ae3ab98c42c6439713"
+AAR_SHA256 = "2a08e210d109cc5b2b393b0435d7f6f3486187962cb2ba17932a19c1e045d048"
+PREVIOUS_REVISION = "2aba57a51923fb2252347407f023db8457e05804"
+PREVIOUS_AAR_SHA256 = "b877e2ecbea3538e6065ec2d5056186191ab994b273bd0ae3ab98c42c6439713"
 PREFIX = PurePosixPath("Plugins/MoBitsSDK")
 
 
@@ -84,9 +86,23 @@ def installed(target: Path) -> bool:
     if not target.is_dir() or not marker.is_file():
         raise RuntimeError("Existing MoBits SDK directory is not managed by MRFPS; it was not modified")
     data = json.loads(marker.read_text(encoding="utf-8"))
+    aar = target / "Source/Standalone/Libs/mobits-quest-standalone.aar"
+    if data.get("revision") == PREVIOUS_REVISION and data.get("aar_sha256") == PREVIOUS_AAR_SHA256:
+        if not aar.is_file() or sha256(aar) != PREVIOUS_AAR_SHA256:
+            raise RuntimeError("Previous managed MoBits SDK library has changed; it was not modified")
+        # Preserve the complete former installation outside Unreal's plugin
+        # search directory; do not overwrite user changes or an older archive.
+        archive_root = (ROOT / ".local/mobits-sdk-archive").resolve()
+        if not archive_root.is_relative_to(ROOT.resolve()) or not target.resolve().is_relative_to(ROOT.resolve()):
+            raise RuntimeError("MoBits archive and source must remain inside this workspace")
+        archive_root.mkdir(parents=True, exist_ok=True)
+        archive = archive_root / ("MoBitsSDK-" + PREVIOUS_REVISION[:12])
+        if archive.exists() or archive.is_symlink():
+            raise RuntimeError("Previous MoBits SDK archive already exists; it was not overwritten")
+        os.replace(target, archive)
+        return False
     if data.get("revision") != REVISION or data.get("aar_sha256") != AAR_SHA256:
         raise RuntimeError("Existing managed MoBits SDK has a different revision; it was not modified")
-    aar = target / "Source/Standalone/Libs/mobits-quest-standalone.aar"
     if not aar.is_file() or sha256(aar) != AAR_SHA256:
         raise RuntimeError("Local MoBits SDK library is missing or has changed; it was not modified")
     if not (target / "Source/MoBitsSDK/Public/MoBitsQuestStandaloneComponent.h").is_file():

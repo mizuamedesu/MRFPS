@@ -1,6 +1,6 @@
 # Quest の MoBits
 
-Quest 版は [MoBits UE5 SDK](https://github.com/MoBits-Project/UE5_SDK) の Quest スタンドアローン版 `2aba57a51923fb2252347407f023db8457e05804` を使用します。MoBits の別アプリ、PC、ADB 中継を使わずに、Quest 本体の Bluetooth で左右の EVT5 に接続します。
+Quest 版は [MoBits UE5 SDK](https://github.com/MoBits-Project/UE5_SDK) の Quest スタンドアローン版 `42149ded25702fe329967727328e58498c2a501a` を使用します。MoBits の別アプリ、PC、ADB 中継を使わずに、Quest 本体の Bluetooth で左右の EVT5 に接続します。
 
 同じ機器を別の MoBits アプリでも使用している場合は、そちらのセッションを安全に停止してからゲームに接続します。機器の登録情報はゲームごとに保存されるため、初回登録はゲーム内で行います。
 
