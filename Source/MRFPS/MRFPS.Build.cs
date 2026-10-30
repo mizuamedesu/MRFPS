@@ -1,4 +1,5 @@
 using UnrealBuildTool;
+using System.IO;
 public class MRFPS : ModuleRules
 {
     public MRFPS(ReadOnlyTargetRules Target) : base(Target)
@@ -13,6 +14,10 @@ public class MRFPS : ModuleRules
             "MRFPSHaptics", "MoBitsSDK", "MRFPSAuth", "MRFPSTransport", "PacketHandler", "OnlineSubsystemUtils"
         });
         PrivateDependencyModuleNames.AddRange(new[] { "HTTP", "Json", "AIModule", "NavigationSystem", "GameplayTasks", "Sockets", "SSL" });
+        if (Target.Platform == UnrealTargetPlatform.Android) {
+            PrivateIncludePaths.Add(Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", ".local", "mobits-connect-headers", "include")));
+            PublicSystemLibraries.Add("dl");
+        }
         AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
         if (Target.Type != TargetType.Server) {
             PrivateDependencyModuleNames.AddRange(new[] { "ImageCore", "ImageWrapper", "RenderCore", "RHI" });

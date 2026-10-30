@@ -25,6 +25,8 @@ AAR_SHA256 = "2a08e210d109cc5b2b393b0435d7f6f3486187962cb2ba17932a19c1e045d048"
 PREVIOUS_REVISION = "2aba57a51923fb2252347407f023db8457e05804"
 PREVIOUS_AAR_SHA256 = "b877e2ecbea3538e6065ec2d5056186191ab994b273bd0ae3ab98c42c6439713"
 PREFIX = PurePosixPath("Plugins/MoBitsSDK")
+CONNECT_ORIGIN = "https://github.com/MoBits-Project/MoBitsConnect.git"
+CONNECT_REVISION = "5c9819914c0e99e310e709ae00ccfd648084da8a"
 
 
 def git(*args: str, capture: bool = False) -> bytes:
@@ -41,6 +43,62 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def ensure_connect_headers() -> None:
+    """Fetch only the pinned production headers used for LRA identification."""
+    base = (ROOT / ".local/mobits-connect-headers").resolve()
+    if not base.is_relative_to(ROOT.resolve()):
+        raise RuntimeError("MoBits Connect headers must remain inside this workspace")
+    marker = base / ".mrfps-headers.json"
+    if base.exists():
+        if not marker.is_file() or json.loads(marker.read_text(encoding="utf-8")).get("revision") != CONNECT_REVISION:
+            raise RuntimeError("Existing MoBits Connect headers are unmanaged or have another revision")
+        if not (base / "include/mobits_connect.h").is_file() or not (base / "include/mobits_connect_sender.h").is_file():
+            raise RuntimeError("MoBits Connect headers are incomplete")
+        return
+    source = (ROOT / ".local/mobits-connect-source").resolve()
+    if not source.is_relative_to(ROOT.resolve()):
+        raise RuntimeError("MoBits Connect source cache must remain inside this workspace")
+    if not source.exists():
+        source.parent.mkdir(parents=True, exist_ok=True)
+        git("clone", "--no-checkout", "--no-tags", "--filter=blob:none", CONNECT_ORIGIN, str(source))
+    if not (source / ".git").exists():
+        raise RuntimeError("Existing MoBits Connect cache is not a Git checkout")
+    origin = git("-C", str(source), "remote", "get-url", "origin", capture=True).decode().strip()
+    if origin.rstrip("/") not in (CONNECT_ORIGIN, CONNECT_ORIGIN.removesuffix(".git")):
+        raise RuntimeError("Existing MoBits Connect cache has a different origin")
+    git("-C", str(source), "fetch", "--no-tags", "origin", CONNECT_REVISION)
+    actual = git("-C", str(source), "rev-parse", CONNECT_REVISION + "^{commit}", capture=True).decode().strip()
+    if actual != CONNECT_REVISION:
+        raise RuntimeError("MoBits Connect source revision mismatch")
+    archive = git("-C", str(source), "archive", "--format=tar", CONNECT_REVISION, "include", capture=True)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".mobits-headers-", dir=base.parent) as temp:
+        stage = Path(temp).resolve() / "headers"
+        stage.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            for item in tar:
+                path = PurePosixPath(item.name)
+                if not path.parts or path.parts[0] != "include" or ".." in path.parts:
+                    raise RuntimeError("Unexpected path in MoBits Connect headers archive")
+                destination = stage.joinpath(*path.parts)
+                if item.isdir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                elif item.isfile():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    content = tar.extractfile(item)
+                    if content is None:
+                        raise RuntimeError("Missing MoBits Connect header content")
+                    with content, destination.open("wb") as output:
+                        while block := content.read(1024 * 1024):
+                            output.write(block)
+                else:
+                    raise RuntimeError("Unexpected non-file in MoBits Connect headers archive")
+        (stage / ".mrfps-headers.json").write_text(json.dumps({"revision": CONNECT_REVISION}) + "\n", encoding="utf-8")
+        if base.exists():
+            raise RuntimeError("MoBits Connect headers appeared during installation; they were not modified")
+        os.replace(stage, base)
 
 
 def apply_unreal_compatibility(target: Path) -> None:
@@ -208,8 +266,13 @@ def ensure(source: Path | None) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, help="existing checkout containing the pinned revision")
+    parser.add_argument("--quest-identify-headers", action="store_true", help="fetch pinned Android LRA-identification headers")
     try:
-        print(json.dumps(ensure(parser.parse_args().source)))
+        args = parser.parse_args()
+        result = ensure(args.source)
+        if args.quest_identify_headers:
+            ensure_connect_headers()
+        print(json.dumps(result))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, tarfile.TarError) as exc:
         print("MoBits SDK setup failed: " + str(exc), file=sys.stderr)

@@ -544,13 +544,19 @@ void UMRFPSLoginMenu::ApplyPointerAction(MRFPSLoginPointer::EAction Action)
 void UMRFPSLoginMenu::HandleFocusLost()
 {
     if (!bOpen) return;
+    if (MoBitsSetup) MoBitsSetup->CancelIdentify();
     if (Interaction) Interaction->CancelPointer();
     PointerInput.CancelActive(); PointerInput.SetFocused(false); PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=-1; PreviousPointerHit.Reset();
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_FOCUS active=0"));
 }
+void UMRFPSLoginMenu::CancelMoBitsIdentify()
+{
+    if (MoBitsSetup) MoBitsSetup->CancelIdentify();
+}
 void UMRFPSLoginMenu::HandleFocusGained()
 {
     if (!bOpen) return;
+    if (bMoBitsPage && MoBitsSetup) MoBitsSetup->ResumeIdentify();
     if (Interaction) Interaction->CancelPointer();
     PointerInput.CancelActive(); PointerInput.SetFocused(true); PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=-1; PreviousPointerHit.Reset();
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_FOCUS active=1"));
@@ -587,6 +593,7 @@ void UMRFPSLoginMenu::ProcessControlFile()
 void UMRFPSLoginMenu::CloseLogin()
 {
     if (bClosing) return; bClosing=true; bOpen=false;
+    if (MoBitsSetup) MoBitsSetup->CancelIdentify();
     CancelPendingExchange(); bExchanging=false;
     if (auto* PC=Controller.Get()) if (auto* GI=Cast<UMRFPSGameInstance>(PC->GetGameInstance())) {
         GI->FireTransition.SealForTravel();
@@ -687,6 +694,7 @@ void UMRFPSLoginMenu::ShowConnectionFailure()
 }
 void UMRFPSLoginMenu::SetStage(bool Login)
 {
+    if (bMoBitsPage && MoBitsSetup) MoBitsSetup->CancelIdentify();
     // The old page's Slate hit grid remains valid until the next completed
     // paint. Discard edges across the change instead of clicking an old key.
     bPointerGridReady=false; LastPointerPaint=-1;
@@ -711,7 +719,7 @@ void UMRFPSLoginMenu::ShowMoBits()
     if (MoBitsPage) MoBitsPage->SetVisibility(ESlateVisibility::Visible);
     if (Heading) Heading->SetText(FText::FromString(TEXT("MoBits 設定")));
     SetStatus(TEXT("Quest の Bluetooth で直接接続"));
-    if (MoBitsSetup) MoBitsSetup->Refresh();
+    if (MoBitsSetup) { MoBitsSetup->ResumeIdentify(); MoBitsSetup->Refresh(); }
 }
 bool UMRFPSLoginMenu::ReadAddress(FString& Out) const
 {

@@ -15,7 +15,9 @@ $root = Get-MRFPSRoot
 $engine = Resolve-MRFPSEngine $EngineRoot
 if (-not $DryRun) {
     $sdkPython = Join-Path $engine 'Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
-    & $sdkPython (Join-Path $root 'tools\mobits\ensure_sdk.py')
+    $sdkArgs = @((Join-Path $root 'tools\mobits\ensure_sdk.py'))
+    if ($Target -eq 'Quest') { $sdkArgs += '--quest-identify-headers' }
+    & $sdkPython @sdkArgs
     if ($LASTEXITCODE -ne 0) { throw 'MoBits SDK setup failed. Check access to the private SDK repository.' }
 }
 $project = Join-Path $root 'MRFPS.uproject'

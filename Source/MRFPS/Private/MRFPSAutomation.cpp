@@ -2,6 +2,7 @@
 #include "MRFPSBot.h"
 #include "MRFPSAdminPanel.h"
 #include "MRFPSLoginMenu.h"
+#include "MRFPSMoBitsSetup.h"
 #include "MRFPSLocalPoseStatus.h"
 #include "MRFPSMenu.h"
 #include "MRFPSRoster.h"
@@ -368,6 +369,16 @@ void AMRFPSPlayerController::TickAutomation()
                         Devices.Add(MakeShared<FJsonValueObject>(Row));
                     }
                     Data->SetArrayField(TEXT("quest_mobits_devices"),Devices);
+                    if (const auto* Setup=DeviceLogin?DeviceLogin->ActiveMoBitsSetup():nullptr) {
+                        auto Identify=MakeShared<FJsonObject>();
+                        Identify->SetStringField(TEXT("left_id"),Setup->LeftDeviceId());
+                        Identify->SetStringField(TEXT("right_id"),Setup->RightDeviceId());
+                        Identify->SetBoolField(TEXT("left_sent"),Setup->LeftIdentifySent());
+                        Identify->SetBoolField(TEXT("right_sent"),Setup->RightIdentifySent());
+                        Identify->SetBoolField(TEXT("pending"),Setup->IdentifyPending());
+                        Identify->SetBoolField(TEXT("failed"),Setup->IdentifyFailed());
+                        Data->SetObjectField(TEXT("quest_mobits_identify"),Identify);
+                    }
                 }
             }
             if(GS) { Data->SetNumberField(TEXT("phase"),int32(GS->Phase)); Data->SetBoolField(TEXT("paused"),GS->bCombatPaused);
@@ -562,7 +573,7 @@ void AMRFPSPlayerController::TickAutomation()
             else if(!Fighter->bCalibrated) { Ok=false; Code=TEXT("CALIBRATION_REQUIRED"); }
             else if(ReadyState->RoundReadyMask&(1u<<Fighter->GetSlot())) { Already=true; Code=TEXT("ROUND_READY_ALREADY_SET"); }
             else { Fighter->ServerRoundReady(ReadyState->RoundReadyWindow); Submitted=true; Code=TEXT("ROUND_READY_SUBMITTED"); }
-        } else if(Operation==TEXT("mobits.start") || Operation==TEXT("mobits.scan") || Operation==TEXT("mobits.pair")) {
+        } else if(Operation==TEXT("mobits.start") || Operation==TEXT("mobits.scan") || Operation==TEXT("mobits.pair") || Operation==TEXT("mobits.identify")) {
 #if PLATFORM_ANDROID
             auto* Fighter=GetPawn<AMRFPSPawn>();
             auto* Runtime=Fighter?Fighter->QuestHaptics.Get():nullptr;
@@ -570,7 +581,11 @@ void AMRFPSPlayerController::TickAutomation()
                 Ok=false; Code=TEXT("QUEST_PLAYER_REQUIRED");
             } else {
                 const auto State=Runtime->GetStatus();
-                if(Operation==TEXT("mobits.start")) {
+                if(Operation==TEXT("mobits.identify")) {
+                    auto* Setup=DeviceLogin?DeviceLogin->ActiveMoBitsSetup():nullptr;
+                    if(!Setup || !Setup->RequestIdentify()) { Ok=false; Code=TEXT("MOBITS_IDENTIFY_UNAVAILABLE"); }
+                    else { Submitted=true; Code=TEXT("MOBITS_IDENTIFY_SUBMITTED"); }
+                } else if(Operation==TEXT("mobits.start")) {
                     if(State.bHasSession) { Already=true; Code=TEXT("MOBITS_SESSION_OPEN"); }
                     else if(Runtime->Start()) { Submitted=true; Code=TEXT("MOBITS_START_SUBMITTED"); }
                     else { Ok=false; Code=TEXT("MOBITS_START_FAILED"); }
@@ -596,7 +611,7 @@ void AMRFPSPlayerController::TickAutomation()
             FString State; auto* Fighter=GetPawn<AMRFPSPawn>(); auto* Haptics=Fighter?Fighter->Haptics.Get():nullptr;
             if(IsInspector()||!Haptics||!Params->TryGetStringField(TEXT("state"),State)) { Ok=false; Code=TEXT("HAPTICS_UNAVAILABLE"); }
             else if (Fighter->QuestHaptics) {
-                if (State==TEXT("stopped")) { Fighter->QuestHaptics->StopAll(); Submitted=true; Code=TEXT("HAPTICS_STOP_SUBMITTED"); }
+                if (State==TEXT("stopped")) { StopHaptics(); Submitted=true; Code=TEXT("HAPTICS_STOP_SUBMITTED"); }
                 else if (State==TEXT("disconnected")) {
                     if (!Fighter->QuestHaptics->GetStatus().bHasSession) Already=true;
                     else if (Fighter->QuestHaptics->CloseSession()) { Submitted=true; Code=TEXT("HAPTICS_DISCONNECT_SUBMITTED"); }

@@ -55,6 +55,8 @@ public:
     void TickXRPointerAfterPaint(UWidgetComponent* PaintedComponent,float DeltaTime);
     bool IsOpen() const { return bOpen; }
     bool IsMoBitsOpen() const { return bOpen && bMoBitsPage; }
+    UMRFPSMoBitsSetup* ActiveMoBitsSetup() const { return IsMoBitsOpen()?MoBitsSetup.Get():nullptr; }
+    void CancelMoBitsIdentify();
     bool IsExchanging() const { return bOpen && bExchanging; }
     UFUNCTION() void Next();
     UFUNCTION() void Back();

@@ -1,4 +1,5 @@
 #include "MRFPSMoBitsSetup.h"
+#include "MRFPSMoBitsIdentify.h"
 #include "MRFPSGame.h"
 #include "MRFPSLoginMenu.h"
 #include "MoBitsQuestStandaloneComponent.h"
@@ -109,9 +110,8 @@ void UMRFPSMoBitsSetup::Build(UMRFPSLoginMenu* InMenu,UWidgetTree* Tree,UVertica
     Button(Tree,DeviceRow,TEXT("前"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::PreviousDevice);
     Button(Tree,DeviceRow,TEXT("次"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::NextDevice);
     Button(Tree,DeviceRow,TEXT("接続・登録"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::Pair);
-    auto* AssignRow=Row(Tree,DevicesPage);
-    Button(Tree,AssignRow,TEXT("この機器を左腕に"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::AssignLeft);
-    Button(Tree,AssignRow,TEXT("この機器を右腕に"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::AssignRight);
+    Label(Tree,DevicesPage,TEXT("接続すると順番に振動します。表示された左腕・右腕へ装着してください。"),15);
+    Button(Tree,Row(Tree,DevicesPage),TEXT("振動をやり直す"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::RepeatIdentify);
     Label(Tree,DevicesPage,TEXT("両上腕に電極1・2を装着し、機器のUSBを外してください。"),15);
     Button(Tree,Row(Tree,DevicesPage),TEXT("装着と左右を確認して開始"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::BeginSession);
 
@@ -201,13 +201,28 @@ void UMRFPSMoBitsSetup::Refresh()
     TextIfChanged(StateText,Error.IsEmpty() ? (Armed?TEXT("準備完了"):Stopped?TEXT("停止中"):TEXT("MoBits セットアップ")) : Error);
     const auto List=Candidates(R);
     if (List.IsEmpty()) Candidate=0; else Candidate=FMath::Clamp(Candidate,0,List.Num()-1);
+    // Keep assigned IDs stable across disconnects; never silently swap arms.
+    if (!Status.bHasSession) {
+        for (const auto& Device:List) {
+            if (!Device.bConnected) continue;
+            if (LeftId.IsEmpty() && Device.Id!=RightId) LeftId=Device.Id;
+            else if (RightId.IsEmpty() && Device.Id!=LeftId) RightId=Device.Id;
+        }
+        const auto Connected=[&List](const FString& Id) {
+            return !Id.IsEmpty() && List.ContainsByPredicate([&Id](const FMoBitsQuestDevice& D) { return D.Id==Id && D.bConnected; });
+        };
+        if (!bIdentifyPaused && !IdentifyRequest.IsValid() && FPlatformTime::Seconds()>=NextIdentifyAt) {
+            if (!bLeftIdentified && !bLeftIdentifyFailed && Connected(LeftId)) StartIdentify(false);
+            else if (bLeftIdentified && !bRightIdentified && !bRightIdentifyFailed && Connected(RightId)) StartIdentify(true);
+        }
+    }
     FString Current=TEXT("候補なし。開始後に機器を探してください。");
     if (List.IsValidIndex(Candidate)) {
         const auto& D=List[Candidate];
         Current=FString::Printf(TEXT("候補 %d/%d  %s  %s"),Candidate+1,List.Num(),*D.Id,
             D.bConnected?TEXT("接続済み"):D.bPairing?TEXT("登録可能"):D.bPaired?TEXT("再接続待ち"):TEXT("未接続"));
     }
-    TextIfChanged(DeviceText,Current+FString::Printf(TEXT("\n左: %s　右: %s"),LeftId.IsEmpty()?TEXT("未選択"):*LeftId,RightId.IsEmpty()?TEXT("未選択"):*RightId));
+    TextIfChanged(DeviceText,Current+FString::Printf(TEXT("\n左: %s　右: %s"),LeftId.IsEmpty()?TEXT("接続待ち"):bLeftIdentified?TEXT("振動送信済み"):TEXT("振動待ち"),RightId.IsEmpty()?TEXT("接続待ち"):bRightIdentified?TEXT("振動送信済み"):TEXT("振動待ち")));
     if (Status.Arms.IsValidIndex(Side)) {
         const auto& A=Status.Arms[Side];
         MaxDeliveredUa[Side]=FMath::Max(MaxDeliveredUa[Side],A.LastCalibrationUa);
@@ -221,7 +236,7 @@ void UMRFPSMoBitsSetup::Refresh()
     }
 }
 
-void UMRFPSMoBitsSetup::Start() { if (auto* R=Runtime()) { R->Start(); Note(TEXT("許可を求められた場合、許可後にもう一度「開始」を押してください。")); } }
+void UMRFPSMoBitsSetup::Start() { if (auto* R=Runtime()) { ResumeIdentify(); R->Start(); Note(TEXT("許可を求められた場合、許可後にもう一度「開始」を押してください。")); } }
 void UMRFPSMoBitsSetup::Scan() { if (auto* R=Runtime()) { R->ScanDevices(); Note(TEXT("ペアリングモードの機器を探しています。")); } }
 void UMRFPSMoBitsSetup::MoveCandidate(int32 Direction) { const auto L=Candidates(Runtime()); if (!L.IsEmpty()) Candidate=(Candidate+Direction+L.Num())%L.Num(); Refresh(); }
 void UMRFPSMoBitsSetup::PreviousDevice() { MoveCandidate(-1); }
@@ -231,28 +246,61 @@ void UMRFPSMoBitsSetup::Pair()
     auto* R=Runtime(); if (!R) return; const auto L=Candidates(R);
     if (!L.IsValidIndex(Candidate)) { Note(TEXT("先に機器を探してください。")); return; }
     const auto& D=L[Candidate];
-    if (D.bConnected) { Note(TEXT("接続済みです。左右の腕に割り当ててください。")); return; }
+    if (D.bConnected) { Note(TEXT("接続済みです。左右は自動で振り分けます。")); return; }
     if (!D.bPairing) { Note(TEXT("未接続の場合は機器をペアリングモードにしてください。")); return; }
     if (R->PairDevice(D.Id)) Note(TEXT("接続中です。Questのペアリング確認が出たら許可してください。"));
 }
-void UMRFPSMoBitsSetup::AssignLeft()
+void UMRFPSMoBitsSetup::CancelIdentify()
 {
-    const auto L=Candidates(Runtime());
-    if (!L.IsValidIndex(Candidate) || !L[Candidate].bConnected) { Note(TEXT("接続済みの機器を選んでください。")); return; }
-    if (L[Candidate].Id==RightId) { Note(TEXT("左右には別の機器を選んでください。")); return; }
-    LeftId=L[Candidate].Id; Note(TEXT("左腕の機器を選択しました。")); Refresh();
+    bIdentifyPaused=true;
+    if (IdentifyRequest.IsValid()) IdentifyRequest->Cancelled.store(true);
 }
-void UMRFPSMoBitsSetup::AssignRight()
+void UMRFPSMoBitsSetup::ResumeIdentify() { bIdentifyPaused=false; }
+void UMRFPSMoBitsSetup::StartIdentify(bool Right)
 {
-    const auto L=Candidates(Runtime());
-    if (!L.IsValidIndex(Candidate) || !L[Candidate].bConnected) { Note(TEXT("接続済みの機器を選んでください。")); return; }
-    if (L[Candidate].Id==LeftId) { Note(TEXT("左右には別の機器を選んでください。")); return; }
-    RightId=L[Candidate].Id; Note(TEXT("右腕の機器を選択しました。")); Refresh();
+    const FString Id=Right?RightId:LeftId;
+    if (Id.IsEmpty() || IdentifyRequest.IsValid() || bIdentifyPaused) return;
+    const auto Request=MakeShared<FMRFPSMoBitsIdentifyRequest,ESPMode::ThreadSafe>();
+    IdentifyRequest=Request;
+    Note(Right?TEXT("右腕：振動する機器を右腕に装着してください。"):
+        TEXT("左腕：振動する機器を左腕に装着してください。"));
+    TWeakObjectPtr<UMRFPSMoBitsSetup> WeakThis(this);
+    MRFPSMoBitsIdentify::Start(Id,Request,[WeakThis,Request,Right](bool Sent,int32 Code) {
+        auto* Self=WeakThis.Get();
+        if (!Self || Self->IdentifyRequest.Get()!=&Request.Get()) return;
+        Self->IdentifyRequest.Reset();
+        if (Request->Cancelled.load()) return;
+        if (Sent) {
+            if (Right) Self->bRightIdentified=true; else Self->bLeftIdentified=true;
+            Self->Note(Right?TEXT("振動した機器を右腕に装着してください。"):
+                TEXT("振動した機器を左腕に装着してください。"));
+            Self->NextIdentifyAt=FPlatformTime::Seconds()+2.0;
+        } else {
+            if (Right) Self->bRightIdentifyFailed=true; else Self->bLeftIdentifyFailed=true;
+            Self->Note(FString::Printf(TEXT("識別振動を送れません (%d)。接続を確認し、振動をやり直してください。"),Code));
+            UE_LOG(LogMRFPSMoBitsSetup,Warning,TEXT("MRFPS_MOBITS_IDENTIFY side=%s code=%d"),Right?TEXT("right"):TEXT("left"),Code);
+        }
+    });
+}
+void UMRFPSMoBitsSetup::RepeatIdentify() { RequestIdentify(); }
+bool UMRFPSMoBitsSetup::RequestIdentify()
+{
+    auto* R=Runtime();
+    if (!R || R->GetStatus().bHasSession || IdentifyRequest.IsValid()) {
+        Note(TEXT("接続や振動の完了を待ってください。")); return false;
+    }
+    ResumeIdentify(); bLeftIdentified=bRightIdentified=bLeftIdentifyFailed=bRightIdentifyFailed=false;
+    NextIdentifyAt=0; Note(TEXT("接続した機器を順番に振動させます。")); Refresh();
+    return true;
 }
 void UMRFPSMoBitsSetup::BeginSession()
 {
     auto* R=Runtime(); if (!R) return;
-    if (LeftId.IsEmpty() || RightId.IsEmpty() || LeftId==RightId) { Note(TEXT("左右に別の接続済み機器を選んでください。")); return; }
+    const auto List=Candidates(R);
+    const auto Connected=[&List](const FString& Id) { return !Id.IsEmpty() && List.ContainsByPredicate([&Id](const FMoBitsQuestDevice& D) { return D.Id==Id && D.bConnected; }); };
+    if (!Connected(LeftId) || !Connected(RightId) || LeftId==RightId || !bLeftIdentified || !bRightIdentified || IdentifyRequest.IsValid()) {
+        Note(TEXT("2台の接続と識別振動の完了を待ってください。")); return;
+    }
     TargetUa[0]=TargetUa[1]=500; MaxDeliveredUa[0]=MaxDeliveredUa[1]=FeltUa[0]=FeltUa[1]=0; Side=0; bPulsePending=false;
     if (R->BeginSession(LeftId,RightId,true)) Note(TEXT("開始中です。機器の状態を確認しています。"));
 }
@@ -302,7 +350,7 @@ void UMRFPSMoBitsSetup::NextWave() { MoveWave(1); }
 void UMRFPSMoBitsSetup::TryWave() { if (auto* R=Runtime()) if (R->TryPreset(Side==1,static_cast<EMoBitsHapticWave>(Wave),true)) Note(TEXT("実際に届いた後、本人が快適さを確認してください。")); }
 void UMRFPSMoBitsSetup::ConfirmWave() { if (auto* R=Runtime()) if (R->ConfirmPreset(Side==1,static_cast<EMoBitsHapticWave>(Wave),true)) Note(TEXT("この波形の確認を記録しています。")); }
 void UMRFPSMoBitsSetup::Arm() { if (auto* R=Runtime()) if (R->ArmPresets(true)) Note(TEXT("全8項目の確認後、有効化します。")); }
-void UMRFPSMoBitsSetup::Stop() { if (auto* R=Runtime()) { bPulsePending=false; R->StopAll(); Note(TEXT("停止を要求しました。")); } }
+void UMRFPSMoBitsSetup::Stop() { CancelIdentify(); if (auto* R=Runtime()) { bPulsePending=false; R->StopAll(); Note(TEXT("停止を要求しました。")); } }
 void UMRFPSMoBitsSetup::CloseSession() { if (auto* R=Runtime()) if (R->CloseSession()) Note(TEXT("停止確認後にセッションを閉じます。")); }
 void UMRFPSMoBitsSetup::Back() { if (Menu.IsValid()) Menu->Back(); }
 void UMRFPSMoBitsSetup::Finish() { if (Menu.IsValid()) Menu->CloseLogin(); }

@@ -1169,6 +1169,7 @@ void AMRFPSPlayerController::QuestArmHaptics()
 }
 void AMRFPSPlayerController::StopHaptics()
 {
+    if (DeviceLogin) DeviceLogin->CancelMoBitsIdentify();
     if (auto* P=GetPawn<AMRFPSPawn>()) {
         if (P->Haptics) P->Haptics->StopHaptics();
         if (P->QuestHaptics && IsLocalController()) P->QuestHaptics->StopAll();

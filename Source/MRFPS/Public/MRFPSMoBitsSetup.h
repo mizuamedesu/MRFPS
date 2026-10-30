@@ -9,6 +9,7 @@ class UMoBitsQuestStandaloneComponent;
 class UTextBlock;
 class UVerticalBox;
 class UWidgetTree;
+struct FMRFPSMoBitsIdentifyRequest;
 
 /** In-game, wearer-operated setup for the Quest direct-Bluetooth runtime. */
 UCLASS()
@@ -18,6 +19,15 @@ class MRFPS_API UMRFPSMoBitsSetup : public UObject
 public:
     void Build(UMRFPSLoginMenu* InMenu, UWidgetTree* Tree, UVerticalBox* Parent);
     void Refresh();
+    void CancelIdentify();
+    void ResumeIdentify();
+    bool RequestIdentify();
+    const FString& LeftDeviceId() const { return LeftId; }
+    const FString& RightDeviceId() const { return RightId; }
+    bool LeftIdentifySent() const { return bLeftIdentified; }
+    bool RightIdentifySent() const { return bRightIdentified; }
+    bool IdentifyPending() const { return IdentifyRequest.IsValid(); }
+    bool IdentifyFailed() const { return bLeftIdentifyFailed || bRightIdentifyFailed; }
 
 private:
     UMoBitsQuestStandaloneComponent* Runtime() const;
@@ -26,14 +36,14 @@ private:
     void SelectSide(bool Right);
     void MoveCandidate(int32 Direction);
     void MoveWave(int32 Direction);
+    void StartIdentify(bool Right);
 
     UFUNCTION() void Start();
     UFUNCTION() void Scan();
     UFUNCTION() void PreviousDevice();
     UFUNCTION() void NextDevice();
     UFUNCTION() void Pair();
-    UFUNCTION() void AssignLeft();
-    UFUNCTION() void AssignRight();
+    UFUNCTION() void RepeatIdentify();
     UFUNCTION() void BeginSession();
     UFUNCTION() void StartCalibration();
     UFUNCTION() void LeftArm();
@@ -72,6 +82,11 @@ private:
     int32 MaxDeliveredUa[2] = {0,0};
     int32 FeltUa[2] = {0,0};
     bool bPulsePending = false;
+    TSharedPtr<FMRFPSMoBitsIdentifyRequest, ESPMode::ThreadSafe> IdentifyRequest;
+    double NextIdentifyAt = 0;
+    bool bLeftIdentified = false, bRightIdentified = false;
+    bool bLeftIdentifyFailed = false, bRightIdentifyFailed = false;
+    bool bIdentifyPaused = false;
     int32 PulseSide = 0, PulsePreviousUa = 0, PulsePreviousCode = 0;
     FString PulsePreviousMessage;
 };

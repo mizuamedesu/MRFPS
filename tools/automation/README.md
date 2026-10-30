@@ -22,6 +22,7 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `window.set` | `{"window":"player1|player2|inspector","open":true}` | Open or close one separate window |
 | `menu.set` | `{"menu":"session|admin|login|mobits","open":true}` | Open or close a UI panel; Quest keeps its connection, while desktop opening login requests a disconnect |
 | `menu.set` | `{"menu":"session","open":true,"tab":"participants|settings"}` | Select the session-menu tab; participants requires an authenticated inspector/admin |
+| `mobits.identify` | `{}` | With the Quest MoBits page open and no session, repeat the left/right LRA identification sequence; the same operation ID is applied at most once |
 | `roster.list` | `{}` | Read the authenticated inspector/admin roster; unknown, stale and bot ping is `null` |
 | `connection.set` | `{"connected":false}` | Request disconnection and the login screen; connect with `tools/client/device_login.py` and a new code |
 | `camera.set` | `{"camera":"main|inspector","position":[0,0,650],"rotation":[-30,0,0]}` | Set the free camera or the separate inspector window's camera; rotation is pitch/yaw/roll in degrees |
