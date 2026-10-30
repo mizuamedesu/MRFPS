@@ -6,6 +6,7 @@
 #include "Interfaces/IHttpRequest.h"
 #include "MRFPSLoginPointer.h"
 #include "MRFPSWeaponPose.h"
+#include "Engine/TimerHandle.h"
 #include "MRFPSLoginMenu.generated.h"
 
 class AMRFPSPlayerController;
@@ -46,6 +47,7 @@ public:
     void InsertKey(const FString& Key);
     void CloseLogin();
     void ShowConnectionFailure();
+    bool IsCurrentExchange(uint64 Generation) const { return bOpen && !bClosing && bExchanging && ExchangeGeneration==Generation; }
     /** Poll on the owning player's game tick, even when Slate is not painting. */
     void TickControlFile();
     void TickXRPointerAfterPaint(UWidgetComponent* PaintedComponent,float DeltaTime);
@@ -72,18 +74,24 @@ private:
     friend class FMRFPSQuestLoginToggleTest;
     friend class FMRFPSLoginWidgetPaintScenario;
     friend class FMRFPSLoginStatusPropagationTest;
+    friend class FMRFPSLoginAttemptCancellationTest;
     FString TestControlPath;
     bool bTestAndroidControl=false;
     bool bUseTestWeapon=false;
     FMRFPSWeaponPose TestWeapon;
     TFunction<void()> TestDuringPaint;
+    bool bTestSkipHttpSend=false;
+    TFunction<void()> TestConnectAfterLogin;
 #endif
     bool ReadAddress(FString& Out) const;
     void SelectRole(const FString& InRole);
     void SetStage(bool bLogin);
     void SetStatus(const FString& Message, bool bError=false);
-    void HandleExchange(FHttpRequestPtr Request,FHttpResponsePtr Response,bool bSucceeded);
-    void ConnectAfterLogin();
+    void CancelPendingExchange();
+    void SetExchangeError(const FString& Message);
+    void HandleExchange(uint64 Generation,FHttpRequestPtr Request,FHttpResponsePtr Response,bool bSucceeded);
+    void QueueConnectAfterLogin(uint64 Generation);
+    void ConnectAfterLogin(uint64 Generation);
     void ProcessControlFile();
     void UpdateXRPointer(float DeltaTime);
     bool ResolvePointerWeapon(AMRFPSPawn* Pawn,FMRFPSWeaponPose& Weapon);
@@ -106,6 +114,8 @@ private:
     UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> PointerRay;
     UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> PointerDot;
     TSharedPtr<IHttpRequest,ESPMode::ThreadSafe> PendingRequest;
+    FTimerHandle ConnectAfterExchangeTimer;
+    uint64 ExchangeGeneration=0;
     FString Role=TEXT("player");
     FString Destination;
     bool bVR=false,bOpen=false,bLoginPage=false,bExchanging=false,bClosing=false;

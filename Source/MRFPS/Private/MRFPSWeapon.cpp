@@ -7,6 +7,7 @@
 #include "MRFPSViewCaptureSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Components/WidgetComponent.h"
+#include "HeadMountedDisplayFunctionLibrary.h"
 #include "Misc/Paths.h"
 #include "Misc/App.h"
 #include "Rendering/DrawElements.h"
@@ -140,9 +141,13 @@ void AMRFPSPawn::UpdatePlayerHud()
             ];
         RoundHud->SetSlateWidget(RoundHudSlate);
     }
-    // Count only foreground time after the actual 3D widget has a render target.
+    // Count only visible foreground time. The application can retain desktop
+    // focus while the headset has yielded VR focus to a system overlay.
+    bool UsesVRFocus=false,HasVRFocus=false;
+    UHeadMountedDisplayFunctionLibrary::GetVRFocusState(UsesVRFocus,HasVRFocus);
     if (auto* Instance=GetGameInstance<UMRFPSGameInstance>())
-        Instance->ConnectionStatus.AdvanceVisible(FApp::GetDeltaTime(),FApp::HasFocus(),
+        Instance->ConnectionStatus.AdvanceVisible(FApp::GetDeltaTime(),
+            MRFPSConnectionStatus::FocusAllowsVisibility(FApp::HasFocus(),UsesVRFocus,HasVRFocus),
             PlayerHud->IsWidgetVisible() && PlayerHud->GetRenderTarget()!=nullptr);
     if (PlayerHudSlate.IsValid()) return;
     PlayerHudSlate=SNew(SOverlay)

@@ -12,6 +12,11 @@ enum class ERole { Unknown, Player, Inspector, Admin };
 enum class EPhase { Idle, Connecting, Joined, Failure };
 enum class EFailure { None, Connection, Timeout, Version, Capacity, Authentication };
 
+inline bool FocusAllowsVisibility(bool AppFocused,bool UsesVRFocus,bool HasVRFocus)
+{
+    return AppFocused && (!UsesVRFocus || HasVRFocus);
+}
+
 struct FState
 {
     EPhase Phase=EPhase::Idle;

@@ -648,6 +648,7 @@ void UMRFPSLoginMenu::ProcessControlFile()
 void UMRFPSLoginMenu::CloseLogin()
 {
     if (bClosing) return; bClosing=true; bOpen=false;
+    CancelPendingExchange(); bExchanging=false;
     if (auto* PC=Controller.Get()) if (auto* GI=Cast<UMRFPSGameInstance>(PC->GetGameInstance())) {
         FMRFPSGloveHandFrame Glove;
         if (auto* Gloves=GI->GetSubsystem<UMRFPSGloveSubsystem>()) {
@@ -658,7 +659,6 @@ void UMRFPSLoginMenu::CloseLogin()
             Glove.bControllerValid,Glove.bTriggerPressed,Glove.Trigger,Glove.ControllerReceivedAt);
         GI->FireTransition.SealForTravel();
     }
-    if (PendingRequest) { PendingRequest->OnProcessRequestComplete().Unbind(); PendingRequest->CancelRequest(); PendingRequest.Reset(); }
     FCoreDelegates::ApplicationWillDeactivateDelegate.Remove(FocusLostHandle);
     FCoreDelegates::ApplicationHasReactivatedDelegate.Remove(FocusGainedHandle);
     FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(BackgroundHandle);
@@ -728,6 +728,20 @@ void UMRFPSLoginMenu::SetStatus(const FString& Message,bool Error)
 {
     if (Status) { Status->SetText(FText::FromString(Message)); Status->SetColorAndOpacity(FSlateColor(Error?FLinearColor(1,.4f,.4f,1):Muted)); }
 }
+void UMRFPSLoginMenu::CancelPendingExchange()
+{
+    const uint64 Previous=ExchangeGeneration++;
+    if (auto* World=GetWorld()) World->GetTimerManager().ClearTimer(ConnectAfterExchangeTimer);
+    if (auto* PC=Controller.Get()) PC->CancelPendingDeviceConnection(this,Previous);
+    // Invalidate before unbinding/cancelling: a callback already queued on
+    // the game thread must not affect a later exchange on this same widget.
+    auto OldRequest=MoveTemp(PendingRequest);
+    if (OldRequest) { OldRequest->OnProcessRequestComplete().Unbind(); OldRequest->CancelRequest(); }
+}
+void UMRFPSLoginMenu::SetExchangeError(const FString& Message)
+{
+    CancelPendingExchange(); bExchanging=false; SetStatus(Message,true);
+}
 void UMRFPSLoginMenu::ShowConnectionFailure()
 {
     if (!bOpen) return;
@@ -735,7 +749,8 @@ void UMRFPSLoginMenu::ShowConnectionFailure()
     if (!Instance || Instance->ConnectionStatus.Phase!=MRFPSConnectionStatus::EPhase::Failure) return;
     const FString Message=Instance->ConnectionFailureMessage();
     if (Message.IsEmpty()) return;
-    if (bExchanging || bLoginPage) { bExchanging=false; SetStage(false); }
+    CancelPendingExchange(); bExchanging=false;
+    if (bLoginPage) SetStage(false);
     SetStatus(Message,true);
 }
 void UMRFPSLoginMenu::SetStage(bool Login)
@@ -792,6 +807,8 @@ void UMRFPSLoginMenu::Exchange()
     if (bExchanging || !bLoginPage || !CodeBox) return;
     FString Code=CodeBox->GetText().ToString().TrimStartAndEnd();
     if (Code.Len()!=6 || !Code.IsNumeric()) { SetStatus(TEXT("6桁の数字を入力してください"),true); return; }
+    CancelPendingExchange();
+    const uint64 Generation=ExchangeGeneration;
     if (auto* PC=Controller.Get()) if (auto* Instance=PC->GetGameInstance<UMRFPSGameInstance>()) {
         Instance->ConnectionStatus.ClearFailure(); PC->ConnectionError.Empty();
     }
@@ -813,31 +830,41 @@ void UMRFPSLoginMenu::Exchange()
     Request->SetURL(URL); Request->SetVerb(TEXT("POST")); Request->SetHeader(TEXT("Content-Type"),TEXT("application/json"));
     Request->SetTimeout(12.f); Request->SetContentAsString(Body); Body.Empty();
     const TWeakObjectPtr<UMRFPSLoginMenu> Weak(this);
-    Request->OnProcessRequestComplete().BindLambda([Weak](FHttpRequestPtr Req,FHttpResponsePtr Response,bool OK) { if (Weak.IsValid()) Weak->HandleExchange(Req,Response,OK); });
+    Request->OnProcessRequestComplete().BindLambda([Weak,Generation](FHttpRequestPtr Req,FHttpResponsePtr Response,bool OK) {
+        if (Weak.IsValid()) Weak->HandleExchange(Generation,Req,Response,OK);
+    });
     bExchanging=true; SetStatus(TEXT("認証中…"));
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_DEVICE_EXCHANGE_START role=%s"),*Role);
-    if (!Request->ProcessRequest()) { PendingRequest.Reset(); bExchanging=false; UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=REQUEST_START")); SetStatus(TEXT("認証サーバーに接続できません"),true); }
+    bool Started=true;
+#if WITH_DEV_AUTOMATION_TESTS
+    if (!bTestSkipHttpSend)
+#endif
+        Started=Request->ProcessRequest();
+    if (!Started && IsCurrentExchange(Generation) && PendingRequest==Request) {
+        UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=REQUEST_START"));
+        SetExchangeError(TEXT("認証サーバーに接続できません"));
+    }
 }
-void UMRFPSLoginMenu::HandleExchange(FHttpRequestPtr Request,FHttpResponsePtr Response,bool OK)
+void UMRFPSLoginMenu::HandleExchange(uint64 Generation,FHttpRequestPtr Request,FHttpResponsePtr Response,bool OK)
 {
-    if (!bOpen || !PendingRequest || Request!=PendingRequest) return;
+    if (!IsCurrentExchange(Generation) || !PendingRequest || Request!=PendingRequest) return;
     PendingRequest.Reset(); bExchanging=false;
-    if (!OK || !Response.IsValid()) { UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=NETWORK")); SetStatus(TEXT("認証サーバーに接続できません"),true); return; }
+    if (!OK || !Response.IsValid()) { UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=NETWORK")); SetExchangeError(TEXT("認証サーバーに接続できません")); return; }
     if (Response->GetResponseCode()!=200) {
         UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=HTTP_%d"),Response->GetResponseCode());
         if (Response->GetResponseCode()==429) {
             const FString RetryAfter=Response->GetHeader(TEXT("Retry-After"));
             const int Seconds=MRFPSRetryAfter::Parse(*RetryAfter,static_cast<std::size_t>(RetryAfter.Len()));
-            SetStatus(Seconds?FString::Printf(TEXT("%d秒後、新しいコードで再試行してください"),Seconds):
-                              FString(TEXT("しばらく待ってから再試行してください")),true);
-        } else SetStatus(TEXT("コードが無効か期限切れです"),true);
+            SetExchangeError(Seconds?FString::Printf(TEXT("%d秒後、新しいコードで再試行してください"),Seconds):
+                              FString(TEXT("しばらく待ってから再試行してください")));
+        } else SetExchangeError(TEXT("コードが無効か期限切れです"));
         return;
     }
-    if (Response->GetContent().Num()>8192) { SetStatus(TEXT("認証応答が無効です"),true); return; }
+    if (Response->GetContent().Num()>8192) { SetExchangeError(TEXT("認証応答が無効です")); return; }
     TSharedPtr<FJsonObject> Json; const auto Reader=TJsonReaderFactory<>::Create(Response->GetContentAsString());
     FString Token,Key;
     if (!FJsonSerializer::Deserialize(Reader,Json) || !Json.IsValid() || !Json->TryGetStringField(TEXT("token"),Token) || !Json->TryGetStringField(TEXT("public_key"),Key)) {
-        SetStatus(TEXT("認証応答が無効です"),true); return;
+        SetExchangeError(TEXT("認証応答が無効です")); return;
     }
     auto* PC=Controller.Get(); auto* Credentials=PC?PC->GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>():nullptr;
     FString Error;
@@ -845,13 +872,21 @@ void UMRFPSLoginMenu::HandleExchange(FHttpRequestPtr Request,FHttpResponsePtr Re
     if (!Token.IsEmpty()) FMemory::Memzero(Token.GetCharArray().GetData(),Token.GetCharArray().Num()*sizeof(TCHAR));
     if (!Accepted) {
         UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=%s"),Error.IsEmpty()?TEXT("AUTH_CONFIG"):*Error);
-        if (Error==TEXT("AUTH_KEY_CHANGED")) { TrustButton->SetVisibility(ESlateVisibility::Visible); SetStatus(TEXT("公開鍵が変更されました。確認してから保存済みの鍵を解除してください"),true); }
-        else SetStatus(TEXT("認証情報を検証できませんでした"),true);
+        if (Error==TEXT("AUTH_KEY_CHANGED")) { TrustButton->SetVisibility(ESlateVisibility::Visible); SetExchangeError(TEXT("公開鍵が変更されました。確認してから保存済みの鍵を解除してください")); }
+        else SetExchangeError(TEXT("認証情報を検証できませんでした"));
         return;
     }
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_DEVICE_EXCHANGE_VERIFIED role=%s"),*Role);
     TrustButton->SetVisibility(ESlateVisibility::Collapsed); bExchanging=true; SetStatus(TEXT("コードを確認しました。サーバーに接続中…"));
-    FTimerHandle Handle; GetWorld()->GetTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this]() { ConnectAfterLogin(); }),1.5f,false);
+    QueueConnectAfterLogin(Generation);
+}
+void UMRFPSLoginMenu::QueueConnectAfterLogin(uint64 Generation)
+{
+    if (!IsCurrentExchange(Generation)) return;
+    auto* World=GetWorld();
+    if (!World) { SetExchangeError(TEXT("接続を開始できません")); return; }
+    World->GetTimerManager().SetTimer(ConnectAfterExchangeTimer,
+        FTimerDelegate::CreateWeakLambda(this,[this,Generation]() { ConnectAfterLogin(Generation); }),1.5f,false);
 }
 void UMRFPSLoginMenu::ResetTrust()
 {
@@ -859,9 +894,13 @@ void UMRFPSLoginMenu::ResetTrust()
     if (!Credentials || !Credentials->ClearIssuerTrust(Error)) { SetStatus(TEXT("保存済みの公開鍵を解除できません"),true); return; }
     TrustButton->SetVisibility(ESlateVisibility::Collapsed); SetStatus(TEXT("公開鍵を解除しました。新しいコードで再ログインしてください"));
 }
-void UMRFPSLoginMenu::ConnectAfterLogin()
+void UMRFPSLoginMenu::ConnectAfterLogin(uint64 Generation)
 {
-    auto* PC=Controller.Get(); if (!PC || !bOpen) return;
+    if (!IsCurrentExchange(Generation)) return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if (TestConnectAfterLogin) { TestConnectAfterLogin(); return; }
+#endif
+    auto* PC=Controller.Get(); if (!PC) { SetExchangeError(TEXT("接続を開始できません")); return; }
     const FString Address=Destination, SelectedRole=Role;
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_DEVICE_CONNECT role=%s"),*SelectedRole);
     // Keep the status visible while UE connects. EndPlay closes the old
@@ -869,8 +908,7 @@ void UMRFPSLoginMenu::ConnectAfterLogin()
     PC->ConnectionError.Empty();
     auto* Instance=PC->GetGameInstance<UMRFPSGameInstance>();
     if (Instance) Instance->MarkNextConnectionAsDeviceLogin();
-    if (SelectedRole==TEXT("admin")) PC->MRFPSConnectAdmin(Address);
-    else PC->MRFPSConnect(Address,SelectedRole==TEXT("inspector"));
+    PC->BeginDeviceConnection(Address,SelectedRole,this,Generation);
     if (!PC->ConnectionError.IsEmpty() && PC->ConnectionError!=TEXT("Connecting...") && PC->GetNetMode()==NM_Standalone) {
         if (Instance) Instance->CancelNextDeviceConnection();
     }

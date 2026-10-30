@@ -16,6 +16,11 @@ int main()
     assert(Status.ObserveJoin(true,true,true,true,false,false,0));
     Status.AdvanceVisible(30,false,true);
     Status.AdvanceVisible(30,true,false);
+    assert(!FocusAllowsVisibility(true,true,false));
+    assert(!FocusAllowsVisibility(false,true,true));
+    assert(FocusAllowsVisibility(true,true,true));
+    assert(FocusAllowsVisibility(true,false,false));
+    Status.AdvanceVisible(30,FocusAllowsVisibility(true,true,false),true);
     assert(Status.VisibleSeconds==0);
     Status.AdvanceVisible(30,true,true);
     assert(Status.VisibleSeconds<=.1);

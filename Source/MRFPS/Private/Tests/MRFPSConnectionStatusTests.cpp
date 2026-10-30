@@ -2,12 +2,15 @@
 #include "MRFPSGame.h"
 #include "MRFPSLoginMenu.h"
 #include "Blueprint/UserWidget.h"
+#include "Components/EditableTextBox.h"
 #include "Components/TextBlock.h"
 #include "Components/ScrollBox.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Misc/AutomationTest.h"
+#include "Interfaces/IHttpRequest.h"
+#include "TimerManager.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSConnectionStatusTest,"MRFPS.Auth.ConnectionStatus",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
@@ -26,6 +29,11 @@ bool FMRFPSConnectionStatusTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("A live authenticated player with the requested slot has joined"),State.ObserveJoin(true,true,true,true,false,false,0));
     TestTrue(TEXT("A real join starts the success notice"),State.ShowSuccess());
     State.AdvanceVisible(20,false,true); State.AdvanceVisible(20,true,false);
+    TestFalse(TEXT("A VR overlay removes visible focus"),FocusAllowsVisibility(true,true,false));
+    TestFalse(TEXT("Desktop focus is also required"),FocusAllowsVisibility(false,true,true));
+    TestTrue(TEXT("An active headset can show the notice"),FocusAllowsVisibility(true,true,true));
+    TestTrue(TEXT("An XR runtime without VR focus falls back to application focus"),FocusAllowsVisibility(true,false,false));
+    State.AdvanceVisible(20,FocusAllowsVisibility(true,true,false),true);
     TestEqual(TEXT("Background or an unready HUD never consumes the notice"),State.VisibleSeconds,0.);
     State.AdvanceVisible(20,true,true);
     TestTrue(TEXT("A stalled foreground frame cannot consume the entire notice"),State.VisibleSeconds<=.1);
@@ -99,6 +107,102 @@ bool FMRFPSLoginStatusPropagationTest::RunTest(const FString& Parameters)
     }
     Instance->ConnectionStatus.ClearFailure();
     TestTrue(TEXT("An explicit new exchange can clear the prior failure"),Instance->ConnectionStatus.Phase==MRFPSConnectionStatus::EPhase::Idle);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSLoginAttemptCancellationTest,"MRFPS.Auth.LoginAttemptCancellation",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSLoginAttemptCancellationTest::RunTest(const FString& Parameters)
+{
+    if (!TestNotNull(TEXT("Engine exists"),GEngine)) return false;
+    auto* Instance=NewObject<UMRFPSGameInstance>(GEngine);
+    const auto Init=UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false)
+        .CreateNavigation(false).CreateAISystem(false).ShouldSimulatePhysics(false).CreateFXSystem(false);
+    UWorld* World=UWorld::CreateWorld(EWorldType::Game,false,NAME_None,nullptr,true,ERHIFeatureLevel::Num,&Init);
+    if (!TestNotNull(TEXT("A test world exists"),World)) return false;
+    FWorldContext& Context=GEngine->CreateNewWorldContext(EWorldType::Game); Context.OwningGameInstance=Instance;
+    Context.SetCurrentWorld(World); World->SetGameInstance(Instance); World->InitializeActorsForPlay(FURL());
+    auto* PC=World->SpawnActor<AMRFPSPlayerController>(); auto* Local=NewObject<ULocalPlayer>(GEngine);
+    if (!TestTrue(TEXT("A local test controller exists"),PC && Local)) {
+        World->DestroyWorld(false); GEngine->DestroyWorldContext(World); return false;
+    }
+    PC->Player=Local; Local->PlayerController=PC;
+    auto* Menu=CreateWidget<UMRFPSLoginMenu>(PC,UMRFPSLoginMenu::StaticClass());
+    if (!TestNotNull(TEXT("A login widget exists"),Menu)) {
+        World->DestroyWorld(false); GEngine->DestroyWorldContext(World); return false;
+    }
+    Menu->Controller=PC; Menu->bOpen=true; Menu->bTestSkipHttpSend=true; PC->DeviceLogin=Menu;
+    const auto Start=[Menu]() { Menu->SetStage(true); Menu->CodeBox->SetText(FText::FromString(TEXT("123456"))); Menu->Exchange(); };
+    Start();
+    auto FirstRequest=Menu->PendingRequest;
+    if (!TestTrue(TEXT("The first exchange creates a request without sending it"),FirstRequest.IsValid())) {
+        PC->DeviceLogin=nullptr; World->DestroyWorld(false); GEngine->DestroyWorldContext(World); return false;
+    }
+    const auto FirstCallback=FirstRequest->OnProcessRequestComplete();
+    const uint64 FirstGeneration=Menu->ExchangeGeneration;
+    Menu->QueueConnectAfterLogin(FirstGeneration);
+    PC->PendingDeviceOwner=Menu; PC->PendingDeviceGeneration=FirstGeneration;
+    World->GetTimerManager().SetTimer(PC->PendingConnectionTimer,FTimerDelegate::CreateLambda([]() {}),3.f,false);
+    TestTrue(TEXT("The menu owns its queued connection"),World->GetTimerManager().IsTimerActive(Menu->ConnectAfterExchangeTimer));
+    TestTrue(TEXT("The certificate wait is scheduled"),World->GetTimerManager().IsTimerActive(PC->PendingConnectionTimer));
+
+    Instance->SetConnectionFailure(MRFPSConnectionStatus::EFailure::Timeout);
+    Menu->ShowConnectionFailure();
+    TestFalse(TEXT("Failure cancels the menu timer"),World->GetTimerManager().IsTimerActive(Menu->ConnectAfterExchangeTimer));
+    TestFalse(TEXT("Failure cancels its certificate wait"),World->GetTimerManager().IsTimerActive(PC->PendingConnectionTimer));
+    TestFalse(TEXT("Failure unbinds the old request"),FirstRequest->OnProcessRequestComplete().IsBound());
+    TestFalse(TEXT("Failure releases the old request"),Menu->PendingRequest.IsValid());
+    TestFalse(TEXT("Failure allows retry"),Menu->bExchanging);
+    TestTrue(TEXT("Failure invalidates the old generation"),Menu->ExchangeGeneration!=FirstGeneration);
+
+    // A CLI connection has no menu owner and must survive a menu cancellation.
+    World->GetTimerManager().SetTimer(PC->PendingConnectionTimer,FTimerDelegate::CreateLambda([]() {}),3.f,false);
+    Menu->CancelPendingExchange();
+    TestTrue(TEXT("Cancelling the menu does not cancel an unrelated connection"),World->GetTimerManager().IsTimerActive(PC->PendingConnectionTimer));
+    World->GetTimerManager().ClearTimer(PC->PendingConnectionTimer);
+
+    Start();
+    auto SecondRequest=Menu->PendingRequest;
+    if (!TestTrue(TEXT("A retry creates a fresh request"),SecondRequest.IsValid())) {
+        PC->DeviceLogin=nullptr; World->DestroyWorld(false); GEngine->DestroyWorldContext(World); return false;
+    }
+    const auto SecondCallback=SecondRequest->OnProcessRequestComplete();
+    const uint64 SecondGeneration=Menu->ExchangeGeneration;
+    const FString RetryText=Menu->Status->GetText().ToString();
+    FirstCallback.ExecuteIfBound(FirstRequest,FHttpResponsePtr(),false);
+    TestTrue(TEXT("A late old response cannot replace the retry"),Menu->PendingRequest==SecondRequest && Menu->bExchanging);
+    TestEqual(TEXT("A late old response cannot change the retry status"),Menu->Status->GetText().ToString(),RetryText);
+    int32 ConnectCalls=0; Menu->TestConnectAfterLogin=[&ConnectCalls]() { ++ConnectCalls; };
+    Menu->ConnectAfterLogin(FirstGeneration);
+    TestEqual(TEXT("An already-dispatched stale timer cannot reconnect"),ConnectCalls,0);
+    Menu->QueueConnectAfterLogin(SecondGeneration);
+    TestTrue(TEXT("The retry can queue its own timer"),World->GetTimerManager().IsTimerActive(Menu->ConnectAfterExchangeTimer));
+
+    Instance->SetConnectionFailure(MRFPSConnectionStatus::EFailure::Connection);
+    Menu->ShowConnectionFailure();
+    TestFalse(TEXT("A failed retry cancels its queued timer"),World->GetTimerManager().IsTimerActive(Menu->ConnectAfterExchangeTimer));
+    Start();
+    auto ThirdRequest=Menu->PendingRequest;
+    if (!TestTrue(TEXT("A second immediate retry creates a new request"),ThirdRequest.IsValid())) {
+        PC->DeviceLogin=nullptr; World->DestroyWorld(false); GEngine->DestroyWorldContext(World); return false;
+    }
+    const auto ThirdCallback=ThirdRequest->OnProcessRequestComplete();
+    const uint64 ThirdGeneration=Menu->ExchangeGeneration;
+    SecondCallback.ExecuteIfBound(SecondRequest,FHttpResponsePtr(),false);
+    Menu->ConnectAfterLogin(SecondGeneration);
+    TestTrue(TEXT("Old response and timer do not disturb the immediate retry"),Menu->PendingRequest==ThirdRequest && Menu->bExchanging);
+    TestEqual(TEXT("The old timer does not reconnect after failure and retry"),ConnectCalls,0);
+    Menu->ConnectAfterLogin(ThirdGeneration);
+    TestEqual(TEXT("The current generation can connect"),ConnectCalls,1);
+
+    Menu->QueueConnectAfterLogin(ThirdGeneration);
+    Menu->CloseLogin();
+    TestFalse(TEXT("Close cancels its timer"),World->GetTimerManager().IsTimerActive(Menu->ConnectAfterExchangeTimer));
+    TestFalse(TEXT("Close unbinds and releases its request"),ThirdRequest->OnProcessRequestComplete().IsBound() || Menu->PendingRequest.IsValid());
+    ThirdCallback.ExecuteIfBound(ThirdRequest,FHttpResponsePtr(),false);
+    Menu->ConnectAfterLogin(ThirdGeneration);
+    TestEqual(TEXT("Closed menus cannot reconnect from old callbacks"),ConnectCalls,1);
+    PC->DeviceLogin=nullptr; World->DestroyWorld(false); GEngine->DestroyWorldContext(World);
     return true;
 }
 #endif

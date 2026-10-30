@@ -1162,12 +1162,25 @@ void AMRFPSPlayerController::SetQuestDeviceLoginVisible(bool bVisible)
 void AMRFPSPlayerController::ReportConnectionAttemptFailure()
 {
     if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) {
+        Instance->CancelNextDeviceConnection();
         Instance->SetConnectionFailure(MRFPS::FailureKind(ConnectionError));
         Instance->RequestLoginScreen();
         if (DeviceLogin && DeviceLogin->IsOpen() && MRFPS::StableLoginWorld(GetWorld())) {
             DeviceLogin->ShowConnectionFailure(); Instance->ClearLoginScreenRequest();
         }
     }
+}
+void AMRFPSPlayerController::BeginDeviceConnection(const FString& Address,const FString& Role,UMRFPSLoginMenu* Owner,uint64 Generation)
+{
+    if (!Owner || !Owner->IsCurrentExchange(Generation)) return;
+    ConnectWithRole(Address,Role,Owner,Generation);
+}
+void AMRFPSPlayerController::CancelPendingDeviceConnection(UMRFPSLoginMenu* Owner,uint64 Generation)
+{
+    if (PendingDeviceOwner.Get()!=Owner || PendingDeviceGeneration!=Generation) return;
+    if (GetWorld()) GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
+    PendingDeviceOwner.Reset(); PendingDeviceGeneration=0;
+    if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->CancelNextDeviceConnection();
 }
 void AMRFPSPlayerController::MRFPSConfigureServer(const FString& Address)
 {
@@ -1182,13 +1195,16 @@ void AMRFPSPlayerController::MRFPSResetIssuerTrust()
     if (!IsLocalController() || GetNetMode()!=NM_Standalone) return;
     FString Error; if (auto* Credentials=GetGameInstance()->GetSubsystem<UMRFPSAuthClientSubsystem>()) Credentials->ClearIssuerTrust(Error);
 }
-void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FString& RequestedRole)
+void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FString& RequestedRole,UMRFPSLoginMenu* DeviceOwner,uint64 Generation)
 {
+    if (DeviceOwner && !DeviceOwner->IsCurrentExchange(Generation)) return;
     // Address may belong to the executing timer's lambda. Clearing that timer
     // releases its captures, so own the destination before cancelling it.
     const FString Destination=Address;
     const FString ExpectedRole=RequestedRole;
     GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
+    PendingDeviceOwner.Reset(); PendingDeviceGeneration=0;
+    if (!DeviceOwner) if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->CancelNextDeviceConnection();
     if (Destination.IsEmpty() || Destination.Len()>255) { ConnectionError=TEXT("INVALID_ADDRESS"); ReportConnectionAttemptFailure(); return; }
     for (const TCHAR C:Destination) if (!FChar::IsAlnum(C) && C!='.' && C!=':' && C!='-' && C!='[' && C!=']') {
         ConnectionError=TEXT("INVALID_ADDRESS"); ReportConnectionAttemptFailure(); return;
@@ -1209,8 +1225,14 @@ void AMRFPSPlayerController::ConnectWithRole(const FString& Address,const FStrin
         UE_LOG(LogMRFPS,Display,TEXT("MRFPS_DTLS_CLIENT_WAIT seconds=%.2f"),ActivationDelay);
         // A new certificate's notBefore must be in the past on both devices.
         // Wait before opening the connection, then revalidate token/time/role.
-        GetWorldTimerManager().SetTimer(PendingConnectionTimer,FTimerDelegate::CreateWeakLambda(this,[this,Destination,ExpectedRole]() {
-            ConnectWithRole(Destination,ExpectedRole);
+        PendingDeviceOwner=DeviceOwner; PendingDeviceGeneration=Generation;
+        const TWeakObjectPtr<UMRFPSLoginMenu> WeakDeviceOwner(DeviceOwner);
+        const bool DeviceAttempt=DeviceOwner!=nullptr;
+        GetWorldTimerManager().SetTimer(PendingConnectionTimer,FTimerDelegate::CreateWeakLambda(this,[this,Destination,ExpectedRole,WeakDeviceOwner,Generation,DeviceAttempt]() {
+            // A dispatched old delegate may run after a newer timer is installed.
+            // Do not clear the newer attempt's ownership when rejecting it.
+            if (DeviceAttempt && (!WeakDeviceOwner.IsValid() || !WeakDeviceOwner->IsCurrentExchange(Generation))) return;
+            ConnectWithRole(Destination,ExpectedRole,WeakDeviceOwner.Get(),Generation);
         }),static_cast<float>(ActivationDelay)+0.02f,false);
         return;
     }

@@ -426,6 +426,8 @@ public:
     void SetQuestDeviceLoginVisible(bool bVisible);
     void HandleSessionDisconnected();
     void ReportConnectionAttemptFailure();
+    void BeginDeviceConnection(const FString& Address,const FString& Role,UMRFPSLoginMenu* Owner,uint64 Generation);
+    void CancelPendingDeviceConnection(UMRFPSLoginMenu* Owner,uint64 Generation);
     UFUNCTION(Exec) void MRFPSView(int32 Slot);
     UFUNCTION(Exec) void MRFPSReady();
     UFUNCTION(Exec) void MRFPSShareView();
@@ -462,6 +464,7 @@ private:
     friend class FMRFPSSoloBotScenario;
     friend class FMRFPSQuestLoginToggleTest;
     TFunction<void()> TestQuestArmRequest;
+    friend class FMRFPSLoginAttemptCancellationTest;
 #endif
 #if !UE_SERVER
     FString RequestedWindowTitle;
@@ -490,7 +493,7 @@ private:
     bool HandleQuestLoginButton(const FInputKeyEventArgs& Params,bool bAndroid);
     bool HandleQuestHapticsButton(const FInputKeyEventArgs& Params,bool bAndroid);
     void QuestArmHaptics();
-    void ConnectWithRole(const FString& Address,const FString& RequestedRole);
+    void ConnectWithRole(const FString& Address,const FString& RequestedRole,UMRFPSLoginMenu* DeviceOwner=nullptr,uint64 Generation=0);
     UFUNCTION(Server,Reliable) void ServerAdminAction(EMRFPSAdminAction Action,FVector2D Dimensions,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminPlaceWall(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminPlaceObject(EMRFPSBuildKind Kind,FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
@@ -581,6 +584,8 @@ private:
     FVector MoveAxes = FVector::ZeroVector;
     FTimerHandle PendingConnectionTimer;
     FTimerHandle StartupLoginTimer;
+    TWeakObjectPtr<UMRFPSLoginMenu> PendingDeviceOwner;
+    uint64 PendingDeviceGeneration=0;
     double LastCaptureRefresh = -100;
     double NextSmokeAction = 0;
     int32 SmokeStage = 0;

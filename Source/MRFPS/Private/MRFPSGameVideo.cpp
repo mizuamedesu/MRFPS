@@ -104,6 +104,7 @@ void AMRFPSPlayerController::MRFPSShareView()
 void AMRFPSPlayerController::HandleSessionDisconnected()
 {
     GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
+    PendingDeviceOwner.Reset(); PendingDeviceGeneration=0;
     VideoConsentFlow.Abort();
     if (auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) Connection->EndCaptureConsentPause();
     VideoPublisherQueue.Reset(); bViewSharingRequested=false; bHadCaptureFrames=false; bHadVideoPublisherSession=false;
