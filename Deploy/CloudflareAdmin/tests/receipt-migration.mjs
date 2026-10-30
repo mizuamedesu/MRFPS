@@ -309,7 +309,11 @@ try {
   await exchange('player',unused.code,200);
   await exchange('admin',consumed.code,401);
   const next=await newCode('player',owner,fingerprint,signer);
-  assert.equal((await request('/api/admin/publish',next.body)).status,200);
+  const published=await request('/api/admin/publish',next.body);
+  assert.equal(published.status,200);
+  const issued=await published.json();
+  assert(issued.expires_at-issued.server_now>=295 && issued.expires_at-issued.server_now<=300,
+    'new issuer should receive approximately 300 seconds from the actual local runtime');
   assert.equal((await request('/api/admin/publish',unused.body)).status,409);
   await exchange('player',next.code,200);
   console.log('PASS: previous Worker restart, unused/consumed migration, stale retry and fresh code');
