@@ -36,6 +36,8 @@ ContactGlove の `/DS/HC/Wrist` には WXYZ の回転のみが含まれ、手の
 
 設定は `DefaultGame.ini` の以下の section です。Quest の場合は `AllowedSender` を PC の実際の LAN IPv4 に変更してください。`-MRFPSGloveSender=192.168.1.10` でも指定できます。
 
+Quest では --glove-sender または -MRFPSGloveSender= で明示した送信元を、検証と受信開始の成功後に端末内へ保存します。次回は通常起動でも同じ送信元・ポート・device ID を使います。別の送信元を明示すると古い device ID は引き継ぎません。保存を実質的に解除して PC relay を受けない状態に戻すには、--glove-sender 127.0.0.1 --replace で起動します。不正な保存値は外部受信を許可せず loopback に戻します。Windows の挙動は変わりません。IP の固定だけでは送信元の暗号認証はできません。保存後の Quest 実機再起動検証は別途必要です。
+
 ```ini
 [/Script/MRFPSGloves.MRFPSGloveSettings]
 bEnabled=True

@@ -2,6 +2,7 @@
 #include "Misc/AutomationTest.h"
 #include "MRFPSOSC.h"
 #include "MRFPSGloveSubsystem.h"
+#include "MRFPSGloveConnection.h"
 #include "Engine/GameInstance.h"
 #include "Common/UdpSocketBuilder.h"
 #include "Interfaces/IPv4/IPv4Address.h"
@@ -49,6 +50,48 @@ bool FMRFPSGloveOSCValidationTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSQuestGlovePinTest, "MRFPS.Gloves.QuestRelayPin",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMRFPSQuestGlovePinTest::RunTest(const FString& Parameters)
+{
+    using namespace MRFPSGloveConnection;
+    const FString Filename=TEXT("MRFPSQuestRelayPinAutomation.ini");
+    FConfigCacheIni Config(EConfigCacheType::Temporary);
+    Config.DisableFileOperations(); Config.Add(Filename,FConfigFile());
+    const FPin Defaults{TEXT("127.0.0.1"),25788,TEXT("configured")};
+    FPin Result; bool bSave=false, bBadSaved=false;
+    TestTrue(TEXT("Unconfigured launch uses default"),Select(&Config,Filename,TEXT(""),Defaults,Result,bSave,bBadSaved));
+    TestEqual(TEXT("Default sender"),Result.Sender,FString(TEXT("127.0.0.1")));
+    TestFalse(TEXT("Default launch does not save"),bSave);
+    TestTrue(TEXT("Explicit valid pin"),Select(&Config,Filename,TEXT("-MRFPSGloveSender=192.168.1.10 -MRFPSGlovePort=25789 -MRFPSGloveDevice=CG2-1"),Defaults,Result,bSave,bBadSaved));
+    TestTrue(TEXT("Explicit pin will be saved after receiver startup"),bSave);
+    Store(&Config,Filename,Result);
+    TestTrue(TEXT("Next ordinary launch loads pin"),Select(&Config,Filename,TEXT(""),Defaults,Result,bSave,bBadSaved));
+    TestEqual(TEXT("Loaded sender"),Result.Sender,FString(TEXT("192.168.1.10")));
+    TestEqual(TEXT("Loaded port"),Result.Port,25789);
+    TestEqual(TEXT("Loaded device"),Result.Device,FString(TEXT("CG2-1")));
+    TestFalse(TEXT("Ordinary launch does not overwrite pin"),bSave);
+    TestTrue(TEXT("Explicit new sender overrides entire old tuple"),Select(&Config,Filename,TEXT("-MRFPSGloveSender=192.168.1.11"),Defaults,Result,bSave,bBadSaved));
+    TestEqual(TEXT("Default port applies to the new sender"),Result.Port,25788);
+    TestTrue(TEXT("Old device is cleared"),Result.Device.IsEmpty());
+    Store(&Config,Filename,Result);
+    TestTrue(TEXT("Empty device survives round trip"),Select(&Config,Filename,TEXT(""),Defaults,Result,bSave,bBadSaved));
+    TestTrue(TEXT("Empty device remains empty"),Result.Device.IsEmpty());
+    for (const TCHAR* Bad : {TEXT("v1|0.0.0.0|25788|*"),TEXT("v1|255.255.255.255|25788|*"),
+                             TEXT("v1|224.0.0.1|25788|*"),TEXT("v1|192.168.1.10|25788x|*"),
+                             TEXT("v1|192.168.1.10|25788|has space"),TEXT("v1|192.168.1.10|25788")}) {
+        Config.SetString(Section,Key,Bad,Filename);
+        TestTrue(TEXT("Invalid saved value falls back safely"),Select(&Config,Filename,TEXT(""),Defaults,Result,bSave,bBadSaved));
+        TestTrue(TEXT("Invalid saved value is reported"),bBadSaved);
+        TestEqual(TEXT("Invalid saved value allows loopback only"),Result.Sender,FString(TEXT("127.0.0.1")));
+    }
+    TestFalse(TEXT("Invalid explicit IP disables input"),Select(&Config,Filename,TEXT("-MRFPSGloveSender=0.0.0.0"),Defaults,Result,bSave,bBadSaved));
+    TestFalse(TEXT("Malformed explicit port disables input"),Select(&Config,Filename,TEXT("-MRFPSGloveSender=192.168.1.10 -MRFPSGlovePort=25788x"),Defaults,Result,bSave,bBadSaved));
+    TestFalse(TEXT("Port alone cannot modify a saved tuple"),Select(&Config,Filename,TEXT("-MRFPSGlovePort=25789"),Defaults,Result,bSave,bBadSaved));
+    TestFalse(TEXT("Device alone cannot modify a saved tuple"),Select(&Config,Filename,TEXT("-MRFPSGloveDevice=CG2-1"),Defaults,Result,bSave,bBadSaved));
+    return true;
+}
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSGloveBacklogTest,"MRFPS.Gloves.ResumeDiscardsOldInput",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMRFPSGloveBacklogTest::RunTest(const FString& Parameters)

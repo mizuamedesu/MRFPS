@@ -1,6 +1,7 @@
 #include "MRFPSGloveSubsystem.h"
 #include "MRFPSGloveSettings.h"
 #include "MRFPSGloveReceiver.h"
+#include "MRFPSGloveConnection.h"
 #include "MRFPSOSC.h"
 #include "Common/UdpSocketBuilder.h"
 #include "HAL/PlatformTime.h"
@@ -40,12 +41,29 @@ void UMRFPSGloveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     Super::Initialize(Collection);
     const UMRFPSGloveSettings* Settings = GetDefault<UMRFPSGloveSettings>();
     if (!Settings->bEnabled) return;
+#if PLATFORM_ANDROID
+    const MRFPSGloveConnection::FPin Defaults{Settings->AllowedSender, Settings->ListenPort, Settings->DeviceId};
+    MRFPSGloveConnection::FPin Pin;
+    bool bSaveExplicitPin = false, bInvalidSavedPin = false;
+    if (!MRFPSGloveConnection::Select(GConfig, GGameUserSettingsIni, FCommandLine::Get(), Defaults,
+                                      Pin, bSaveExplicitPin, bInvalidSavedPin))
+    {
+        UE_LOG(LogMRFPSGloves, Error, TEXT("ContactGlove input disabled: invalid Quest relay pin"));
+        return;
+    }
+    if (bInvalidSavedPin)
+        UE_LOG(LogMRFPSGloves, Warning, TEXT("Invalid saved Quest relay pin; accepting loopback only"));
+    AllowedSender = Pin.Sender;
+    ReceiverPort = Pin.Port;
+    PinnedDeviceId = Pin.Device;
+#else
     AllowedSender = Settings->AllowedSender;
     PinnedDeviceId = Settings->DeviceId;
     FParse::Value(FCommandLine::Get(), TEXT("MRFPSGloveSender="), AllowedSender);
     FParse::Value(FCommandLine::Get(), TEXT("MRFPSGloveDevice="), PinnedDeviceId);
     ReceiverPort = Settings->ListenPort;
     FParse::Value(FCommandLine::Get(), TEXT("MRFPSGlovePort="), ReceiverPort);
+#endif
     StaleAfter = FMath::Clamp(Settings->StaleAfterSeconds, 0.02f, 1.0f);
     TrackerMounts[0] = Settings->LeftTrackerToHand;
     TrackerMounts[1] = Settings->RightTrackerToHand;
@@ -77,6 +95,18 @@ void UMRFPSGloveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
         Socket->Close();ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Socket);Socket=nullptr;
         return;
     }
+#if PLATFORM_ANDROID
+    // Persist only an explicitly requested, validated pin after the receiver
+    // starts successfully. Ordinary launches only read the previously saved pin.
+    if (bSaveExplicitPin) {
+        if (GConfig && !GGameUserSettingsIni.IsEmpty()) {
+            MRFPSGloveConnection::Store(GConfig, GGameUserSettingsIni, Pin);
+            GConfig->Flush(false, GGameUserSettingsIni);
+        } else {
+            UE_LOG(LogMRFPSGloves, Warning, TEXT("Quest relay pin is active for this session but settings are unavailable"));
+        }
+    }
+#endif
     Station = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
     bool bStationValid = false;
     Station->SetIp(*Settings->StationAddress, bStationValid);
