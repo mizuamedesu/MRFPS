@@ -1,8 +1,13 @@
 import copy
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import flash_service as flash
 import test_server_bundle as bundle_tests
@@ -16,7 +21,8 @@ class FakeCLI:
 
     def call(self, *arguments, payload=None):
         if arguments[:2] == ("flash", "list"):
-            return {"items": copy.deepcopy(self.items)}
+            # This is the CLI's output, not the API collection envelope.
+            return copy.deepcopy(self.items)
         self.mutations.append(arguments[:2])
         if arguments[:2] == ("flash", "create"):
             value = copy.deepcopy(payload)
@@ -71,6 +77,34 @@ class FlashTests(unittest.TestCase):
         self.assertEqual(self.client.mutations, [])
         self.assertFalse(self.state.exists())
 
+    def test_unverified_or_paged_collection_never_creates_a_service(self):
+        original = self.client.call
+        for result in ({"items": []}, {"items": [], "next_page": "another-page"}, None):
+            with self.subTest(result=result):
+                def call(*arguments, **kwargs):
+                    if arguments[:2] == ("flash", "list"):
+                        return result
+                    return original(*arguments, **kwargs)
+                self.client.call = call
+                with self.assertRaisesRegex(ValueError, "LIST_RESPONSE_SHAPE_UNVERIFIED"):
+                    self.apply()
+                self.assertEqual(self.client.mutations, [])
+                self.assertFalse(self.state.exists())
+
+    def test_incomplete_service_record_never_allows_create(self):
+        self.client.items.append({"id": "00000000-0000-4000-8000-000000000009"})
+        with self.assertRaisesRegex(ValueError, "SERVICE_NAME_RESPONSE_UNVERIFIED"):
+            self.apply()
+        self.assertEqual(self.client.mutations, [])
+        self.assertFalse(self.state.exists())
+
+    def test_duplicate_matching_names_never_allow_update(self):
+        self.apply()
+        self.client.items.append(copy.deepcopy(self.client.items[0]))
+        with self.assertRaisesRegex(ValueError, "SERVICE_NAME_AMBIGUOUS"):
+            self.apply()
+        self.assertEqual(self.client.mutations, [("flash", "create")])
+
     def test_only_owned_service_updates_to_new_immutable_image(self):
         self.apply()
         self.manifest["spec"]["image"] = self.manifest["spec"]["image"].replace("a" * 64, "b" * 64)
@@ -104,6 +138,54 @@ class FlashTests(unittest.TestCase):
         self.assertTrue(json.loads(self.state.read_text())["deployment_id"])
         self.assertEqual(self.apply()["operation"], "unchanged")
         self.assertEqual(self.client.mutations, [("flash", "create")])
+
+
+class InstalledHeteroCloudCliTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("heterocloud"), "HeteroCloud CLI is not installed")
+    def test_list_unwraps_api_envelope_and_sends_project_filter(self):
+        # Real CLI, synthetic local HTTP endpoint and fake credentials only.
+        organization = "00000000-0000-4000-8000-000000000001"
+        project = "00000000-0000-4000-8000-000000000002"
+        service = {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "organization_id": organization, "project_id": project, "provider": "flash",
+            "name": "fixture-service", "generation": 1, "state": "ready", "spec": {}, "status": {},
+            "created_at": "2026-10-30T00:00:00Z", "updated_at": "2026-10-30T00:00:00Z",
+        }
+        paths = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                paths.append(self.path)
+                data = json.dumps({"items": [service]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        env = os.environ.copy()
+        env["HETEROCLOUD_API_KEY"] = "hc_fixture_only"
+        env.pop("HETEROCLOUD_API_KEY_FILE", None)
+        try:
+            result = subprocess.run([
+                shutil.which("heterocloud"), "--endpoint", f"http://127.0.0.1:{server.server_port}",
+                "--allow-insecure-http", "--organization-id", organization, "--output", "json",
+                "flash", "list", "--project-id", project,
+            ], env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, "fixture CLI invocation failed")
+            self.assertEqual(json.loads(result.stdout), [service])
+            self.assertEqual(paths, [f"/api/v1/organizations/{organization}/flash/services?project_id={project}"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=2)
 
 
 if __name__ == "__main__":

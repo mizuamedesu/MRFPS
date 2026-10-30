@@ -50,10 +50,13 @@ class HeteroCLI:
 
 
 def owned_service(client, state, project, name):
-    result = client.call("flash", "list", "--project-id", project)
-    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+    # HeteroCloud CLI v0.1.110 unwraps the API's {items: [...]} response and
+    # prints a JSON array. An envelope could be an incomplete page and is not
+    # the verified CLI format. The CLI also discards API pagination metadata,
+    # so verify the live API's list contract before applying changes.
+    items = client.call("flash", "list", "--project-id", project)
+    if not isinstance(items, list):
         raise ValueError("FLASH_LIST_RESPONSE_SHAPE_UNVERIFIED")
-    items = result["items"]
     if any(not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in items):
         raise ValueError("FLASH_SERVICE_NAME_RESPONSE_UNVERIFIED")
     matches = [item for item in items if item["name"] == name]

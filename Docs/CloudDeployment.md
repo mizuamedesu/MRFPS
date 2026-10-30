@@ -187,6 +187,13 @@ requires `--operator-private-pull-ready`. That flag is an operator assertion,
 not evidence that a real workload pulled the private image. Runtime game health,
 external UDP reachability and the actual fingerprint remain separate checks.
 
+The installed CLI v0.1.110's JSON service list is a bare array: it unwraps the
+API's `items` envelope. The [corresponding API contract](https://github.com/IPA-CyberLab/IPA-RS-HeteroCloud/blob/4e4d2a67e995de70aa9898ae195cde8d3174cb0e/contracts/api/v1/flash.openapi.json)
+describes the list as having no pagination limit. The CLI discards any extra
+envelope fields, so an array alone cannot prove completeness if a deployed
+server later changes that contract. Before applying, verify that the live API
+uses the same unpaginated list contract. Unknown CLI output shapes fail closed.
+
 Cloudflare's ordinary orange-cloud HTTP proxy cannot forward the game's UDP.
 Use DNS-only records for an already reachable game endpoint. General UDP port
 translation through Spectrum requires the appropriate existing entitlement;
