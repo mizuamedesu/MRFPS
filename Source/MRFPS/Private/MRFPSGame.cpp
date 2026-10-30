@@ -707,7 +707,13 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             Next.RightHandRotation=MRFPSHandPose::HandFromWeapon(Next.RightRotation.Quaternion()).Rotator();
         }
     }
-    if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) InvalidateCalibration();
+    if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) {
+        // A short tracking dropout is not itself an origin change. Preserve
+        // the registration so play can recover, while stopping physical output.
+        bFiring=false;
+        if (Haptics) Haptics->StopHaptics();
+        if (QuestHaptics) QuestHaptics->StopAll();
+    }
     // The login pointer shares the physical trigger with combat.
     const bool LoginOpen=LocalController && LocalController->DeviceLogin && LocalController->DeviceLogin->IsOpen();
     auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance());

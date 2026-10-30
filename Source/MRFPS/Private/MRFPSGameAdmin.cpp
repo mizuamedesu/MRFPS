@@ -214,7 +214,12 @@ bool AMRFPSGameMode::RegisteredAnchorsValid() const
     if (!GS || !GS->bSharedFloorConfirmed || !GS->SharedFloorRevision) return false;
     for (int32 Slot=0;Slot<2;++Slot) {
         const auto* Fighter=RegisteredPlayers[Slot].Get();
-        if (!LivePlayer(Fighter) || Fighter!=FighterAt(GetWorld(),Slot) || Fighter->Pose.bDesktop || !Fighter->bStageFloorReferenced ||
+        const auto* PS=Fighter?Fighter->GetPlayerState<AMRFPSPlayerState>():nullptr;
+        // An intermittent packet or pose dropout must not erase the common
+        // origin. Action readiness still checks fresh tracking via LivePlayer.
+        if (!PS || !PS->bAuthenticated || PS->AuthExpiresAt<=FDateTime::UtcNow().ToUnixTimestamp() ||
+            PS->bInspector || PS->bAdmin || PS->Slot!=Slot || !Fighter->bCalibrated ||
+            Fighter!=FighterAt(GetWorld(),Slot) || Fighter->Pose.bDesktop || !Fighter->bStageFloorReferenced ||
             Fighter->GeometryCalibrationGeneration!=RegisteredCalibration[Slot]) return false;
     }
     return true;
@@ -337,6 +342,7 @@ bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdmin
     case EMRFPSAdminAction::CalibrateFloor: {
         if (!Editable || !RegisteredAnchorsValid()) { SafeError=TEXT("LAYOUT_SHARED_BASIS_UNAVAILABLE"); return false; }
         auto* A=RegisteredPlayers[0].Get(); auto* B=RegisteredPlayers[1].Get();
+        if (!LivePlayer(A) || !LivePlayer(B)) { SafeError=TEXT("LAYOUT_SHARED_BASIS_UNAVAILABLE"); return false; }
         if (!GS->Layout.CalibrateFromAnchors(A->Pose.Head,B->Pose.Head,0,GS->SharedFloorRevision,SafeError)) return false;
         GS->MeasuredAnchorDistanceCm=FVector::Dist2D(A->Pose.Head,B->Pose.Head); ApplyLayoutChange(); break;
     }
