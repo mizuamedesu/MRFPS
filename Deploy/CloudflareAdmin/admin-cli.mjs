@@ -160,7 +160,21 @@ async function ensureCodes(state, key) {
       const error=Error(`owner_conflict: ${role}; use explicit --takeover true to switch issuers`); error.code='owner_conflict'; throw error;
     }
     if (row && local && row.owner === state.owner && row.id === local.id && row.expires_at !== local.expires_at) {
-      const error=Error('issuer_state_changed: issuance expiry differs'); error.code='issuer_state_changed'; throw error;
+      // A response may have been lost after the Worker shortened the expiry.
+      // Re-submit the original immutable request: only the DO's receipt hash
+      // can prove that this row came from exactly the saved pending issuance.
+      if (!local.pending || !Number.isSafeInteger(row.expires_at) || row.expires_at <= 0 ||
+          row.expires_at > local.pending.body.expires_at) {
+        const error=Error('issuer_state_changed: issuance expiry differs'); error.code='issuer_state_changed'; throw error;
+      }
+      const confirmed=await call('/api/admin/publish',local.pending.body);
+      if (!confirmed || confirmed.ok !== true || confirmed.reused !== true || confirmed.id !== local.id ||
+          confirmed.expires_at !== row.expires_at || typeof confirmed.consumed !== 'boolean') {
+        const error=Error('issuer_state_changed: issuance could not be confirmed'); error.code='issuer_state_changed'; throw error;
+      }
+      local.expires_at=confirmed.expires_at;
+      if (confirmed.consumed) row.consumed=1;
+      await saveState(state);
     }
     if (row && local && row.owner === state.owner && row.id === local.id && !row.consumed && row.expires_at > now + 1) {
       // A lost publish response can leave the original signed request pending.
@@ -185,7 +199,8 @@ async function ensureCodes(state, key) {
     await saveState(state);
     const published=await call('/api/admin/publish', entry.body);
     if (!published || published.ok !== true || published.id !== entry.body.id ||
-        published.expires_at !== entry.body.expires_at ||
+        !Number.isSafeInteger(published.expires_at) || published.expires_at <= 0 ||
+        published.expires_at > entry.body.expires_at ||
         (published.consumed !== undefined && typeof published.consumed !== 'boolean')) {
       const error=Error('invalid_response: issuance was not confirmed'); error.code='invalid_response'; throw error;
     }
@@ -198,6 +213,7 @@ async function ensureCodes(state, key) {
       await unlink(join(stateDir,role+'.code')).catch(error=>{if(error.code!=='ENOENT') throw error;});
       const error=Error('issuance_consumed: request a new code'); error.code='issuance_consumed'; throw error;
     }
+    state.roles[role].expires_at=published.expires_at;
     delete state.roles[role].pending;
     await saveState(state);
     await writePrivate(join(stateDir, role + '.code'), entry.code + '\n');

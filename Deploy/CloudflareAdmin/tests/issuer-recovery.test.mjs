@@ -62,10 +62,28 @@ test('a pending ID replaced remotely fails closed without clobbering it',async()
   assert.equal(f.calls.published.length,0); assert.equal(f.calls.generated,0); assert.equal(f.calls.writes.length,0);
 });
 
-test('same remote ID with changed expiry fails closed',async()=>{
+test('changed expiry is rejected unless an identical receipt is confirmed',async()=>{
   const f=fixture((now,owner)=>[{role:'player',owner,id:'old-id',expires_at:now+24,consumed:0}]);
   await assert.rejects(f.ensure(f.state,{}),error=>error.code==='issuer_state_changed');
-  assert.equal(f.calls.published.length,0); assert.equal(f.calls.writes.length,0);
+  assert.equal(f.calls.published.length,1); assert.equal(f.calls.writes.length,0);
+});
+
+test('lost response with a shortened expiry recovers only the same receipt',async()=>{
+  const response={reused:true,consumed:false};
+  const f=fixture((now,owner)=>[{role:'player',owner,id:'old-id',expires_at:now+24,consumed:0}],response);
+  response.expires_at=f.now+24;
+  await f.ensure(f.state,{});
+  assert.equal(f.calls.published.length,1); assert.equal(f.calls.published[0].id,'old-id');
+  assert.equal(f.state.roles.player.expires_at,f.now+24);
+  assert.equal(f.calls.writes[0].data,'111111\n');
+});
+
+test('a newly published code uses the server-clamped expiry',async()=>{
+  const response={ok:true,consumed:false};
+  const f=fixture(()=>[],response); response.expires_at=f.now+24;
+  await f.ensure(f.state,{});
+  assert.equal(f.state.roles.player.expires_at,f.now+24);
+  assert.equal(f.calls.writes[0].data,'111111\n');
 });
 
 test('an explicitly authorized takeover can recover a pending issuance',async()=>{

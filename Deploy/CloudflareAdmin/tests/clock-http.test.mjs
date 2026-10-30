@@ -1,0 +1,48 @@
+// Exercise the Worker HTTP route and actual DO against disposable SQLite.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { timingSafeEqual } from 'node:crypto';
+import vm from 'node:vm';
+import { newCode } from '../src/crypto.browser.js';
+
+let source=readFileSync(new URL('../src/worker.js',import.meta.url),'utf8')
+  .replace(/^import .*;\s*$/gm,'').replace('export class DeviceCodes','class DeviceCodes')
+  .replace('export default {','const handler = {');
+let clock=Date.now();
+class FakeDate extends Date { static now() { return clock; } }
+class FakeDurableObject { constructor(ctx,env) { this.ctx=ctx; this.env=env; } }
+const subtle={digest:(...a)=>crypto.subtle.digest(...a),importKey:(...a)=>crypto.subtle.importKey(...a),
+              verify:(...a)=>crypto.subtle.verify(...a),timingSafeEqual:(a,b)=>timingSafeEqual(Buffer.from(a),Buffer.from(b))};
+const context=vm.createContext({DurableObject:FakeDurableObject,crypto:{subtle},TextEncoder,TextDecoder,atob,btoa,Date:FakeDate,Response,URL});
+vm.runInContext(source+'\nglobalThis.testing={DeviceCodes,handler};',context);
+const {DeviceCodes,handler}=context.testing;
+
+function harness() {
+  const db=new DatabaseSync(':memory:');let alarm=null;
+  const storage={sql:{exec(sql,...args){const stmt=db.prepare(sql);const rows=/^\s*SELECT\b/i.test(sql)?stmt.all(...args):(stmt.run(...args),[]);return {toArray:()=>rows};}},
+                 getAlarm:async()=>alarm,setAlarm:async value=>{alarm=value;}};
+  const object=new DeviceCodes({storage,blockConcurrencyWhile:fn=>fn()},{});
+  const env={DEVICE_CODES:{getByName:()=>object},MRFPS_ADMIN_USERNAME:'fixture',MRFPS_ADMIN_PASSWORD:'fixture-password'};
+  return {object,env,close:()=>db.close()};
+}
+
+test('complete publish and exchange route honors thirty seconds with an ahead issuer clock',async t=>{
+  const original=clock;t.after(()=>{clock=original;}); const h=harness();t.after(h.close);
+  const owner=crypto.randomUUID();h.object.start(owner);
+  const pair=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
+  const spki=Buffer.from(await crypto.subtle.exportKey('spki',pair.publicKey)).toString('base64');
+  const key={privateKey:pair.privateKey,publicKey:`-----BEGIN PUBLIC KEY-----\n${spki}\n-----END PUBLIC KEY-----\n`};
+  const entry=await newCode('inspector',owner,'a'.repeat(64),key);
+  const claims=JSON.parse(Buffer.from(entry.body.token.split('.')[1],'base64url'));
+  clock=(claims.iat-1)*1000;
+  const headers={'content-type':'application/json',authorization:'Basic '+Buffer.from('fixture:fixture-password').toString('base64')};
+  const call=(path,body,auth=true)=>handler.fetch(new Request('https://fixture.invalid'+path,{method:'POST',headers:auth?headers:{'content-type':'application/json'},body:JSON.stringify(body)}),h.env);
+  const accepted=await call('/api/admin/publish',entry.body);
+  assert.equal(accepted.status,200);
+  const result=await accepted.json();
+  assert.equal(result.expires_at,result.server_now+30);
+  clock=result.expires_at*1000;
+  assert.equal((await call('/api/device/exchange',{role:'inspector',code:entry.code},false)).status,401);
+});

@@ -79,7 +79,9 @@ async function validatePublish(input) {
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.owner || '') ||
       !Number.isSafeInteger(input.expires_at)) throw Error('invalid');
   const now = Math.floor(Date.now() / 1000);
-  if (input.expires_at <= now || input.expires_at > now + 30) throw Error('expired');
+  // Permit the same five-second clock tolerance as the signed iat check.
+  // The DO independently caps the actual code lifetime to 30 seconds.
+  if (input.expires_at <= now || input.expires_at > now + 35) throw Error('expired');
   const match = /^-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/]{59}=)\n-----END PUBLIC KEY-----\n$/.exec(input.public_key || '');
   if (!match) throw Error('key');
   const keyBytes = Uint8Array.from(atob(match[1]), c => c.charCodeAt(0));
@@ -96,7 +98,8 @@ async function validatePublish(input) {
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(claims.jti || '') ||
       !Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.nbf) || !Number.isSafeInteger(claims.exp) ||
       claims.iat < 0 || claims.iat > now + 5 || claims.nbf > now + 5 || claims.iat > claims.nbf ||
-      claims.nbf >= claims.exp || claims.exp - claims.iat > 3600 || claims.exp <= input.expires_at) throw Error('claims');
+      claims.nbf >= claims.exp || claims.exp - claims.iat > 3600 || claims.exp <= input.expires_at ||
+      input.expires_at <= claims.iat || input.expires_at > claims.iat + 30) throw Error('claims');
   const sig = b64decode(parts[2]);
   if (sig.length !== 64 || !await crypto.subtle.verify('Ed25519', key, sig, encoder.encode(parts[0] + '.' + parts[1]))) throw Error('signature');
   return { ...input, token_expires_at: claims.exp };
@@ -167,7 +170,7 @@ export class DeviceCodes extends DurableObject {
     if (receipt) {
       if (!receipt.request_hash) return { error: 'legacy_issuance' };
       if (receipt.request_hash !== requestHash) return { error: 'issuance_id_conflict' };
-      if (receipt.state === 'consumed') return { ok:true, id:data.id, expires_at:receipt.expires_at, reused:true, consumed:true };
+      if (receipt.state === 'consumed') return { ok:true, id:data.id, expires_at:receipt.expires_at, server_now:now, reused:true, consumed:true };
       if (receipt.state !== 'active') return { error: 'issuance_retired' };
       const current = sql.exec('SELECT id,owner,expires_at,consumed,token FROM codes WHERE role=?',data.role).toArray()[0];
       if (!current || current.id !== data.id || current.owner !== data.owner || current.expires_at <= now) {
@@ -176,13 +179,13 @@ export class DeviceCodes extends DurableObject {
       }
       if (current.consumed || !current.token) {
         sql.exec("UPDATE issuance_receipts SET state='consumed' WHERE id=?",data.id);
-        return { ok:true, id:data.id, expires_at:receipt.expires_at, reused:true, consumed:true };
+        return { ok:true, id:data.id, expires_at:receipt.expires_at, server_now:now, reused:true, consumed:true };
       }
       // If a prior alarm write failed after the row became visible, a retry
       // repairs the schedule without replacing or resurrecting the bearer.
       const due=(receipt.expires_at+1)*1000;
       if (!existingAlarm || existingAlarm > due) await this.ctx.storage.setAlarm(due);
-      return { ok:true, id:data.id, expires_at:receipt.expires_at, reused:true, consumed:false };
+      return { ok:true, id:data.id, expires_at:receipt.expires_at, server_now:now, reused:true, consumed:false };
     }
     const previous = sql.exec('SELECT id,owner,expires_at FROM codes WHERE role=?', data.role).toArray()[0];
     if (previous && previous.id === data.id) {
@@ -203,17 +206,19 @@ export class DeviceCodes extends DurableObject {
       sql.exec('DELETE FROM codes WHERE owner=?',previous.owner);
     }
     if (previous) sql.exec("UPDATE issuance_receipts SET state='retired' WHERE id=? AND state IN ('active','legacy')",previous.id);
+    // Keep the request hash over the original expiration for idempotent retries.
+    const effectiveExpiry = Math.min(data.expires_at, now + 30);
     sql.exec("INSERT INTO issuance_receipts (id,role,owner,expires_at,request_hash,state) VALUES (?,?,?,?,?,'active')",
-      data.id,data.role,data.owner,data.expires_at,requestHash);
+      data.id,data.role,data.owner,effectiveExpiry,requestHash);
     sql.exec(`INSERT INTO codes (role,id,owner,expires_at,code_hash,token,public_key,token_expires_at,consumed)
       VALUES (?,?,?,?,?,?,?,?,0) ON CONFLICT(role) DO UPDATE SET id=excluded.id, owner=excluded.owner,
       expires_at=excluded.expires_at, code_hash=excluded.code_hash, token=excluded.token,
       public_key=excluded.public_key, token_expires_at=excluded.token_expires_at, consumed=0`,
-      data.role, data.id, data.owner, data.expires_at, data.code_hash, data.token, data.public_key, data.token_expires_at);
+      data.role, data.id, data.owner, effectiveExpiry, data.code_hash, data.token, data.public_key, data.token_expires_at);
     // An alarm removes unused bearer material even if the browser goes away.
-    const due = (data.expires_at + 1) * 1000;
+    const due = (effectiveExpiry + 1) * 1000;
     if (!existingAlarm || existingAlarm > due) await this.ctx.storage.setAlarm(due);
-    return { ok: true, id: data.id, expires_at: data.expires_at };
+    return { ok: true, id: data.id, expires_at: effectiveExpiry, server_now:now };
   }
   start(owner) {
     const sql=this.ctx.storage.sql;

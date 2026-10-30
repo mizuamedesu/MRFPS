@@ -88,3 +88,5 @@ CLI のプロセスがロック回収中に強制終了すると `lock.recovery`
 今回の発行 receipt を追加する直前の Worker からは、Windows 上で `npm run test:receipt-migration` を実行し、未使用・使用済みコードを含む一時ローカルストアの再起動と移行を確認できる。Git の旧リビジョンを読み、2 回のローカル Wrangler を順番に専用メモリガード下で実行する。本番環境には接続しない。
 
 GitHub Actions は secrets `MRFPS_ADMIN_USERNAME`、`MRFPS_ADMIN_PASSWORD`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN` と repository variable `MRFPS_ADMIN_CI_DEPLOY=true` が必要。現在は前者3つのみ設定し、API token 未設定のまま有効にしない。Cloudflare の [GitHub Actions の手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) に従って対象アカウントとゾーンに限定した `Edit Cloudflare Workers` トークンを作成し、`gh secret set CLOUDFLARE_API_TOKEN` に対話入力後、`gh variable set MRFPS_ADMIN_CI_DEPLOY --body true` で有効化する。現在の Wrangler OAuth はトークン管理 API で 403 のため、自動作成できない。Worker secrets はワークフローが安全な一時ファイルから設定する。
+
+発行端末と Worker の時計に最大5秒の進み差がある場合でも発行を受け付け、保存されるコードの期限はサーバー側で最大30秒に制限する。応答には実際の期限とサーバー時刻が含まれ、パネルは経過時間から表示を消す。応答喪失後の再試行では元のリクエストの receipt が一致することを確認してから期限を回復する。実際の公開 Worker への反映と実機接続は別途検証する。

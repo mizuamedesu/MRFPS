@@ -139,3 +139,32 @@ test('a failed alarm schedule is repaired on the same ID without restoring a con
   assert.equal((await h.object.publish(item.data)).consumed,true);
   assert.equal(h.object.exchange('player',item.data.code_hash,'fixture-alarm-2').error,'invalid_code');
 });
+
+test('clock-ahead issuer is accepted but server expiry stays within thirty seconds and retries retain identity',async t=>{
+  const h=harness(); t.after(h.close); const owner=crypto.randomUUID(), key=await keyPair();
+  const originalClock=clock; t.after(()=>{clock=originalClock;}); h.object.start(owner);
+  const item=await newCode('inspector',owner,'a'.repeat(64),key);
+  const claims=JSON.parse(Buffer.from(item.body.token.split('.')[1],'base64url'));
+  clock=(claims.iat-1)*1000;
+  const validated=await validatePublish(item.body);
+  const first=await h.object.publish(validated);
+  assert.equal(first.ok,true);
+  assert.equal(first.expires_at,first.server_now+30);
+  assert.equal(first.expires_at,item.body.expires_at-1);
+  clock+=1000;
+  const retry=await h.object.publish(await validatePublish(item.body));
+  assert.equal(retry.reused,true); assert.equal(retry.expires_at,first.expires_at);
+  clock=first.expires_at*1000;
+  assert.equal(h.object.exchange('inspector',item.body.code_hash,'fixture-clock').error,'invalid_code');
+});
+
+test('clock tolerance never permits a code longer than the signed thirty-second window',async t=>{
+  const h=harness(); t.after(h.close); const owner=crypto.randomUUID(), key=await keyPair();
+  const originalClock=clock; t.after(()=>{clock=originalClock;}); h.object.start(owner);
+  const item=await newCode('inspector',owner,'a'.repeat(64),key);
+  const claims=JSON.parse(Buffer.from(item.body.token.split('.')[1],'base64url'));
+  clock=claims.iat*1000;
+  await assert.rejects(validatePublish({...item.body,expires_at:item.body.expires_at+1}),/claims/);
+  clock=(claims.iat-6)*1000;
+  await assert.rejects(validatePublish(item.body),/expired/);
+});

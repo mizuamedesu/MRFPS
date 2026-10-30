@@ -70,10 +70,10 @@ function clearCodes() {
   for (const role of roles) { $('code-' + role).textContent = '------'; $('time-' + role).textContent = ''; }
 }
 function render() {
-  const now = Math.floor(Date.now() / 1000);
+  const now = performance.now();
   for (const role of roles) {
     const data = current[role];
-    const seconds = data ? Math.max(0, data.expires_at - now) : 0;
+    const seconds = data ? Math.max(0, Math.ceil((data.deadline - now) / 1000)) : 0;
     $('code-' + role).textContent = seconds ? data.code : '------';
     $('time-' + role).textContent = seconds ? `残り ${seconds} 秒` : '';
   }
@@ -82,8 +82,17 @@ async function publish(role, takeover = false) {
   const entry = await newCode(role, owner, fingerprint, key);
   if (!running) return;
   if (takeover) entry.body.takeover = true;
-  await api('/api/admin/publish', entry.body);
-  if (running) current[role] = { code: entry.code, id: entry.body.id, expires_at:entry.body.expires_at };
+  const started=performance.now();
+  const accepted=await api('/api/admin/publish', entry.body);
+  if (!accepted || accepted.ok !== true || accepted.id !== entry.body.id || accepted.consumed === true ||
+      !Number.isSafeInteger(accepted.expires_at) || !Number.isSafeInteger(accepted.server_now) ||
+      accepted.expires_at <= accepted.server_now || accepted.expires_at > entry.body.expires_at ||
+      accepted.expires_at > accepted.server_now + 30) throw Error('invalid issuance response');
+  // Start from the authoritative server lifetime and subtract the full request
+  // time. This is conservative even if this browser's wall clock is wrong.
+  const now=performance.now();
+  const remain=Math.max(0,(accepted.expires_at-accepted.server_now)*1000-(now-started));
+  if (running) current[role] = { code: entry.code, id: entry.body.id, expires_at:accepted.expires_at, deadline:now+remain };
 }
 async function tick(force = false, takeover = false) {
   if (!running || busy) return;
@@ -93,7 +102,6 @@ async function tick(force = false, takeover = false) {
       running = false; clearCodes(); $('state').textContent = '停止中'; message('発行が停止されました。'); return;
     }
     const status = response ? response.codes : [];
-    const now = Math.floor(Date.now() / 1000);
     for (const role of roles) {
       if (!running) break;
       const row = status.find(item => item.role === role);
@@ -104,7 +112,7 @@ async function tick(force = false, takeover = false) {
         return;
       }
       const mine = current[role];
-      if (force || !row || !mine || row.id !== mine.id || row.consumed || row.expires_at <= now + 1) await publish(role, takeover);
+      if (force || !row || !mine || row.id !== mine.id || row.consumed || mine.deadline <= performance.now() + 1000) await publish(role, takeover);
     }
     render();
     if (running) $('state').textContent = '発行中';
