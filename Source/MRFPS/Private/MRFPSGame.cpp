@@ -1131,6 +1131,48 @@ void AMRFPSPlayerController::OpenDeviceLogin()
     if (!MRFPS::StableLoginWorld(GetWorld())) return;
     DeviceLogin=UMRFPSLoginMenu::CreateFor(this);
 }
+EMRFPSDisconnectResult AMRFPSPlayerController::RequestDisconnectToLogin()
+{
+    UWorld* World=GetWorld();
+    auto* Instance=GetGameInstance<UMRFPSGameInstance>();
+    if (!IsLocalController() || !World || World->bIsTearingDown || !GEngine || !Instance)
+        return EMRFPSDisconnectResult::Unavailable;
+    FWorldContext* Context=GEngine->GetWorldContextFromWorld(World);
+    if (!Context) return EMRFPSDisconnectResult::Unavailable;
+    const ENetMode NetMode=GetNetMode();
+    if (NetMode!=NM_Standalone && NetMode!=NM_Client) return EMRFPSDisconnectResult::Unavailable;
+
+    const bool bExchanging=DeviceLogin && DeviceLogin->IsExchanging();
+    const bool bDelayed=GetWorldTimerManager().TimerExists(PendingConnectionTimer);
+    const bool bReconnecting=Instance->IsAutoReconnectPending();
+    // Closing invalidates an in-flight HTTP exchange and its delayed callback.
+    // When a session is active the old world widget will be replaced anyway.
+    const bool bNeedsTravel=NetMode==NM_Client || Context->PendingNetGame ||
+        !Context->TravelURL.IsEmpty() || World->IsInSeamlessTravel();
+    if (DeviceLogin && DeviceLogin->IsOpen() && (bExchanging || bNeedsTravel)) DeviceLogin->CloseLogin();
+    if (bDelayed) GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
+    PendingDeviceOwner.Reset(); PendingDeviceGeneration=0;
+    Instance->CancelNextDeviceConnection();
+
+    if (!bNeedsTravel) {
+        if (bExchanging || bDelayed || bReconnecting) {
+            Instance->ConnectionStatus=MRFPSConnectionStatus::FState();
+            Instance->RequestLoginScreen();
+        }
+        return EMRFPSDisconnectResult::AlreadyDisconnected;
+    }
+
+    Instance->ConnectionStatus=MRFPSConnectionStatus::FState();
+    Instance->RequestLoginScreen();
+    // UE treats ?closed as a return to the default map and cancels any
+    // PendingNetGame before loading it. Repeated requests share this travel.
+    if (Context->TravelURL==TEXT("?closed")) return EMRFPSDisconnectResult::Pending;
+    HandleSessionDisconnected();
+    ClientTravel(TEXT("?closed"),TRAVEL_Absolute);
+    if (Context->TravelURL!=TEXT("?closed")) return EMRFPSDisconnectResult::Unavailable;
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_EXPLICIT_DISCONNECT submitted=1"));
+    return EMRFPSDisconnectResult::Submitted;
+}
 void AMRFPSPlayerController::SetQuestDeviceLoginVisible(bool bVisible)
 {
     if (!IsLocalController()) return;

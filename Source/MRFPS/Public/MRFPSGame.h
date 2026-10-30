@@ -377,6 +377,8 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UFloatingPawnMovement> Movement;
 };
 
+enum class EMRFPSDisconnectResult : uint8 { Unavailable, AlreadyDisconnected, Pending, Submitted };
+
 UCLASS()
 class MRFPS_API AMRFPSPlayerController : public APlayerController
 {
@@ -422,6 +424,7 @@ public:
     UFUNCTION(Exec) void MRFPSLoginFile(const FString& File,const FString& RequestedRole);
     UFUNCTION(Exec) void MRFPSResetIssuerTrust();
     void OpenDeviceLogin();
+    EMRFPSDisconnectResult RequestDisconnectToLogin();
     /** Set the Quest panel explicitly without leaving an existing session. */
     void SetQuestDeviceLoginVisible(bool bVisible);
     void HandleSessionDisconnected();
@@ -465,6 +468,8 @@ private:
     friend class FMRFPSQuestLoginToggleTest;
     TFunction<void()> TestQuestArmRequest;
     friend class FMRFPSLoginAttemptCancellationTest;
+    friend class FMRFPSDisconnectAutomationTest;
+    FString TestAutomationDirectory;
 #endif
 #if !UE_SERVER
     FString RequestedWindowTitle;

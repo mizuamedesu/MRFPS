@@ -48,6 +48,12 @@ automatically on close. If tracking is not connected yet, the first press can
 start connection; press again once connected. The existing ContactGlove A,
 right B stop, and `haptics.set` control remain available.
 
+Explicit disconnect also cancels a pending device exchange or connection. A
+repeat while return travel is scheduled reports `submitted` with
+`DISCONNECT_PENDING`; it does not schedule another travel. A stable offline
+client reports `already_applied`. A fresh `status` is needed to observe the
+completed return to the local world.
+
 `status` is a snapshot, so use a new operation UUID for a fresh snapshot. The layout/control revisions and expected wall shape must come from a recent result; a stale request is rejected rather than overwriting a concurrent change. For `object.ensure`, `surface` is the expected placement surface, while `origin` and the unit `direction` are the authoritative placement ray. World distances are centimetres. A matching existing object is reused; a new one uses the same placement limits as the GUI.
 
 For `capture.set`, a session with temporarily stale/no frames remains an active

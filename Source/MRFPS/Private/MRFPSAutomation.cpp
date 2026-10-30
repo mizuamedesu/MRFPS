@@ -109,6 +109,9 @@ FString AMRFPSPlayerController::AutomationDirectory() const
 #if UE_SERVER
     return FString();
 #else
+#if WITH_DEV_AUTOMATION_TESTS
+    if (!TestAutomationDirectory.IsEmpty()) return TestAutomationDirectory;
+#endif
     FString Name=TEXT("MRFPS-Client"); FParse::Value(FCommandLine::Get(),TEXT("MRFPSWindowName="),Name);
     if(Name.IsEmpty()||Name.Len()>64) return FString();
     for(TCHAR C:Name) if(!((C>='A'&&C<='Z')||(C>='a'&&C<='z')||(C>='0'&&C<='9')||C=='_'||C=='-')) return FString();
@@ -450,8 +453,14 @@ void AMRFPSPlayerController::TickAutomation()
             bool Connected=false;
             if(!Params->TryGetBoolField(TEXT("connected"),Connected)) { Ok=false; Code=TEXT("INVALID_STATE"); }
             else if(Connected) { Ok=false; Code=TEXT("USE_DEVICE_LOGIN"); }
-            else if(GetNetMode()==NM_Standalone) Already=true;
-            else { WriteAutomationResult(Folder,Id,TEXT("submitted"),TEXT("DISCONNECT_REQUESTED"),Data); OpenDeviceLogin(); return; }
+            else {
+                switch (RequestDisconnectToLogin()) {
+                case EMRFPSDisconnectResult::AlreadyDisconnected: Already=true; Code=TEXT("DISCONNECTED"); break;
+                case EMRFPSDisconnectResult::Pending: Submitted=true; Code=TEXT("DISCONNECT_PENDING"); break;
+                case EMRFPSDisconnectResult::Submitted: Submitted=true; Code=TEXT("DISCONNECT_REQUESTED"); break;
+                default: Ok=false; Code=TEXT("DISCONNECT_UNAVAILABLE"); break;
+                }
+            }
         } else if(Operation==TEXT("camera.set")) {
             FString CameraTarget; FVector Position,Angles;
             if(!IsInspector()||!Params->TryGetStringField(TEXT("camera"),CameraTarget)||!ReadVector(Params,TEXT("position"),Position)||
