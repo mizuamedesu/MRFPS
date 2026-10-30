@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR && !UE_SERVER
 #include "MRFPSLoginInteraction.h"
+#include "MRFPSWeaponPose.h"
 
 #include "Components/SceneComponent.h"
 #include "Components/WidgetComponent.h"
@@ -107,7 +108,10 @@ private:
             +SHorizontalBox::Slot().FillWidth(1.f) [ Button[1].ToSharedRef() ]);
         Panel->RegisterComponent();
 
-        First=MakePointer(Host,Root,0,FVector(0,-75,0));
+        const FTransform Grip(FRotator::ZeroRotator,FVector(-22,-75,0));
+        First=MakePointer(Host,Root,0,MRFPSWeaponPose::Muzzle(Grip).GetLocation());
+        Test->TestTrue(TEXT("The real widget trace begins at the weapon muzzle"),
+            First && First->GetComponentLocation().Equals(MRFPSWeaponPose::Muzzle(Grip).GetLocation(),.01));
         Second=MakePointer(Host,Root,1,FVector(0,75,0));
         // Alias deliberately shares the second pointer index without pressing.
         // Cancelling it must not release another interaction's capture.
@@ -153,6 +157,58 @@ private:
         if (!Test->TestTrue(TEXT("The pointer can press after cancellation"),First->BeginPointer())) return true;
         First->EndPointer();
         Test->TestEqual(TEXT("A fresh down/up works after cancellation"),Clicks[0],2);
+
+        First->SetWorldLocation(FVector(0,-250,0)); First->RefreshPointer();
+        const auto BeforeEntry=First->HoveredTarget().Pin();
+        First->SetWorldLocation(FVector(0,-75,0)); First->RefreshPointer();
+        const auto Entered=First->HoveredTarget().Pin();
+        Test->TestFalse(TEXT("Entering a target while neutral does not cancel input"),
+            MRFPSLoginPointer::CancelForHitChange(false,BeforeEntry.Get(),Entered.Get()));
+        if (!Test->TestTrue(TEXT("An immediate press on the entered button works"),First->BeginPointer())) return true;
+        First->EndPointer(); Test->TestEqual(TEXT("Entering and pressing clicks once"),Clicks[0],3);
+
+        First->RefreshPointer(); const auto OldTarget=First->HoveredTarget().Pin();
+        if (!Test->TestTrue(TEXT("The original button captures a held press"),First->BeginPointer())) return true;
+        First->SetWorldLocation(FVector(0,75,0)); First->RefreshPointer();
+        const auto NewTarget=First->HoveredTarget().Pin();
+        if (MRFPSLoginPointer::CancelForHitChange(true,OldTarget.Get(),NewTarget.Get())) First->CancelPointer();
+        else Test->AddError(TEXT("A held press moving to another button must cancel"));
+        First->EndPointer();
+        Test->TestEqual(TEXT("Moving a held press cannot click its old target"),Clicks[0],3);
+        Test->TestEqual(TEXT("Moving a held press cannot click its new target"),Clicks[1],0);
+        First->SetWorldLocation(FVector(0,-75,0)); First->RefreshPointer();
+
+        // Exercise real Slate capture when the physical trigger takes over a
+        // held glove press. Cancel clears the WIC hit, so retrace before down.
+        MRFPSLoginPointer::FPressState Takeover;
+        Takeover.SetSource(MRFPSLoginPointer::ESource::AimGrip); Takeover.SetGloveFlex(true,0); Takeover.Step(.1);
+        Takeover.SetGloveFlex(true,.8f);
+        if (!Test->TestTrue(TEXT("Glove begins a captured press"),Takeover.Next()==MRFPSLoginPointer::EAction::Press && First->BeginPointer())) return true;
+        const auto Expected=First->HoveredTarget().Pin();
+        Takeover.SetButton(true);
+        if (!Test->TestTrue(TEXT("Physical takeover cancels the old glove capture"),Takeover.Next()==MRFPSLoginPointer::EAction::Cancel)) return true;
+        First->CancelPointer(); First->RefreshPointer();
+        if (!Test->TestTrue(TEXT("Retrace restores the same login target"),MRFPSLoginPointer::SameHit(Expected.Get(),First->HoveredTarget().Pin().Get()))) return true;
+        if (!Test->TestTrue(TEXT("Physical takeover accepts a fresh down"),Takeover.Next()==MRFPSLoginPointer::EAction::Press && First->BeginPointer())) return true;
+        Takeover.SetButton(false);
+        if (!Test->TestTrue(TEXT("Physical release completes takeover"),Takeover.Next()==MRFPSLoginPointer::EAction::Release)) return true;
+        First->EndPointer(); Test->TestEqual(TEXT("Takeover produces only one click"),Clicks[0],4);
+
+        First->RefreshPointer();
+        MRFPSLoginPointer::FPressState Stale;
+        Stale.SetSource(MRFPSLoginPointer::ESource::AimGrip); Stale.SetGloveFlex(true,0); Stale.Step(.1);
+        Stale.SetGloveFlex(true,.8f);
+        if (!Test->TestTrue(TEXT("Fresh glove begins a second capture"),Stale.Next()==MRFPSLoginPointer::EAction::Press && First->BeginPointer())) return true;
+        const auto StaleTarget=First->HoveredTarget().Pin(); Stale.SetGloveFlex(false,0);
+        if (!Test->TestTrue(TEXT("Stale glove cancels capture"),Stale.Next()==MRFPSLoginPointer::EAction::Cancel)) return true;
+        First->CancelPointer(); First->RefreshPointer(); Stale.SetButton(true);
+        if (!Test->TestTrue(TEXT("A physical trigger works after stale glove cancellation"),
+            MRFPSLoginPointer::SameHit(StaleTarget.Get(),First->HoveredTarget().Pin().Get()) &&
+            Stale.Next()==MRFPSLoginPointer::EAction::Press && First->BeginPointer())) return true;
+        Stale.SetButton(false);
+        if (!Test->TestTrue(TEXT("Physical release after stale glove completes"),Stale.Next()==MRFPSLoginPointer::EAction::Release)) return true;
+        First->EndPointer(); Test->TestEqual(TEXT("Stale glove then physical trigger clicks once"),Clicks[0],5);
+        First->RefreshPointer();
 
         Second->RefreshPointer();
         if (!Test->TestTrue(TEXT("The second pointer accepts a real press"),Second->BeginPointer())) return true;

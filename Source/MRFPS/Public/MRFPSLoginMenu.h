@@ -94,6 +94,7 @@ private:
     FString Destination;
     bool bVR=false,bOpen=false,bLoginPage=false,bExchanging=false,bClosing=false;
     bool bPointerHit=false,bPointerPoseReported=false,bPointerHitReported=false;
+    bool bRawTraceReported=false,bRawTraceWidget=false,bRawTraceSlate=false;
     MRFPSLoginPointer::FPressState PointerInput;
     MRFPSLoginPointer::FEventQueue PendingPointerEvents;
     TWeakPtr<SWidget> PreviousPointerHit;

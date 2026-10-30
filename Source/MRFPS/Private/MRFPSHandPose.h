@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "HeadMountedDisplayTypes.h"
+#include "MRFPSLoginPointer.h"
+#include "MRFPSWeaponPose.h"
 
 namespace MRFPSHandPose
 {
@@ -49,5 +51,38 @@ inline FQuat HandFromWeapon(const FQuat& WeaponRotation)
 {
     const FQuat Offset=WeaponFromHand(FQuat::Identity);
     return (WeaponRotation.GetNormalized()*Offset.Inverse()).GetNormalized();
+}
+
+// This is the same right-hand selection used by local gameplay and the login
+// gun. A Grip position with Aim rotation matches the firing pose; optical and
+// external tracked palms use the existing weapon mounting conversion.
+inline bool ResolveRightWeapon(const FXRMotionControllerState& Aim,const FXRMotionControllerState& Grip,
+    const FXRHandTrackingState& Hand,const FTransform& EngineToTracking,const FTransform& TrackingToWorld,
+    bool HasExternalPose,const FTransform& ExternalPose,FMRFPSWeaponPose& Out)
+{
+    Out=FMRFPSWeaponPose();
+    const bool A=MRFPSLoginPointer::ValidPose(Aim),G=MRFPSLoginPointer::ValidPose(Grip);
+    if (A || G) {
+        const FVector Position=TrackingToWorld.TransformPosition(G?Grip.ControllerLocation:Aim.ControllerLocation);
+        const FQuat Rotation=TrackingToWorld.TransformRotation(A?Aim.ControllerRotation:Grip.ControllerRotation);
+        if (Position.ContainsNaN() || Rotation.ContainsNaN() || Rotation.SizeSquared()<.25) return false;
+        Out.Source=A?(G?MRFPSLoginPointer::ESource::AimGrip:MRFPSLoginPointer::ESource::Aim):MRFPSLoginPointer::ESource::Grip;
+        Out.GripWorld=FTransform(Rotation.GetNormalized(),Position); return true;
+    }
+    FVector Position; FRotator Palm;
+    if (SelectPositionSource(false,Hand)==EPositionSource::OpticalHand &&
+        RightPalmPose(Hand,EngineToTracking,TrackingToWorld,Position,Palm)) {
+        Out.Source=MRFPSLoginPointer::ESource::Hand;
+        Out.GripWorld=FTransform(WeaponFromHand(Palm.Quaternion()),Position); return true;
+    }
+    if (HasExternalPose && !ExternalPose.ContainsNaN()) {
+        Position=TrackingToWorld.TransformPosition(ExternalPose.GetLocation());
+        const FQuat PalmQ=TrackingToWorld.TransformRotation(ExternalPose.GetRotation());
+        if (!Position.ContainsNaN() && !PalmQ.ContainsNaN() && PalmQ.SizeSquared()>.25) {
+            Out.Source=MRFPSLoginPointer::ESource::Glove;
+            Out.GripWorld=FTransform(WeaponFromHand(PalmQ),Position); return true;
+        }
+    }
+    return false;
 }
 }

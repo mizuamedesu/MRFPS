@@ -111,6 +111,7 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
     if (Menu->bVR) {
         auto* Pawn=Owner->GetPawn<AMRFPSPawn>();
         if (!Pawn || !Pawn->Camera || !Pawn->XROrigin) { Menu->bOpen=false; return nullptr; }
+        if (auto* GI=Cast<UMRFPSGameInstance>(Owner->GetGameInstance())) GI->FireTransition.BeginLogin();
         auto* Component=NewObject<UWidgetComponent>(Pawn);
         Component->SetWidgetSpace(EWidgetSpace::World); Component->SetDrawSize(FVector2D(900,720));
         Component->SetPivot(FVector2D(.5f,.5f)); Component->SetTwoSided(true);
@@ -144,7 +145,10 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         }
         UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INIT interaction=%d ray=%d dot=%d"),
             Menu->Interaction!=nullptr,Menu->PointerRay!=nullptr,Menu->PointerDot!=nullptr);
-    } else Menu->AddToViewport(120);
+    } else {
+        if (auto* GI=Cast<UMRFPSGameInstance>(Owner->GetGameInstance())) GI->FireTransition.BeginLogin();
+        Menu->AddToViewport(120);
+    }
     return Menu;
 }
 
@@ -297,24 +301,9 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
 {
 #if !UE_SERVER
     auto* PC=Controller.Get(); auto* Pawn=PC?PC->GetPawn<AMRFPSPawn>():nullptr;
-    FXRMotionControllerState Aim,Grip; FXRHandTrackingState Hand;
-    if (Pawn && Pawn->XROrigin) {
-        UHeadMountedDisplayFunctionLibrary::GetMotionControllerState(Pawn,EXRSpaceType::XRTrackingSpace,EControllerHand::Right,EXRControllerPoseType::Aim,Aim);
-        UHeadMountedDisplayFunctionLibrary::GetMotionControllerState(Pawn,EXRSpaceType::XRTrackingSpace,EControllerHand::Right,EXRControllerPoseType::Grip,Grip);
-        UHeadMountedDisplayFunctionLibrary::GetHandTrackingState(Pawn,EXRSpaceType::UnrealWorldSpace,EControllerHand::Right,Hand);
-    }
-    const bool AimValid=MRFPSLoginPointer::ValidPose(Aim),GripValid=MRFPSLoginPointer::ValidPose(Grip);
-    const bool HandValid=MRFPSLoginPointer::ValidHandPose(Hand);
-    auto Source=MRFPSLoginPointer::Select(AimValid,GripValid,HandValid);
-    FTransform Pose;
-    if (Source!=MRFPSLoginPointer::ESource::None && Pawn && Pawn->XROrigin) {
-        const FTransform Origin=Pawn->XROrigin->GetComponentTransform();
-        if (Source==MRFPSLoginPointer::ESource::Hand) {
-            const FTransform EngineToTracking=UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(Pawn).Inverse();
-            Pose=MRFPSLoginPointer::HandWorldPose(Hand,EngineToTracking,Origin);
-        } else Pose=MRFPSLoginPointer::ControllerWorldPose(Source==MRFPSLoginPointer::ESource::Aim?Aim:Grip,Origin);
-        if (Pose.ContainsNaN()) Source=MRFPSLoginPointer::ESource::None;
-    } else Source=MRFPSLoginPointer::ESource::None;
+    FMRFPSWeaponPose Weapon;
+    const bool HasWeapon=Pawn && Pawn->GetLocalWeaponPose(Weapon);
+    auto Source=HasWeapon?Weapon.Source:MRFPSLoginPointer::ESource::None;
     bool UsesVRFocus=false,HasVRFocus=true;
     UHeadMountedDisplayFunctionLibrary::GetVRFocusState(UsesVRFocus,HasVRFocus);
     if (!PointerInput.Focused || (UsesVRFocus && !HasVRFocus)) Source=MRFPSLoginPointer::ESource::None;
@@ -326,24 +315,34 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
         PointerInput.SetSource(Source);
         bPointerPoseReported=true;
         if (PointerHint) PointerHint->SetText(FText::FromString(
-            Source==MRFPSLoginPointer::ESource::Aim?TEXT("右コントローラー・トリガーで選択"):
+            Source==MRFPSLoginPointer::ESource::Aim || Source==MRFPSLoginPointer::ESource::AimGrip?TEXT("右コントローラー・トリガーで選択"):
             Source==MRFPSLoginPointer::ESource::Grip?TEXT("右コントローラー・仮の向き"):
             Source==MRFPSLoginPointer::ESource::Hand?TEXT("右手追跡・トリガーで選択"):TEXT("コントローラーを確認")));
-        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_POSE source=%s aim=%d grip=%d hand=%d"),
-            MRFPSLoginPointer::SourceName(Source),AimValid,GripValid,HandValid);
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_POSE source=%s weapon=%d assigned=%d"),
+            MRFPSLoginPointer::SourceName(Source),HasWeapon,Pawn && Pawn->GetSlot()>=0);
     }
     if (Source!=MRFPSLoginPointer::ESource::None) {
-        Interaction->SetWorldLocationAndRotation(Pose.GetLocation(),Pose.GetRotation());
+        const FTransform Muzzle=MRFPSWeaponPose::Muzzle(Weapon.GripWorld);
+        Pawn->SetLoginWeaponPose(&Weapon);
+        Interaction->SetWorldLocationAndRotation(Muzzle.GetLocation(),Muzzle.GetRotation());
         Interaction->RefreshPointer();
-    }
+    } else if (Pawn) Pawn->SetLoginWeaponPose(nullptr);
     const auto CurrentHit=Source!=MRFPSLoginPointer::ESource::None?Interaction->HoveredTarget():TWeakPtr<SWidget>();
-    const bool StableHit=MRFPSLoginPointer::SameHit(PreviousPointerHit.Pin().Get(),CurrentHit.Pin().Get());
+    const bool CancelForHit=MRFPSLoginPointer::CancelForHitChange(PointerInput.Sent,PreviousPointerHit.Pin().Get(),CurrentHit.Pin().Get());
+    const FHitResult RawHit=Interaction->GetLastHitResult();
+    const bool RawWidget=Source!=MRFPSLoginPointer::ESource::None && RawHit.bBlockingHit && RawHit.GetComponent()==WorldWidget.Get();
+    const bool RawSlate=RawWidget && Interaction->IsOverHitTestVisibleWidget() && CurrentHit.IsValid();
+    if (!bRawTraceReported || RawWidget!=bRawTraceWidget || RawSlate!=bRawTraceSlate) {
+        bRawTraceReported=true; bRawTraceWidget=RawWidget; bRawTraceSlate=RawSlate;
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_RAW widget=%d slate=%d"),RawWidget,RawSlate);
+    }
     PreviousPointerHit=CurrentHit;
-    if (!StableHit) {
-        // The old inputs have no per-edge pose; never replay them against a
-        // different button from the one last observed by the pointer.
-        Interaction->CancelPointer(); PointerInput.CancelActive(); PointerInput.Disarm();
+    if (CancelForHit) {
+        // Only a held press must be cancelled on target changes. Neutral input
+        // remains armed while the ray moves onto the next key.
+        Interaction->CancelPointer(); PointerInput.CancelActive(); PointerInput.ClearArms();
         PendingPointerEvents.Clear(); LastPointerTick=FPlatformTime::Seconds(); bGloveCursorInitialized=false;
+        if (Source!=MRFPSLoginPointer::ESource::None) Interaction->RefreshPointer();
     }
     // The journal retains right-hand transitions independently of gameplay's
     // latest snapshot, including both edges of a tap between widget frames.
@@ -356,14 +355,12 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
         Gloves->Tick(0.f);
         Gloves->GetLatestHand(EMRFPSGloveHand::Right,Glove);
     }
+    if (PC) if (auto* GI=Cast<UMRFPSGameInstance>(PC->GetGameInstance()))
+        GI->FireTransition.Observe(Glove.bFlexValid && Glove.FingerCurls.IsValidIndex(1),
+            Glove.FingerCurls.IsValidIndex(1)?Glove.FingerCurls[1]:0,Glove.FlexReceivedAt,
+            Glove.bControllerValid,Glove.bTriggerPressed,Glove.Trigger,Glove.ControllerReceivedAt);
     const bool ControllerFresh=Glove.bControllerValid && FMath::IsFinite(Glove.Trigger);
     const bool FlexFresh=Glove.bFlexValid && Glove.FingerCurls.IsValidIndex(1) && FMath::IsFinite(Glove.FingerCurls[1]);
-    if (PointerInput.Sent && ((PointerInput.GloveControllerContributed && !ControllerFresh) ||
-        (PointerInput.GloveFlexContributed && !FlexFresh))) {
-        Interaction->CancelPointer(); PointerInput.CancelActive(); PointerInput.ClearArms();
-        PendingPointerEvents.Clear(); LastPointerTick=FPlatformTime::Seconds(); bGloveCursorInitialized=false;
-        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_GLOVE_STALE cancelled=1"));
-    }
     if (LastPointerTick<0) { PendingPointerEvents.Clear(); LastPointerTick=FPlatformTime::Seconds(); }
     const auto Queued=PendingPointerEvents; PendingPointerEvents.Clear();
     std::array<MRFPSGloveTrigger::FEvent,MRFPSGloveTrigger::FJournal::Capacity> GloveEvents;
@@ -400,11 +397,12 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     if (!Preview.Valid) {
         Interaction->CancelPointer(); PointerInput.FailClosed();
         UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_LOGIN_POINTER_INPUT_OVERFLOW_OR_TIME"));
-    } else if (Preview.Presses>1) {
-        // More than one queued click cannot be matched to a separately sampled
-        // hit. Preserve final neutral state, but never synthesize mouse-up here.
+    } else if (Preview.Ambiguous()) {
+        // Multiple completed/pending clicks cannot be attributed to separate
+        // targets from one sampled pose. A cancelled glove-to-button takeover
+        // remains one click and is intentionally allowed.
         Interaction->CancelPointer(); PointerInput=Preview.Final; PointerInput.CancelActive(); PointerInput.ClearArms();
-        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_BATCH_DROPPED presses=%u"),Preview.Presses);
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_BATCH_DROPPED"));
     } else {
         MRFPSLoginPointer::Dispatch(PointerInput,Events,LastPointerTick,End,
             [this](MRFPSLoginPointer::EAction Action) {
@@ -418,18 +416,20 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     if (!bOpen || !Interaction) return;
     if (!bInputAnnounced || AnnouncedInput!=PointerInput.Selected) {
         AnnouncedInput=PointerInput.Selected; bInputAnnounced=true;
-        const TCHAR* PoseName=Source==MRFPSLoginPointer::ESource::Aim?TEXT("右コントローラー"):
+        const TCHAR* PoseName=Source==MRFPSLoginPointer::ESource::Aim || Source==MRFPSLoginPointer::ESource::AimGrip?TEXT("右コントローラー"):
             Source==MRFPSLoginPointer::ESource::Grip?TEXT("右コントローラー・仮向き"):
-            Source==MRFPSLoginPointer::ESource::Hand?TEXT("右手追跡"):TEXT("追跡なし");
-        const TCHAR* InputName=AnnouncedInput==MRFPSLoginPointer::EInput::GloveFlex?TEXT("グローブ指"):
+            Source==MRFPSLoginPointer::ESource::Hand?TEXT("右手追跡"):
+            Source==MRFPSLoginPointer::ESource::Glove?TEXT("外部トラッカー"):TEXT("追跡なし");
+        const TCHAR* InputName=PointerInput.Mode==MRFPSLoginPointer::EMode::Auto?TEXT("トリガー / グローブ"):
+            AnnouncedInput==MRFPSLoginPointer::EInput::GloveFlex?TEXT("グローブ指"):
             AnnouncedInput==MRFPSLoginPointer::EInput::GloveController?TEXT("グローブトリガー"):
             AnnouncedInput==MRFPSLoginPointer::EInput::Axis || AnnouncedInput==MRFPSLoginPointer::EInput::Button?TEXT("コントローラー"):
             TEXT("入力なし");
         if (PointerHint) PointerHint->SetText(FText::FromString(FString::Printf(TEXT("%s / %s"),PoseName,InputName)));
         UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INPUT_SOURCE kind=%d"),int(AnnouncedInput));
     }
-    const FHitResult& Hit=Interaction->GetLastHitResult();
-    const bool OnWidget=Source!=MRFPSLoginPointer::ESource::None && Interaction->IsOverHitTestVisibleWidget() && Hit.bBlockingHit;
+    const FHitResult& Hit=RawHit;
+    const bool OnWidget=RawSlate;
     if (!bPointerHitReported || OnWidget!=bPointerHit) { bPointerHit=OnWidget; bPointerHitReported=true; UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_HIT value=%d"),OnWidget); }
     if (PointerRay) {
         PointerRay->SetVisibility(Source!=MRFPSLoginPointer::ESource::None);
@@ -444,13 +444,22 @@ void UMRFPSLoginMenu::ApplyPointerAction(MRFPSLoginPointer::EAction Action)
     if (!Interaction) return;
     if (Action==MRFPSLoginPointer::EAction::None) return;
     if (Action==MRFPSLoginPointer::EAction::Press) {
-        if (!Interaction->BeginPointer()) {
+        const FHitResult& Hit=Interaction->GetLastHitResult();
+        const auto CurrentTarget=Interaction->HoveredTarget().Pin();
+        if (!WorldWidget || Hit.GetComponent()!=WorldWidget.Get() || !Hit.bBlockingHit ||
+            !Interaction->IsOverHitTestVisibleWidget() ||
+            !MRFPSLoginPointer::SameHit(PreviousPointerHit.Pin().Get(),CurrentTarget.Get()) || !Interaction->BeginPointer()) {
             PointerInput.CancelActive(); PointerInput.Disarm();
             UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS action=unavailable source=%s"),MRFPSLoginPointer::SourceName(PointerInput.Source));
             return;
         }
     } else if (Action==MRFPSLoginPointer::EAction::Release) Interaction->EndPointer();
-    else Interaction->CancelPointer();
+    else {
+        Interaction->CancelPointer();
+        // A physical trigger can immediately take over a cancelled glove press.
+        // Cancel clears WIC hit/hover state, so trace the same muzzle pose again.
+        if (bOpen && PointerInput.Source!=MRFPSLoginPointer::ESource::None) Interaction->RefreshPointer();
+    }
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS action=%s source=%s"),
         Action==MRFPSLoginPointer::EAction::Press?TEXT("press"):Action==MRFPSLoginPointer::EAction::Release?TEXT("release"):TEXT("cancel"),
         MRFPSLoginPointer::SourceName(PointerInput.Source));
@@ -504,12 +513,24 @@ void UMRFPSLoginMenu::ProcessControlFile()
 void UMRFPSLoginMenu::CloseLogin()
 {
     if (bClosing) return; bClosing=true; bOpen=false;
+    if (auto* PC=Controller.Get()) if (auto* GI=Cast<UMRFPSGameInstance>(PC->GetGameInstance())) {
+        FMRFPSGloveHandFrame Glove;
+        if (auto* Gloves=GI->GetSubsystem<UMRFPSGloveSubsystem>()) {
+            Gloves->Tick(0.f); Gloves->GetLatestHand(EMRFPSGloveHand::Right,Glove);
+        }
+        GI->FireTransition.Observe(Glove.bFlexValid && Glove.FingerCurls.IsValidIndex(1),
+            Glove.FingerCurls.IsValidIndex(1)?Glove.FingerCurls[1]:0,Glove.FlexReceivedAt,
+            Glove.bControllerValid,Glove.bTriggerPressed,Glove.Trigger,Glove.ControllerReceivedAt);
+        GI->FireTransition.SealForTravel();
+    }
     if (PendingRequest) { PendingRequest->OnProcessRequestComplete().Unbind(); PendingRequest->CancelRequest(); PendingRequest.Reset(); }
     FCoreDelegates::ApplicationWillDeactivateDelegate.Remove(FocusLostHandle);
     FCoreDelegates::ApplicationHasReactivatedDelegate.Remove(FocusGainedHandle);
     FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(BackgroundHandle);
     FCoreDelegates::ApplicationHasEnteredForegroundDelegate.Remove(ForegroundHandle);
     if (Interaction) Interaction->CancelPointer(); PointerInput.CancelActive(); PendingPointerEvents.Clear();
+    if (auto* PC=Controller.Get()) if (auto* Pawn=PC->GetPawn<AMRFPSPawn>(); Pawn && Pawn->GetSlot()<0 && Pawn->GunVisual)
+        Pawn->GunVisual->SetVisibility(false);
     if (PointerDot) { PointerDot->DestroyComponent(); PointerDot=nullptr; }
     if (PointerRay) { PointerRay->DestroyComponent(); PointerRay=nullptr; }
     if (Interaction) { Interaction->DestroyComponent(); Interaction=nullptr; }

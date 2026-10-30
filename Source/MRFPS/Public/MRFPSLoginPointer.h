@@ -10,8 +10,10 @@ inline const TCHAR* SourceName(ESource Source)
 {
     switch (Source) {
     case ESource::Aim: return TEXT("aim");
+    case ESource::AimGrip: return TEXT("aim_grip");
     case ESource::Grip: return TEXT("grip");
     case ESource::Hand: return TEXT("hand");
+    case ESource::Glove: return TEXT("glove_tracker");
     default: return TEXT("none");
     }
 }

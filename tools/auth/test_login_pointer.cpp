@@ -1,4 +1,5 @@
 #include "../../Source/MRFPS/Public/MRFPSLoginPressState.h"
+#include "../../Source/MRFPS/Public/MRFPSFireReleaseGate.h"
 #include "../../Plugins/MRFPSGloves/Source/MRFPSGloves/Public/MRFPSGloveTriggerJournal.h"
 #include <cassert>
 #include <limits>
@@ -23,59 +24,90 @@ int main()
     J.Sample(EStream::Controller,2.01,true,0,true,.15); J.Sample(EStream::Controller,2.02,true,0,false,.15);
     assert(J.Read(Cursor,Samples,N) && N==2 && Samples[0].Button && !Samples[1].Button);
 
-    // Auto selection prefers fresh glove flex; late duplicates from every
-    // other stream cannot generate a second click, however long they arrive.
-    FPressState S; S.SetSource(ESource::Aim); S.SetAxis(0); S.SetGloveController(true,false,0); S.SetGloveFlex(true,0);
-    SelectAndArm(S); assert(S.Selected==EInput::GloveFlex);
-    S.SetGloveFlex(true,.56f); assert(S.Next()==EAction::Press);
-    S.SetGloveFlex(true,.29f); assert(S.Next()==EAction::Release); S.Step(1.);
-    S.SetButton(true); assert(S.Next()==EAction::None); S.SetButton(false); assert(S.Next()==EAction::None);
-    S.SetAxis(1); assert(S.Next()==EAction::None); S.SetAxis(0); assert(S.Next()==EAction::None);
-    S.SetGloveController(true,true,1); assert(S.Next()==EAction::None);
-    S.SetGloveController(true,false,0); assert(S.Next()==EAction::None);
-    S.SetGloveFlex(true,.55f); assert(S.Next()==EAction::None);
-    S.SetGloveFlex(true,.56f); assert(S.Next()==EAction::Press);
-    S.SetGloveFlex(true,.3f); assert(S.Next()==EAction::None);
-    S.SetGloveFlex(true,.29f); assert(S.Next()==EAction::Release);
+    // The physical Fire trigger remains usable even with fresh glove flex.
+    FPressState S; S.SetSource(ESource::AimGrip); S.SetAxis(0); S.SetGloveController(true,false,0); S.SetGloveFlex(true,0);
+    SelectAndArm(S);
+    S.SetButton(true); assert(S.Next()==EAction::Press && S.Selected==EInput::Button);
+    S.SetButton(false); assert(S.Next()==EAction::Release);
 
-    // Losing the selected stream cancels, and an already-held fallback cannot
-    // click until a fresh neutral and press. A non-selected loss has no effect.
-    S.Step(.1); S.SetGloveFlex(true,.8f); assert(S.Next()==EAction::Press);
-    S.SetGloveController(true,true,1); assert(S.Next()==EAction::None);
-    S.SetGloveFlex(false,0); assert(S.Next()==EAction::Cancel && S.Selected==EInput::GloveController);
-    S.Step(.2); assert(S.Next()==EAction::None);
-    S.SetGloveController(true,false,0); S.Step(.1); S.SetGloveController(true,true,1); assert(S.Next()==EAction::Press);
-    S.SetGloveController(false,false,0); assert(S.Next()==EAction::Cancel && S.Selected==EInput::Button);
-    S.SetButton(false); S.Step(.1); S.SetButton(true); assert(S.Next()==EAction::Press);
-    S.SetGloveFlex(false,0); assert(S.Next()==EAction::None);
-    // Reconnection while held cancels Quest and cannot trigger another click.
-    S.SetGloveFlex(true,.8f); assert(S.Next()==EAction::Cancel && S.Selected==EInput::GloveFlex);
-    S.Step(.2); assert(S.Next()==EAction::None);
-    S.SetGloveFlex(true,0); S.Step(.1); S.SetGloveFlex(true,.8f); assert(S.Next()==EAction::Press);
+    FPressState LateButton; LateButton.SetSource(ESource::AimGrip); LateButton.SetGloveFlex(true,0); LateButton.Step(.1);
+    LateButton.SetGloveFlex(true,.8f); assert(LateButton.Next()==EAction::Press);
+    LateButton.SetGloveFlex(true,0); assert(LateButton.Next()==EAction::Release);
+    LateButton.Step(.11); LateButton.SetButton(true); assert(LateButton.Next()==EAction::None);
+    LateButton.Step(.3); assert(LateButton.Next()==EAction::None); // held suppressed input never fires later
+    LateButton.SetButton(false); LateButton.Step(.1); LateButton.SetButton(true); assert(LateButton.Next()==EAction::Press);
+    LateButton.SetButton(false); assert(LateButton.Next()==EAction::Release);
+    // A late duplicate glove representation is suppressed, without disabling
+    // a fresh physical trigger or fresh glove input after its own release.
+    S.Step(.11); S.SetGloveFlex(true,.8f); assert(S.Next()==EAction::None);
+    S.Step(.15); assert(S.Next()==EAction::None);
+    S.SetGloveFlex(true,0); S.Step(.1); S.SetGloveFlex(true,.8f);
+    assert(S.Next()==EAction::Press && S.Selected==EInput::GloveFlex);
     S.SetGloveFlex(true,0); assert(S.Next()==EAction::Release);
 
-    // An explicit mode can choose glove controller or Quest digital even when
-    // redundant streams are fresh. Losing a forced source selects nothing.
+    // Glove alone is accepted while the controller is tracked; a physical
+    // trigger takes over a held glove press without firing the old capture.
+    S.Step(.25); S.SetGloveFlex(true,.8f); assert(S.Next()==EAction::Press);
+    S.SetButton(true); assert(S.Next()==EAction::Cancel); assert(S.Next()==EAction::Press && S.Selected==EInput::Button);
+    S.SetGloveFlex(false,0); assert(S.Next()==EAction::None); // unrelated stale glove cannot cancel controller
+    S.SetButton(false); assert(S.Next()==EAction::Release);
+    S.SetGloveFlex(true,.8f); S.Step(.2); assert(S.Next()==EAction::None); // returned held glove is disarmed
+    S.SetGloveFlex(true,0); S.Step(.1); S.SetGloveFlex(true,.8f); assert(S.Next()==EAction::Press);
+    S.SetGloveFlex(false,0); assert(S.Next()==EAction::Cancel); // selected stale input cancels
+    S.SetButton(false); S.Step(.1); S.SetButton(true); assert(S.Next()==EAction::Press);
+    S.SetButton(false); assert(S.Next()==EAction::Release);
+
+    // Explicit modes remain usable; loss cancels rather than clicks.
     FPressState Forced; Forced.Mode=EMode::GloveController; Forced.SetSource(ESource::Hand);
     Forced.SetGloveController(true,false,0); Forced.SetGloveFlex(true,0); Forced.SetAxis(0);
-    SelectAndArm(Forced); assert(Forced.Selected==EInput::GloveController);
+    SelectAndArm(Forced);
     Forced.SetGloveController(true,true,0); assert(Forced.Next()==EAction::Press);
-    Forced.SetGloveController(false,false,0); assert(Forced.Next()==EAction::Cancel && Forced.Selected==EInput::None);
-    Forced.SetGloveController(true,true,0); assert(Forced.Next()==EAction::None);
-    Forced.Step(.2); assert(Forced.Next()==EAction::None);
+    Forced.SetGloveController(false,false,0); assert(Forced.Next()==EAction::Cancel);
+    Forced.SetGloveController(true,true,0); Forced.Step(.2); assert(Forced.Next()==EAction::None);
     Forced.SetGloveController(true,false,0); Forced.Step(.1); Forced.SetGloveController(true,true,0); assert(Forced.Next()==EAction::Press);
-    Forced.Mode=EMode::QuestButton; assert(Forced.Next()==EAction::Cancel && Forced.Selected==EInput::Button);
+    Forced.Mode=EMode::QuestButton; assert(Forced.Next()==EAction::Cancel);
     Forced.SetButton(false); Forced.Step(.1); Forced.SetButton(true); assert(Forced.Next()==EAction::Press);
     Forced.SetButton(false); assert(Forced.Next()==EAction::Release);
 
-    // Focus/pose loss and a missing release cancel, never synthesize a click.
-    Forced.SetButton(false); Forced.Step(.1); Forced.SetButton(true); assert(Forced.Next()==EAction::Press);
+    Forced.Step(.1); Forced.SetButton(true); assert(Forced.Next()==EAction::Press);
     Forced.SetFocused(false); assert(Forced.Next()==EAction::Cancel);
-    Forced.SetFocused(true); assert(Forced.Next()==EAction::None); Forced.Step(.2); assert(Forced.Next()==EAction::None);
+    Forced.SetFocused(true); Forced.Step(.2); assert(Forced.Next()==EAction::None);
     Forced.SetButton(false); Forced.Step(.1); Forced.SetButton(true); assert(Forced.Next()==EAction::Press);
     Forced.Step(3.); assert(Forced.Next()==EAction::Cancel);
     Forced.SetButton(false); Forced.Step(.1); Forced.SetButton(true); assert(Forced.Next()==EAction::Press);
     Forced.SetSource(ESource::None); assert(Forced.Next()==EAction::Cancel);
+
+    // Closing the menu cannot re-arm firing while either glove input remains
+    // held, and loss of that stream cannot masquerade as a neutral release.
+    MRFPSFireRelease::FGloveNeutral Gate;
+    Gate.Observe(true,.8f,true,true,.8f);
+    assert(!Gate.CanRearm(false,false));
+    Gate.Observe(false,0,true,false,0); assert(!Gate.CanRearm(false,false));
+    Gate.Observe(true,0,true,false,0); assert(!Gate.CanRearm(true,false));
+    assert(!Gate.CanRearm(false,true) && Gate.CanRearm(false,false));
+
+    // The persistent game-instance gate survives replacing the login pawn.
+    // A held Quest trigger or either glove stream must be released after
+    // login; a cached neutral sample is not a post-transition observation.
+    MRFPSFireRelease::FTransitionGate Travel;
+    Travel.BeginLogin(); Travel.SetPhysical(true);
+    Travel.Observe(true,.8f,10,true,true,.8f,10);
+    Travel.SealForTravel();
+    assert(Travel.Locked && !Travel.TryRearm(false));
+    Travel.SetPhysical(false);
+    Travel.Observe(false,0,11,false,false,0,11);
+    assert(!Travel.TryRearm(false)); // stale does not count as release
+    Travel.Observe(true,0,10,true,false,0,10);
+    assert(!Travel.TryRearm(false)); // replayed cached samples do not count
+    Travel.Observe(true,0,11,true,true,.8f,11);
+    assert(!Travel.TryRearm(false));
+    Travel.Observe(true,0,12,true,false,0,12);
+    assert(!Travel.TryRearm(true)); // automation is independently held
+    assert(Travel.TryRearm(false) && !Travel.Locked);
+    MRFPSFireRelease::FTransitionGate NoGlove;
+    NoGlove.BeginLogin(); NoGlove.SetPhysical(true); NoGlove.SealForTravel();
+    assert(!NoGlove.TryRearm(false));
+    NoGlove.SetPhysical(false); assert(NoGlove.TryRearm(false));
 
     FEventQueue Q; for(int I=0;I<1000;++I) Q.Push(EInput::Axis,0,10.+I*.001);
     assert(!Q.Overflow && Q.Count==1 && Q.Events[0].At==10.);
@@ -84,17 +116,34 @@ int main()
     Q.Clear(); Q.Push(EInput::Button,1,3); Q.Push(EInput::Button,0,2); assert(Q.Overflow);
     Q.Clear(); Q.Push(EInput::Axis,0,10); Q.Push(EInput::Axis,0,20); Q.Push(EInput::Button,1,15); assert(Q.Overflow);
 
+    // The production dispatcher cancels a glove-owned capture and transfers
+    // it to the physical trigger before that trigger's release.
+    FPressState Combined; Combined.SetSource(ESource::AimGrip); Combined.SetGloveFlex(true,0); Combined.Step(.1);
+    Q.Clear(); Q.Push(EInput::GloveFlex,.8f,4.01); Q.Push(EInput::Button,1,4.02);
+    Q.Push(EInput::Button,0,4.03); Q.Push(EInput::GloveFlex,0,4.04);
+    int CombinedPress=0,CombinedRelease=0,CombinedCancel=0;
+    auto CombinedAction=[&](EAction A){CombinedPress+=A==EAction::Press;CombinedRelease+=A==EAction::Release;CombinedCancel+=A==EAction::Cancel;return true;};
+    auto Ignore=[](const FEventQueue::FEvent&){};
+    const auto TransferPreview=PreviewBatch(Combined,Q,4.,4.1);
+    assert(TransferPreview.Valid && TransferPreview.Presses==2 && TransferPreview.Releases==1 && !TransferPreview.Ambiguous());
+    assert(Dispatch(Combined,Q,4.,4.1,CombinedAction,Ignore));
+    assert(CombinedPress==2 && CombinedCancel==1 && CombinedRelease==1);
+
     // The same journal event type goes through the production dispatcher.
     FPressState Fast; Fast.Mode=EMode::GloveFlex; Fast.SetSource(ESource::Hand); Fast.SetGloveFlex(true,0); SelectAndArm(Fast);
     Q.Clear(); Q.Push(EInput::GloveFlex,.8f,5.01); Q.Push(EInput::GloveFlex,0,5.02);
     Q.Push(EInput::GloveFlex,.8f,5.13); Q.Push(EInput::GloveFlex,0,5.14);
     int P=0,R=0; auto Act=[&](EAction A){P+=A==EAction::Press;R+=A==EAction::Release;return true;};
-    auto Ignore=[](const FEventQueue::FEvent&){};
     const auto Preview=PreviewBatch(Fast,Q,5.,5.2);
-    assert(Preview.Valid && Preview.Presses==2); // UI cancels this ambiguous batch before any click.
+    assert(Preview.Valid && Preview.Presses==2 && Preview.Releases==2 && Preview.Ambiguous());
     int TargetA=0,TargetB=0;
     assert(SameHit(&TargetA,&TargetA));
     assert(!SameHit(&TargetA,&TargetB) && !SameHit(nullptr,&TargetA)); // never replay A's edge on B
+    FPressState Entry; Entry.SetSource(ESource::AimGrip); Entry.Step(.1);
+    assert(!CancelForHitChange(Entry.Sent,nullptr,&TargetA));
+    Entry.SetButton(true); assert(Entry.Next()==EAction::Press);
+    assert(CancelForHitChange(Entry.Sent,&TargetA,&TargetB));
+    Entry.CancelActive(); Entry.ClearArms(); Entry.SetButton(false); assert(Entry.Next()==EAction::None);
     assert(Dispatch(Fast,Q,5.,5.2,Act,Ignore) && P==2 && R==2);
-    std::cout << "PASS: bounded glove journal, single-source arbitration, cancellation and ordered edges\n";
+    std::cout << "PASS: controller and glove input, firing release guard, journal and ordered edges\n";
 }

@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "MRFPSLocalInputLease.h"
 #include "MRFPSOpenPalm.h"
+#include "MRFPSFireReleaseGate.h"
+#include "MRFPSWeaponPose.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
@@ -271,6 +273,8 @@ public:
     void ApplyShot(float Damage, AMRFPSPawn* Shooter, bool bHeadshot);
     void DeployWall();
     FVector Muzzle() const;
+    bool GetLocalWeaponPose(FMRFPSWeaponPose& Out);
+    void SetLoginWeaponPose(const FMRFPSWeaponPose* Weapon);
     UFUNCTION(Server, Unreliable) void ServerPose(const FMRFPSPose& NewPose);
     UFUNCTION(Server, Reliable) void ServerCalibrate(bool bReady,bool bHasStageFloor=false);
     UFUNCTION(Client,Reliable) void ClientCombatStopped();
@@ -317,6 +321,9 @@ public:
     double LastLocalPoseSampleAt = -1;
     int32 AcceptedShots = 0;
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FMRFPSLoginPointerPoseTest;
+#endif
     void SampleLocalPose(float DeltaSeconds);
     void UpdateVisuals();
     void RemoveDeployedWall();
@@ -330,6 +337,8 @@ private:
     double GeometryCalibratedSince = 0;
     uint64 GeometryCalibratedEpoch = 0;
     bool bFiring = false;
+    bool bPhysicalFireDown = false;
+    MRFPSFireRelease::FGloveNeutral GloveFireNeutral;
     bool bDesktopShield = false;
     MRFPSOpenPalm::FState LocalShieldPalm;
     bool bShieldExhausted = false;
@@ -667,6 +676,7 @@ public:
     void RequestLoginScreen() { bShowLoginAfterFailure=true; bReconnectPending=false; }
     bool IsLoginScreenRequested() const { return bShowLoginAfterFailure; }
     void ClearLoginScreenRequest() { bShowLoginAfterFailure=false; }
+    MRFPSFireRelease::FTransitionGate FireTransition;
 private:
     FString LastServerAddress;
     FString LastServerRole;
