@@ -23,6 +23,7 @@ public:
     void Step(float DeltaSeconds);
     void QueryFinished(TSharedPtr<FEnvQueryResult> Result);
     bool IsPreparedFor(const AMRFPSPawn* Human) const;
+    bool ResetForRound();
     void ResetNavigationForLayout();
     bool bAutoStartPending=true;
     bool bPausedForTracking=false;
@@ -48,6 +49,7 @@ private:
     double ReloadAt=0;
     double NextFailureLogAt=0;
     double NextGeometryLogAt=0;
+    double NextSpawnRetryAt=0;
 };
 
 /** Persistent behavior-tree task; all authority stays in the controller. */
@@ -66,6 +68,7 @@ namespace MRFPSBot
     bool IsServerBot(const AMRFPSPawn* Fighter);
     bool CanMove(UWorld* World,const AMRFPSPawn* Fighter,const FVector& Start,const FVector& End);
     bool IsPrepared(const AMRFPSGameMode* Mode);
+    bool ResetForRound(AMRFPSGameMode* Mode);
     bool IsTrackingPause(const AMRFPSGameMode* Mode);
     bool ClaimTrackingPause(AMRFPSGameMode* Mode);
     void CancelAutoStart(AMRFPSGameMode* Mode);

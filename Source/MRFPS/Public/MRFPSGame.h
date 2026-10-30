@@ -46,6 +46,7 @@ class UMRFPSAdminPanel;
 class FMRFPSRosterPublisher;
 class UMRFPSAvatarComponent;
 class UMRFPSViewCaptureSubsystem;
+class UMaterialInstanceDynamic;
 class SWindow;
 class SWidget;
 
@@ -410,6 +411,7 @@ private:
     TSharedPtr<SWidget> RoundNoticeSlate;
     TSharedPtr<SWidget> EnemyHealthBarSlate;
     UPROPERTY(Transient) TArray<TObjectPtr<UTextRenderComponent>> DamageNumberLabels;
+    UPROPERTY(Transient) TArray<TObjectPtr<UMaterialInstanceDynamic>> DamageNumberMaterials;
     TArray<FMRFPSDamagePopupState> DamageNumberStates;
 };
 

@@ -115,10 +115,17 @@ private:
         if (Fighter->Health<=0 && Now-StageStarted<6) return false;
         if (!Test->TestTrue(TEXT("Bot respawns for the second round with the first win retained"),Fighter->Health==100.f &&
             GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundNumber==2 && GS->RoundWinsSlot0==1)) return true;
+        const FVector Spawn=GS->Layout.ToWorld(FVector(0,GS->Layout.LengthCm*.5-40,170));
+        Test->TestTrue(TEXT("A defeated bot returns to its spawn for the new round"),FVector::Dist2D(Fighter->Pose.Head,Spawn)<20);
         Human->Health=100; Human->LastPoseReceived=Fighter->LastPoseReceived=Now;
         for (int32 I=0;I<4;++I) Human->ApplyShot(25,Fighter,false);
         if (!Test->TestTrue(TEXT("A Bot kill ends the second round and scores for the Bot"),Human->Health<=0 &&
             GS->Phase==EMRFPSMatchPhase::BetweenRounds && GS->RoundWinsSlot1==1 && GS->CompletedRounds==2)) return true;
+        // Put the surviving bot away from spawn; it must also return after a win.
+        FMRFPSPose Moved=Fighter->Pose; const FVector Away=GS->Layout.ToWorld(FVector(80,0,170));
+        const FVector Offset=Away-FVector(Moved.Head);
+        Moved.Head=Away; Moved.Left=FVector(Moved.Left)+Offset; Moved.Right=FVector(Moved.Right)+Offset; ++Moved.Sequence;
+        Fighter->LastPoseReceived=-100; Fighter->ServerPose(Moved); Fighter->SetActorLocation(Away-FVector(0,0,170));
         StageStarted=Now; bRoundAckSent=false; Stage=5; return false;
     }
     bool AwaitHumanRespawn(double Now)
@@ -136,6 +143,8 @@ private:
         // The behavior tree can fire on the same tick the countdown ends.
         if (!Test->TestTrue(TEXT("The player respawns for the third round with both scores retained"),Human->Health>0.f &&
             GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundNumber==3 && GS->RoundWinsSlot0==1 && GS->RoundWinsSlot1==1)) return true;
+        const FVector Spawn=GS->Layout.ToWorld(FVector(0,GS->Layout.LengthCm*.5-40,170));
+        Test->TestTrue(TEXT("A surviving bot also returns to spawn for the next round"),FVector::Dist2D(Fighter->Pose.Head,Spawn)<20);
         Human->Pose.bHeadTracked=false; Mode->Tick(0);
         Test->TestTrue(TEXT("Lost tracking pauses without destroying the bot or clearing the round"),GS->bCombatPaused && GS->bSoloBotSession && IsValid(Bot));
         Human->Pose.bHeadTracked=true; Human->LastPoseReceived=Now;

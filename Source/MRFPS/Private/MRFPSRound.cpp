@@ -85,7 +85,7 @@ FString AMRFPSGameState::RoundScoreText(int32 Slot) const
 void AMRFPSGameMode::BeginRound()
 {
     auto* GS=GetGameState<AMRFPSGameState>();
-    if (!GS || !GameState || GS->bCombatPaused || GS->RoundNumber>=AMRFPSGameState::MaximumRounds) return;
+    if (!GS || !GameState || GS->bCombatPaused || GS->RoundNumber>=AMRFPSGameState::MaximumRounds || !MRFPSBot::ResetForRound(this)) return;
     ++GS->RoundNumber;
     for (APlayerState* Base:GameState->PlayerArray) if (auto* PS=Cast<AMRFPSPlayerState>(Base)) {
         PS->Kills=PS->Deaths=0; PS->ForceNetUpdate();

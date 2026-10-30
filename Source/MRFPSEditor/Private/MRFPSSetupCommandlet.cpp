@@ -4,6 +4,12 @@
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionSaturate.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionFontSampleParameter.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
+#include "Materials/MaterialExpressionVertexColor.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
@@ -17,6 +23,42 @@
 #include "Factories/FbxStaticMeshImportData.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/PrimaryAssetLabel.h"
+#include "Engine/Font.h"
+
+static bool EnsureDamageNumberMaterial()
+{
+    const FString PackageName=TEXT("/Game/Materials/M_DamageNumber");
+    if (FPackageName::DoesPackageExist(PackageName)) return true;
+    auto* Font=LoadObject<UFont>(nullptr,TEXT("/Engine/EngineFonts/RobotoDistanceField.RobotoDistanceField"));
+    if (!Font) return false;
+    auto* Package=CreatePackage(*PackageName);
+    auto* Material=NewObject<UMaterial>(Package,TEXT("M_DamageNumber"),RF_Public|RF_Standalone);
+    Material->SetShadingModel(MSM_Unlit); Material->BlendMode=BLEND_Translucent; Material->TwoSided=true;
+    auto* Color=NewObject<UMaterialExpressionVertexColor>(Material);
+    auto* FontSample=NewObject<UMaterialExpressionFontSampleParameter>(Material);
+    FontSample->ParameterName=TEXT("Font"); FontSample->Font=Font; FontSample->ExpressionGUID=FGuid::NewGuid();
+    auto* Distance=NewObject<UMaterialExpressionLinearInterpolate>(Material);
+    Distance->ConstA=-90.f; Distance->ConstB=90.f; Distance->Alpha.Connect(1,FontSample);
+    auto* Saturate=NewObject<UMaterialExpressionSaturate>(Material);
+    auto* Fade=NewObject<UMaterialExpressionScalarParameter>(Material);
+    auto* Multiply=NewObject<UMaterialExpressionMultiply>(Material);
+    Fade->ParameterName=TEXT("DamageOpacity"); Fade->DefaultValue=1.f; Fade->ExpressionGUID=FGuid::NewGuid();
+    auto* Data=Material->GetEditorOnlyData();
+    Saturate->Input.Connect(0,Distance);
+    Multiply->A.Connect(0,Saturate); Multiply->B.Connect(0,Fade);
+    Material->GetExpressionCollection().AddExpression(Color);
+    Material->GetExpressionCollection().AddExpression(FontSample);
+    Material->GetExpressionCollection().AddExpression(Distance);
+    Material->GetExpressionCollection().AddExpression(Saturate);
+    Material->GetExpressionCollection().AddExpression(Fade);
+    Material->GetExpressionCollection().AddExpression(Multiply);
+    Data->Opacity.Connect(0,Multiply); Data->Opacity.UseConstant=0;
+    Data->EmissiveColor.Connect(0,Color); Data->EmissiveColor.UseConstant=0;
+    Material->PostEditChange(); FSavePackageArgs Args; Args.TopLevelFlags=RF_Public|RF_Standalone;
+    const FString Filename=FPackageName::LongPackageNameToFilename(PackageName,FPackageName::GetAssetPackageExtension());
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename),true);
+    return UPackage::SavePackage(Package,Material,*Filename,Args);
+}
 
 static bool ImportBlenderAssets()
 {
@@ -73,6 +115,7 @@ UMRFPSSetupCommandlet::UMRFPSSetupCommandlet() { IsClient = false; IsEditor = tr
 
 int32 UMRFPSSetupCommandlet::Main(const FString& Params)
 {
+    if (!EnsureDamageNumberMaterial()) { UE_LOG(LogTemp,Error,TEXT("MRFPS_DAMAGE_MATERIAL_FAILED")); return 6; }
     const TCHAR* Names[] = { TEXT("Blue"), TEXT("Orange"), TEXT("Wall"), TEXT("Shield"), TEXT("Floor"), TEXT("Tracer"),TEXT("Graphite"),TEXT("Trim"),TEXT("White"),TEXT("Wood"),TEXT("WoodDark") };
     const FLinearColor Colors[] = {
         {0.04f,0.55f,1,1}, {1,0.24f,0.035f,1}, {0.08f,0.4f,0.65f,1},

@@ -63,6 +63,18 @@ bool PathClear(UWorld* World,const AMRFPSPawn* Bot,const FVector& Start,const FV
     }
     return true;
 }
+bool FindRoundSpawn(UWorld* World,const AMRFPSPawn* Bot,const FMRFPSArenaLayout& Layout,FVector& OutFoot)
+{
+    if (!World || !Bot || Bot->GetSlot()<0 || Bot->GetSlot()>1) return false;
+    for (double Inset:{40.,120.,200.}) for (double X:{0.,-80.,80.}) {
+        const FVector Local(X,(Bot->GetSlot()==0?-1.:1.)*(Layout.LengthCm*.5-Inset),0);
+        const FVector Foot=Layout.ToWorld(Local);
+        if (Layout.ContainsPlanar(Foot,25) && PathClear(World,Bot,Foot,Foot+FVector(1,0,0))) {
+            OutFoot=Foot; return true;
+        }
+    }
+    return false;
+}
 // Layout edits relocate admin pieces. Check their proposed locations rather
 // than their current locations; treat openings as solid for a safe placement.
 bool FutureStageBlocks(UWorld* World,const FMRFPSArenaLayout& Layout,const FVector& Foot)
@@ -186,6 +198,27 @@ void AMRFPSBotController::ResetNavigationForLayout()
     if (bQueryInFlight && QueryId!=INDEX_NONE) if (auto* Manager=UEnvQueryManager::GetCurrent(GetWorld())) Manager->AbortQuery(QueryId);
     bQueryInFlight=false; QueryId=INDEX_NONE; bHasDestination=false; NextQueryAt=0;
 }
+bool AMRFPSBotController::ResetForRound()
+{
+    auto* Fighter=GetPawn<AMRFPSPawn>(); auto* Human=HumanPlayer.Get();
+    const auto* GS=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+    if (!HasAuthority() || !Fighter || !Human || !GS || !GS->bSoloBotSession) return false;
+    const double Now=GetWorld()->GetTimeSeconds(); if (Now<NextSpawnRetryAt) return false;
+    FVector Foot;
+    if (!FindRoundSpawn(GetWorld(),Fighter,GS->Layout,Foot)) {
+        NextSpawnRetryAt=Now+.5;
+        if (Now>=NextFailureLogAt) { UE_LOG(LogMRFPSBot,Warning,TEXT("MRFPS_BOT_ROUND_SPAWN_BLOCKED")); NextFailureLogAt=Now+5; }
+        return false;
+    }
+    NextSpawnRetryAt=0; ResetNavigationForLayout(); bWasDead=false; NextShotAt=ReloadAt=0;
+    FMRFPSPose Next=Fighter->Pose; const FVector Head=Foot+FVector(0,0,170);
+    const FVector Delta=Head-FVector(Next.Head);
+    Next.Head=Head; Next.Left=FVector(Next.Left)+Delta; Next.Right=FVector(Next.Right)+Delta; ++Next.Sequence;
+    Fighter->SetActorLocation(Foot,false,nullptr,ETeleportType::TeleportPhysics);
+    Fighter->LastPoseReceived=-100; Fighter->ServerPose(Next); Fighter->ForceNetUpdate();
+    UE_LOG(LogMRFPSBot,Display,TEXT("MRFPS_BOT_ROUND_SPAWN slot=%d foot=%s"),Fighter->GetSlot(),*Foot.ToString());
+    return true;
+}
 void AMRFPSBotController::Step(float DeltaSeconds)
 {
     auto* Fighter=GetPawn<AMRFPSPawn>(); auto* Human=HumanPlayer.Get();
@@ -308,6 +341,13 @@ bool IsPrepared(const AMRFPSGameMode* Mode)
         (GS->SoloHumanCalibration && Human->GeometryCalibrationGeneration==GS->SoloHumanCalibration)) &&
         Bot && IsServerBot(BotPawn) && BotPawn->GetSlot()==1-GS->SoloHumanSlot && BotPawn->IsInsideArena() && Bot->IsPreparedFor(Human);
 }
+bool ResetForRound(AMRFPSGameMode* Mode)
+{
+    if (!Mode || !Mode->HasAuthority()) return false;
+    const auto* GS=Mode->GetGameState<AMRFPSGameState>();
+    if (!GS || !GS->bSoloBotSession) return true;
+    auto* Bot=FindBot(Mode->GetWorld()); return Bot && Bot->ResetForRound();
+}
 bool IsTrackingPause(const AMRFPSGameMode* Mode)
 {
     const auto* GS=Mode?Mode->GetGameState<AMRFPSGameState>():nullptr;
@@ -425,21 +465,15 @@ void Maintain(AMRFPSGameMode* Mode,float DeltaSeconds)
     BotState->bAuthenticated=false; BotState->AuthExpiresAt=0; BotState->bAdmin=BotState->bInspector=false;
     if (Fighter->Haptics) Fighter->Haptics->bAutoConnectTracking=false;
     Fighter->bCalibrated=true; Fighter->bStageFloorReferenced=true;
-    FVector Head; bool SpawnClear=false;
-    for (double Inset:{40.,120.,200.}) {
-        for (double X:{0.,-80.,80.}) {
-            const FVector Local(X,(BotState->Slot==0?-1.:1.)*(Layout.LengthCm*.5-Inset),0);
-            const FVector Foot=Layout.ToWorld(Local);
-            if (!Layout.ContainsPlanar(Foot,25) || !PathClear(Mode->GetWorld(),Fighter,Foot,Foot+FVector(1,0,0))) continue;
-            Head=Foot+FVector(0,0,170); SpawnClear=true; break;
-        }
-        if (SpawnClear) break;
-    }
+    // Assign the state before choosing the endpoint so the same spawn policy
+    // is used initially and at every later round.
+    Fighter->SetPlayerState(BotState); FVector Foot;
+    const bool SpawnClear=FindRoundSpawn(Mode->GetWorld(),Fighter,Layout,Foot);
     if (!SpawnClear) {
         Fighter->Destroy(); Bot->Destroy();
         UE_LOG(LogMRFPSBot,Warning,TEXT("MRFPS_BOT_SPAWN_BLOCKED")); return;
     }
-    Fighter->Pose.Head=Head; Fighter->SetActorLocation(FVector(Head.X,Head.Y,Layout.Center.Z));
+    Fighter->Pose.Head=Foot+FVector(0,0,170); Fighter->SetActorLocation(Foot);
     if (!Bot->InitializeBot(Fighter,Human)) { Fighter->Destroy(); Bot->Destroy(); return; }
     GS->Layout=Layout; GS->bSharedFloorConfirmed=false; GS->bSoloBotSession=true; GS->bSoloGeometryReady=false;
     GS->SoloHumanSlot=Human->GetSlot(); GS->SoloHumanCalibration=Human->Pose.bDesktop?0:Human->GeometryCalibrationGeneration;

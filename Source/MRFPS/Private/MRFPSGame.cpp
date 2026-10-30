@@ -63,6 +63,7 @@
 #include "Materials/MaterialInterface.h"
 #include "TimerManager.h"
 #if !UE_SERVER
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/WidgetComponent.h"
@@ -78,6 +79,7 @@ static constexpr ECollisionChannel WeaponChannel = ECC_GameTraceChannel1;
 
 namespace MRFPS
 {
+constexpr double DamageNumberLifetime=.85;
     static MRFPSConnectionStatus::ERole ConnectionRole(const FString& Role)
     {
         return Role==TEXT("player")?MRFPSConnectionStatus::ERole::Player:
@@ -2015,14 +2017,23 @@ void AMRFPSPawn::ClientDamageNumber_Implementation(FVector_NetQuantize10 HitLoca
 {
 #if !UE_SERVER
     if (!IsLocallyControlled() || HitLocation.ContainsNaN() || !FMath::IsFinite(Damage) || Damage<=0 || Damage>1000 || Style>3) return;
-    const double Now=FPlatformTime::Seconds(); int32 Index=INDEX_NONE;
-    for (int32 I=0;I<DamageNumberStates.Num();++I) if (Now-DamageNumberStates[I].StartedAt>=1.2) { Index=I; break; }
+    const double Now=FPlatformTime::Seconds(); int32 Index=INDEX_NONE; bool bRefresh=false;
+    // Rapid hits in the same area refresh one number instead of stacking a
+    // cluster of overlapping labels. Each value remains the actual hit damage.
+    for (int32 I=0;I<DamageNumberStates.Num();++I) if (Now-DamageNumberStates[I].StartedAt<.35 &&
+        FVector::DistSquared(DamageNumberStates[I].Location,FVector(HitLocation))<FMath::Square(25.)) { Index=I; bRefresh=true; break; }
+    if (Index==INDEX_NONE) for (int32 I=0;I<DamageNumberStates.Num();++I)
+        if (Now-DamageNumberStates[I].StartedAt>=MRFPS::DamageNumberLifetime) { Index=I; break; }
     if (Index==INDEX_NONE && DamageNumberLabels.Num()<8) {
         auto* DamageLabel=NewObject<UTextRenderComponent>(this);
         if (!DamageLabel) return;
         AddInstanceComponent(DamageLabel); DamageLabel->SetupAttachment(RootComponent); DamageLabel->SetHorizontalAlignment(EHTA_Center);
-        DamageLabel->SetVerticalAlignment(EVRTA_TextCenter); DamageLabel->SetWorldSize(16); DamageLabel->SetVisibility(false); DamageLabel->RegisterComponent();
-        Index=DamageNumberLabels.Add(DamageLabel); DamageNumberStates.AddDefaulted();
+        DamageLabel->SetVerticalAlignment(EVRTA_TextCenter); DamageLabel->SetWorldSize(12); DamageLabel->SetVisibility(false);
+        auto* Base=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_DamageNumber.M_DamageNumber"));
+        auto* FadeMaterial=Base?UMaterialInstanceDynamic::Create(Base,this):nullptr;
+        if (FadeMaterial) { FadeMaterial->SetScalarParameterValue(TEXT("DamageOpacity"),0.f); DamageLabel->SetTextMaterial(FadeMaterial); }
+        DamageLabel->RegisterComponent();
+        Index=DamageNumberLabels.Add(DamageLabel); DamageNumberMaterials.Add(FadeMaterial); DamageNumberStates.AddDefaulted();
     }
     if (Index==INDEX_NONE) {
         Index=0; for (int32 I=1;I<DamageNumberStates.Num();++I) if (DamageNumberStates[I].StartedAt<DamageNumberStates[Index].StartedAt) Index=I;
@@ -2030,8 +2041,8 @@ void AMRFPSPawn::ClientDamageNumber_Implementation(FVector_NetQuantize10 HitLoca
     auto* DamageLabel=DamageNumberLabels[Index].Get(); if (!DamageLabel) return;
     DamageLabel->SetText(FText::AsNumber(FMath::RoundToInt(Damage)));
     DamageLabel->SetTextRenderColor(Style==1?FColor(255,203,83):Style==2?FColor(90,178,255):FColor(225,255,250));
-    DamageNumberStates[Index].Location=FVector(HitLocation)+FVector(0,0,(Index%3)*3);
-    DamageNumberStates[Index].StartedAt=Now; DamageLabel->SetVisibility(true); UpdateDamageNumbers();
+    DamageNumberStates[Index].Location=FVector(HitLocation);
+    DamageNumberStates[Index].StartedAt=bRefresh?Now-.12:Now; DamageLabel->SetVisibility(true); UpdateDamageNumbers();
 #endif
 }
 void AMRFPSPawn::UpdateDamageNumbers()
@@ -2043,8 +2054,13 @@ void AMRFPSPawn::UpdateDamageNumbers()
     for (int32 I=0;I<DamageNumberLabels.Num() && I<DamageNumberStates.Num();++I) {
         auto* DamageLabel=DamageNumberLabels[I].Get(); if (!DamageLabel || !DamageLabel->IsVisible()) continue;
         const double Age=FMath::Max(0.,Now-DamageNumberStates[I].StartedAt);
-        if (Age>=1.2) { DamageLabel->SetVisibility(false); continue; }
-        const FVector Position=DamageNumberStates[I].Location+FVector(0,0,Age*22.);
+        if (Age>=MRFPS::DamageNumberLifetime) { DamageLabel->SetVisibility(false); continue; }
+        const float FadeIn=FMath::SmoothStep(0.f,.12f,float(Age));
+        const float FadeOut=1.f-FMath::SmoothStep(.48f,float(MRFPS::DamageNumberLifetime),float(Age));
+        if (DamageNumberMaterials.IsValidIndex(I) && DamageNumberMaterials[I])
+            DamageNumberMaterials[I]->SetScalarParameterValue(TEXT("DamageOpacity"),FadeIn*FadeOut);
+        const float Rise=8.f*FMath::SmoothStep(0.f,float(MRFPS::DamageNumberLifetime),float(Age));
+        const FVector Position=DamageNumberStates[I].Location+FVector(0,0,Rise);
         DamageLabel->SetWorldLocationAndRotation(Position,(PC->PlayerCameraManager->GetCameraLocation()-Position).Rotation());
     }
 #endif

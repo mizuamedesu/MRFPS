@@ -13,6 +13,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/WorldSettings.h"
 #include "Misc/AutomationTest.h"
 #include <limits>
@@ -520,6 +521,15 @@ bool FMRFPSDamageNumberTest::RunTest(const FString& Parameters)
     auto* Label=Shooter->DamageNumberLabels[0].Get();
     TestTrue(TEXT("The label displays actual damage at the impact"),Label && Label->IsVisible() &&
         Label->Text.ToString()==TEXT("20") && Shooter->DamageNumberStates[0].Location.Equals(Impact));
+    auto* Fade=Shooter->DamageNumberMaterials.IsValidIndex(0)?Shooter->DamageNumberMaterials[0].Get():nullptr;
+    if (!TestNotNull(TEXT("Damage numbers use the fade-capable material"),Fade)) return false;
+    Shooter->ClientDamageNumber(Impact,20,0);
+    TestEqual(TEXT("Rapid hits at the same point do not stack labels"),Shooter->DamageNumberLabels.Num(),1);
+    Shooter->DamageNumberStates[0].StartedAt=FPlatformTime::Seconds()-.3; Shooter->UpdateDamageNumbers();
+    const float VisibleOpacity=Fade->K2_GetScalarParameterValue(TEXT("DamageOpacity"));
+    Shooter->DamageNumberStates[0].StartedAt=FPlatformTime::Seconds()-.7; Shooter->UpdateDamageNumbers();
+    const float FadingOpacity=Fade->K2_GetScalarParameterValue(TEXT("DamageOpacity"));
+    TestTrue(TEXT("The label becomes visible and fades out smoothly"),VisibleOpacity>.95f && FadingOpacity>0 && FadingOpacity<.5f);
     Target->ApplyShot(-20,Shooter,false,Impact);
     TestEqual(TEXT("Rejected damage produces no extra label"),Shooter->DamageNumberLabels.Num(),1);
     Shooter->DamageNumberStates[0].StartedAt=FPlatformTime::Seconds()-2.; Shooter->UpdateDamageNumbers();
