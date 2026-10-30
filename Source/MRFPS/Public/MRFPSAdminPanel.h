@@ -34,6 +34,7 @@ private:
     UFUNCTION() void SetDimensions();
     UFUNCTION() void PlaceWalls();
     UFUNCTION() void ClearWalls();
+    UFUNCTION() void ResetBuildings();
     UPROPERTY(Transient) TObjectPtr<UTextBlock> Status;
     UPROPERTY(Transient) TObjectPtr<UTextBlock> Result;
     UPROPERTY(Transient) TObjectPtr<UEditableTextBox> WidthBox;

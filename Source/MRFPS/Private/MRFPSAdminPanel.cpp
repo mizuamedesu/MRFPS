@@ -67,7 +67,9 @@ void UMRFPSAdminPanel::NativeOnInitialized() {
     WidthBox=Number(WidgetTree,Dimensions,TEXT("幅m"),GS?GS->Layout.WidthCm/100:4.5);LengthBox=Number(WidgetTree,Dimensions,TEXT("長さm"),GS?GS->Layout.LengthCm/100:7.);Add(Body,Dimensions);
     auto* SizeB=Button(WidgetTree,TEXT("サイズ変更"));SizeB->OnClicked.AddDynamic(this,&UMRFPSAdminPanel::SetDimensions);Add(Body,SizeB);
     auto* ClearB=Button(WidgetTree,TEXT("建築を消す"));ClearB->OnClicked.AddDynamic(this,&UMRFPSAdminPanel::ClearWalls);
-    auto* ResetB=Button(WidgetTree,TEXT("試合リセット"));ResetB->OnClicked.AddDynamic(this,&UMRFPSAdminPanel::Reset);Row(WidgetTree,Body,{ClearB,ResetB});
+    auto* ResetB=Button(WidgetTree,TEXT("試合リセット"));ResetB->OnClicked.AddDynamic(this,&UMRFPSAdminPanel::Reset);
+    auto* ResetBuildingsB=Button(WidgetTree,TEXT("建築リセット"));ResetBuildingsB->OnClicked.AddDynamic(this,&UMRFPSAdminPanel::ResetBuildings);
+    ResetBuildingsB->SetToolTipText(FText::FromString(TEXT("追加した建築を消し、壁と箱を初期配置に戻します。")));Row(WidgetTree,Body,{ClearB,ResetBuildingsB,ResetB});
     auto* CloseB=Button(WidgetTree,TEXT("閉じる"));CloseB->OnClicked.AddDynamic(this,&UMRFPSAdminPanel::Close);Add(Body,CloseB);
 }
 
@@ -117,6 +119,7 @@ void UMRFPSAdminPanel::Reset() { if (auto* PC=Controller()) PC->RequestAdminActi
 void UMRFPSAdminPanel::ConfirmSharedFloor() { if (auto* PC=Controller()) PC->RequestAdminAction(EMRFPSAdminAction::ConfirmSharedFloor); }
 void UMRFPSAdminPanel::CalibrateFloor() { if (auto* PC=Controller()) PC->RequestAdminAction(EMRFPSAdminAction::CalibrateFloor); }
 void UMRFPSAdminPanel::ClearWalls() { if (auto* PC=Controller()) PC->RequestAdminAction(EMRFPSAdminAction::ClearAdminWalls); }
+void UMRFPSAdminPanel::ResetBuildings() { if (auto* PC=Controller()) PC->RequestAdminAction(EMRFPSAdminAction::ResetBuildings); }
 void UMRFPSAdminPanel::SetDimensions()
 {
     auto* PC=Controller(); if (!PC) return;

@@ -50,7 +50,7 @@ class SWindow;
 class SWidget;
 
 UENUM()
-enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFloor,CalibrateFloor,SetDimensions,ClearAdminWalls };
+enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFloor,CalibrateFloor,SetDimensions,ClearAdminWalls,ResetBuildings };
 
 UENUM(BlueprintType)
 enum class EMRFPSMatchPhase : uint8 { Waiting, Playing, Finished, BetweenRounds };
@@ -320,6 +320,7 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> HeadsetStatus;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> PlayerHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> RoundHud;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> EnemyHealthBar;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSHapticsComponent> Haptics;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UVRNotificationsComponent> XRNotifications;
     FString TrackingDescription;
@@ -331,6 +332,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMRFPSLoginPointerPoseTest;
     friend class FMRFPSQuestLoginToggleTest;
+    friend class FMRFPSEnemyHealthBarTest;
 #endif
     bool IsPhysicalFireAllowed() const;
     void SampleLocalPose(float DeltaSeconds);
@@ -338,6 +340,7 @@ private:
     void RemoveDeployedWall();
     void UpdateWeaponFromPose(double Now);
     void UpdatePlayerHud();
+    void UpdateEnemyHealthBar();
     void CompletePendingCalibration();
     UFUNCTION() void InvalidateCalibration();
     UFUNCTION() void OnXRSpaceChanged();
@@ -374,6 +377,7 @@ private:
     FMRFPSReloadGesture ServerReload;
     TSharedPtr<SWidget> PlayerHudSlate;
     TSharedPtr<SWidget> RoundHudSlate;
+    TSharedPtr<SWidget> EnemyHealthBarSlate;
 };
 
 UCLASS()
@@ -668,7 +672,7 @@ private:
     void ApplyLayoutChange();
     void SetCombatPaused(bool Paused);
     void ResetToWaiting();
-    void SpawnDefaultStage();
+    bool SpawnDefaultStage(bool bReplaceExisting=false,FString* OutError=nullptr);
     uint32 RegisteredCalibration[2]={0,0};
     TWeakObjectPtr<AMRFPSPawn> RegisteredPlayers[2];
     double CombatPausedAt=0;
@@ -677,7 +681,7 @@ private:
     int32 CountAdmins(const AMRFPSPlayerState* Exclude=nullptr) const;
     void ResetMatch();
     void BeginRound();
-    void FinishRound();
+    void FinishRound(bool bElimination=false);
     void TickRounds();
     TUniquePtr<FMRFPSAuthVerifier> AuthVerifier;
     TUniquePtr<FMRFPSHealthResponder> HealthResponder;

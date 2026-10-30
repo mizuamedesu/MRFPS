@@ -606,6 +606,7 @@ void AMRFPSPlayerController::ServerAutomationCommand_Implementation(FGuid Id,con
                 else if(Action==TEXT("confirm_floor")) Type=EMRFPSAdminAction::ConfirmSharedFloor;
                 else if(Action==TEXT("calibrate_floor")) Type=EMRFPSAdminAction::CalibrateFloor;
                 else if(Action==TEXT("clear_objects")) Type=EMRFPSAdminAction::ClearAdminWalls;
+                else if(Action==TEXT("reset_buildings")) Type=EMRFPSAdminAction::ResetBuildings;
                 else if(Action==TEXT("set_dimensions")) { Type=EMRFPSAdminAction::SetDimensions; double W=0,L=0; Valid=Valid&&Params->TryGetNumberField(TEXT("width_cm"),W)&&Params->TryGetNumberField(TEXT("length_cm"),L)&&FMath::IsFinite(W)&&FMath::IsFinite(L); Dimensions=FVector2D(W,L); }
                 else Valid=false;
                 if(!Valid) Code=TEXT("INVALID_REQUEST");

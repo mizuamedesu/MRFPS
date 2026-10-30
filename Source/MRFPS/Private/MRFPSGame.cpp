@@ -355,6 +355,12 @@ AMRFPSPawn::AMRFPSPawn()
     RoundHud->SetRelativeLocation(FVector(85,0,30)); RoundHud->SetRelativeRotation(FRotator(0,180,0));
     RoundHud->SetCollisionEnabled(ECollisionEnabled::NoCollision); RoundHud->SetOnlyOwnerSee(true);
     RoundHud->SetVisibility(false);
+    EnemyHealthBar=CreateDefaultSubobject<UWidgetComponent>(TEXT("EnemyHealthBar"));
+    EnemyHealthBar->SetupAttachment(RootComponent); EnemyHealthBar->SetWidgetSpace(EWidgetSpace::World);
+    EnemyHealthBar->SetDrawSize(FVector2D(200,24)); EnemyHealthBar->SetPivot(FVector2D(.5,.5));
+    EnemyHealthBar->SetRelativeScale3D(FVector(.18)); EnemyHealthBar->SetTwoSided(true);
+    EnemyHealthBar->SetBackgroundColor(FLinearColor::Transparent);
+    EnemyHealthBar->SetCollisionEnabled(ECollisionEnabled::NoCollision); EnemyHealthBar->SetVisibility(false);
 #endif
     Haptics = CreateDefaultSubobject<UMRFPSHapticsComponent>(TEXT("MoBits"));
     XRNotifications=CreateDefaultSubobject<UVRNotificationsComponent>(TEXT("XRNotifications"));
@@ -1703,6 +1709,9 @@ void AMRFPSGameMode::OnElimination(AMRFPSPawn* Victim,AMRFPSPawn* Killer)
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_ELIMINATION winner=%d victim=%d kills=%d"),Killer->GetSlot(),Victim->GetSlot(),KPS?KPS->Kills:-1);
     if (VPS) VPS->ForceNetUpdate();
     if (KPS) KPS->ForceNetUpdate();
+    // The first valid elimination ends the round for both human and Bot games.
+    if (VPS && KPS && VPS->Slot>=0 && VPS->Slot<2 && KPS->Slot==1-VPS->Slot)
+        FinishRound(true);
 }
 void AMRFPSGameMode::ResetMatch()
 {
@@ -1710,8 +1719,9 @@ void AMRFPSGameMode::ResetMatch()
     auto* GS=GetGameState<AMRFPSGameState>(); if (!GS) return;
     GS->RoundNumber=GS->CompletedRounds=GS->RoundWinsSlot0=GS->RoundWinsSlot1=0;
     GS->LastRoundWinnerSlot=GS->WinnerSlot=-1; GS->RoundEndsAt=GS->RoundPausedAt=GS->RestartAt=0;
-    BeginRound();
-    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH playing"));
+    GS->Phase=EMRFPSMatchPhase::BetweenRounds;
+    GS->RestartAt=GetWorld()->GetTimeSeconds()+3.; GS->ForceNetUpdate();
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH countdown"));
 }
 void AMRFPSGameMode::Tick(float Dt)
 {
@@ -1766,7 +1776,7 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(14);
+    FNetworkVersion::SetGameNetworkProtocolVersion(15);
     Super::Init();
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
     // This CVar is marked Cheat in UE 5.8, so setting it in Engine.ini causes
@@ -2027,7 +2037,7 @@ void AMRFPSPawn::Tick(float Dt)
         if (ShowAvatar && Health>0 && Avatar->IsAvatarReady()) Avatar->UpdateTracking(Pose,MRFPS::Layout(GetWorld()),GeometryCalibrationGeneration,Dt,false);
         else Avatar->SetVisibility(false);
     }
-    UpdateVisuals();UpdatePlayerHud();
+    UpdateVisuals();UpdatePlayerHud();UpdateEnemyHealthBar();
     if (APlayerController* PC=GetWorld()->GetFirstPlayerController(); PC && PC->PlayerCameraManager) {
         Label->SetWorldRotation((PC->PlayerCameraManager->GetCameraLocation()-Label->GetComponentLocation()).Rotation());
     }

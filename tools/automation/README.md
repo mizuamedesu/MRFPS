@@ -1,6 +1,6 @@
 # UE local control
 
-`control.py` submits a JSON operation to a named, running protocol-14 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
+`control.py` submits a JSON operation to a named, running protocol-15 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
 
 Each request requires an immutable UUIDv4. Repeating the same UUID and payload returns or waits for the original result, and the same UUID with different parameters is rejected. If a client restarts after dispatch but before its reply is recorded, the result is `unknown`: it does not silently run the operation again. A server keeps up to 8192 operation receipts for its lifetime; this is not a durable transaction across a server restart or a machine power failure. A repeated UUID returns the original receipt; use a new UUID to apply the desired state again after other changes.
 
@@ -24,7 +24,7 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `roster.list` | `{}` | Read the authenticated inspector/admin roster; unknown, stale and bot ping is `null` |
 | `connection.set` | `{"connected":false}` | Request disconnection and the login screen; connect with `tools/client/device_login.py` and a new code |
 | `camera.set` | `{"camera":"main|inspector","position":[0,0,650],"rotation":[-30,0,0]}` | Set the free camera or the separate inspector window's camera; rotation is pitch/yaw/roll in degrees |
-| `admin.action` | `{"action":"pause", "layout_revision":1, "control_revision":1}` | `start`, `pause`, `resume`, `reset`, `confirm_floor`, `calibrate_floor`, `clear_objects`, or `set_dimensions`; the latter also takes `width_cm` and `length_cm` |
+| `admin.action` | `{"action":"pause", "layout_revision":1, "control_revision":1}` | `start`, `pause`, `resume`, `reset`, `confirm_floor`, `calibrate_floor`, `clear_objects`, `reset_buildings`, or `set_dimensions`; the latter also takes `width_cm` and `length_cm`. `reset_buildings` removes player/admin builds and restores the original walls and crates within the current floor layout. |
 | `object.ensure` | `{"kind":"wall|crate","surface":[x,y,z],"origin":[x,y,z],"direction":[x,y,z],"yaw":0,"layout_revision":1,"control_revision":1}` | Ensure a snapped object exists; the normal authoritative ray, bounds and collision checks still apply |
 | `wall.set` | `{"target":"<id>","expected":{"height":4,"mask":16777215},"desired":{"height":4,"mask":16777199},"layout_revision":1,"control_revision":1}` | Atomically set the whole wall shape if its expected shape still matches |
 | `object.remove` | `{"target":"<id>","expected":{"height":4,"mask":16777215},"layout_revision":1,"control_revision":1}` | Remove precisely the referenced object when its expected shape still matches |

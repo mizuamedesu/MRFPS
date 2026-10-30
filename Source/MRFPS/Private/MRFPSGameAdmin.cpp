@@ -154,7 +154,7 @@ void AMRFPSPlayerController::ServerAdminAction_Implementation(EMRFPSAdminAction 
     if (ExpectedLayoutRevision!=GS->Layout.Revision || ExpectedControlRevision!=GS->ControlRevision) {
         ClientAdminResult(TEXT("ADMIN_STALE_STATE")); return;
     }
-    if (uint8(Action)>uint8(EMRFPSAdminAction::ClearAdminWalls) || Dimensions.ContainsNaN()) {
+    if (uint8(Action)>uint8(EMRFPSAdminAction::ResetBuildings) || Dimensions.ContainsNaN()) {
         ClientAdminResult(TEXT("ADMIN_INVALID_ACTION")); return;
     }
     const bool Accepted=GM->HandleAdminAction(this,Action,Dimensions,Error);
@@ -319,6 +319,9 @@ bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdmin
         ArenaWidthCm=GS->Layout.WidthCm; ArenaLengthCm=GS->Layout.LengthCm; break;
     case EMRFPSAdminAction::ClearAdminWalls:
         for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if (It->bAdminPlaced) It->Destroy();
+        break;
+    case EMRFPSAdminAction::ResetBuildings:
+        if (!SpawnDefaultStage(true,&SafeError)) return false;
         break;
     default: SafeError=TEXT("ADMIN_INVALID_ACTION"); return false;
     }

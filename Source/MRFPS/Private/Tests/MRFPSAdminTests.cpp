@@ -6,6 +6,7 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/WidgetComponent.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -98,6 +99,11 @@ struct FAdminWorld
         Fighter->LastPoseReceived=World->GetTimeSeconds(); Fighter->OnRepPose();
     }
     int32 Walls() const { int32 Count=0; for (TActorIterator<AMRFPSBarrier> It(World);It;++It) ++Count; return Count; }
+    void FinishCountdown()
+    {
+        if (World->GetTimeSeconds()<=0) World->Tick(LEVELTICK_All,.01f);
+        State->RestartAt=World->GetTimeSeconds(); Mode->Tick(0);
+    }
     ~FAdminWorld()
     {
         if (World) { World->EndPlay(EEndPlayReason::EndPlayInEditor); World->DestroyWorld(false); GEngine->DestroyWorldContext(World); }
@@ -164,6 +170,7 @@ bool FMRFPSAdminAuthorityTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Observer cannot place a wall via the authority helper"),F.Mode->PlaceAdminWall(F.Observer,FVector(0,0,500),FVector(0,0,-1),0,Error));
     TestEqual(TEXT("Rejected mutations spawn nothing"),F.Walls(),0);
     TestTrue(TEXT("Authenticated admin explicitly starts a ready desktop session"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    F.FinishCountdown();
     TestTrue(TEXT("Desktop starts are labelled nominal, not measured physical calibration"),F.State->bNominalDesktopSession && !F.State->Layout.bCalibrated && F.Players[0]->CanAct());
     TestFalse(TEXT("Live combat cannot silently resize its floor"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::SetDimensions,FVector2D(500,800),Error));
     TestTrue(TEXT("Admin pause is accepted"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));
@@ -313,6 +320,34 @@ bool FMRFPSDefaultStageTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Remaining objects survive floor adjustment"),F.Walls(),3);
     for (TActorIterator<AMRFPSBarrier> It(F.World);It;++It) if (It->bDefaultStageObject)
         TestTrue(TEXT("A stage object follows its floor-local anchor"),It->GetActorLocation().Equals(F.State->Layout.ToWorld(It->MapLocalPosition),.1));
+    AMRFPSBarrier* EditedWall=nullptr;
+    for (TActorIterator<AMRFPSBarrier> It(F.World);It;++It) if (It->bDefaultStageObject && It->BuildKind==EMRFPSBuildKind::Wall) { EditedWall=*It; break; }
+    if (!TestNotNull(TEXT("Default wall can be edited"),EditedWall)) return false;
+    EditedWall->WallShape.SolidCells &= ~(1u<<4); EditedWall->Health=40;
+    auto* Extra=F.World->SpawnActor<AMRFPSBarrier>(F.State->Layout.ToWorld(FVector(0,0,100)),FRotator::ZeroRotator);
+    if (!TestNotNull(TEXT("Player-built wall exists"),Extra)) return false;
+    const uint32 LayoutRevision=F.State->Layout.Revision;
+    const int32 BeforeReset=F.Walls();
+    TestFalse(TEXT("An observer cannot reset the stage"),F.Mode->HandleAdminAction(F.Observer,EMRFPSAdminAction::ResetBuildings,FVector2D::ZeroVector,Error));
+    TestEqual(TEXT("Unauthorized reset preserves existing objects"),F.Walls(),BeforeReset);
+    TestTrue(TEXT("Admin resets all builds to initial objects"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::ResetBuildings,FVector2D::ZeroVector,Error));
+    TestEqual(TEXT("Only four initial objects remain"),F.Walls(),4);
+    TestEqual(TEXT("Reset leaves floor layout unchanged"),F.State->Layout.Revision,LayoutRevision);
+    Walls=Crates=0;
+    for (TActorIterator<AMRFPSBarrier> It(F.World);It;++It) {
+        TestTrue(TEXT("Each restored object is a fresh floor-anchored default"),It->bDefaultStageObject && It->bAdminPlaced && It->bMapAnchor &&
+            It->GetActorLocation().Equals(F.State->Layout.ToWorld(It->MapLocalPosition),.1) && It->Health==120);
+        if (It->BuildKind==EMRFPSBuildKind::Wall) {
+            ++Walls; const FMRFPSWallShape DefaultShape;
+            TestTrue(TEXT("A reset restores wall height and cells"),It->WallShape.HeightRows==DefaultShape.HeightRows && It->WallShape.SolidCells==DefaultShape.SolidCells);
+        } else if (It->BuildKind==EMRFPSBuildKind::Crate) ++Crates;
+    }
+    TestTrue(TEXT("Both default walls and crates are restored"),Walls==2 && Crates==2);
+    TestTrue(TEXT("Repeating the reset is safe"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::ResetBuildings,FVector2D::ZeroVector,Error));
+    TestEqual(TEXT("Repeated reset does not duplicate objects"),F.Walls(),4);
+    F.State->Layout.WidthCm=F.State->Layout.LengthCm=200;
+    TestFalse(TEXT("A too-small floor rejects restoration before removing existing objects"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::ResetBuildings,FVector2D::ZeroVector,Error));
+    TestTrue(TEXT("Rejected reset leaves every existing object untouched"),Error==TEXT("ADMIN_WALL_OUTSIDE_LAYOUT") && F.Walls()==4);
     return true;
 }
 
@@ -355,6 +390,22 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
         F.Players[0]->RoundHud->GetAttachParent()==F.Players[0]->Camera && F.Players[0]->RoundHud->GetRelativeLocation().Z>0);
     FString Error;
     TestTrue(TEXT("Administrator starts the match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    TestTrue(TEXT("The first round begins with a three-second countdown"),F.State->Phase==EMRFPSMatchPhase::BetweenRounds && F.State->RoundNumber==0 && F.State->RoundEndsAt==0 && F.State->RoundHeaderText().Contains(TEXT("3")));
+    const int32 CountdownShots=F.Players[0]->AcceptedShots,CountdownAmmo=F.Players[0]->MagazineRounds;
+    F.Players[0]->Pose.LeftOpenness=1;
+    F.Players[0]->ServerFire(); F.Players[0]->DeployWall(); F.Players[0]->Tick(.1f);
+    TestTrue(TEXT("Countdown prevents shooting, deploying walls and shields"),!F.Players[0]->CanAct() && F.Players[0]->AcceptedShots==CountdownShots &&
+        F.Players[0]->MagazineRounds==CountdownAmmo && F.Walls()==0 && !F.Players[0]->bShieldActive);
+    TestTrue(TEXT("Countdown can be paused"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));
+    const FString FrozenCountdown=F.State->RoundHeaderText();
+    F.World->Tick(LEVELTICK_All,.2f);
+    TestEqual(TEXT("Paused countdown remains frozen"),F.State->RoundHeaderText(),FrozenCountdown);
+    F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
+    TestTrue(TEXT("Countdown can be resumed"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Resume,FVector2D::ZeroVector,Error));
+    F.FinishCountdown();
+    F.Players[0]->ServerFire(); F.Players[0]->Tick(.1f);
+    TestTrue(TEXT("Shooting and shield are enabled after the countdown"),F.Players[0]->CanAct() &&
+        F.Players[0]->AcceptedShots==CountdownShots+1 && F.Players[0]->MagazineRounds==CountdownAmmo-1 && F.Players[0]->bShieldActive);
     TestEqual(TEXT("First round starts at one"),F.State->RoundNumber,1);
     TestEqual(TEXT("A full round starts at 180 seconds"),F.State->RoundSecondsRemaining(),180);
     TestTrue(TEXT("The HUD uses the same full timer"),F.State->RoundHeaderText().Contains(TEXT("03:00")));
@@ -366,31 +417,32 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
     TestTrue(TEXT("The admin can resume a ready match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Resume,FVector2D::ZeroVector,Error));
     TestTrue(TEXT("The server deadline is extended by paused time"),F.State->RoundEndsAt>FirstDeadline);
-    for (int32 Index=0;Index<11;++Index) F.Mode->OnElimination(F.Players[1],F.Players[0]);
-    TestEqual(TEXT("Eleven eliminations do not end a 180 second round"),int32(F.State->Phase),int32(EMRFPSMatchPhase::Playing));
     const auto Expire=[&]() { F.State->RoundEndsAt=F.World->GetTimeSeconds(); F.Mode->Tick(0); };
     const auto Next=[&]() { F.State->RestartAt=F.World->GetTimeSeconds(); F.Mode->Tick(0); };
-    F.State->RoundEndsAt=F.World->GetTimeSeconds();
     F.Mode->OnElimination(F.Players[1],F.Players[0]);
-    TestEqual(TEXT("A late elimination at the deadline cannot alter the result"),F.Players[0]->GetPlayerState<AMRFPSPlayerState>()->Kills,11);
-    Expire();
-    TestTrue(TEXT("First round compares kills and awards player zero one win"),F.State->RoundWinsSlot0==1 && F.State->RoundWinsSlot1==0 && F.State->CompletedRounds==1 && F.State->LastRoundWinnerSlot==0);
+    TestTrue(TEXT("The first kill immediately awards player zero the round"),F.State->RoundWinsSlot0==1 && F.State->RoundWinsSlot1==0 && F.State->CompletedRounds==1 && F.State->LastRoundWinnerSlot==0);
     TestEqual(TEXT("A nonfinal round enters a break"),int32(F.State->Phase),int32(EMRFPSMatchPhase::BetweenRounds));
+    F.Mode->OnElimination(F.Players[1],F.Players[0]);
+    TestEqual(TEXT("A duplicate kill during the break cannot change the score"),F.Players[0]->GetPlayerState<AMRFPSPlayerState>()->Kills,1);
     TestTrue(TEXT("The round break also accepts admin pause"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));
     F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
     TestTrue(TEXT("The round break resumes without starting a new match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Resume,FVector2D::ZeroVector,Error));
     Next();
     TestTrue(TEXT("Round two starts with fresh kills and the old win retained"),F.State->RoundNumber==2 && F.Players[0]->GetPlayerState<AMRFPSPlayerState>()->Kills==0 && F.State->RoundWinsSlot0==1);
-    F.Mode->OnElimination(F.Players[0],F.Players[1]); Expire(); Next();
+    F.Mode->OnElimination(F.Players[0],F.Players[1]); Next();
     TestTrue(TEXT("Both fighters can win a round"),F.State->RoundNumber==3 && F.State->RoundWinsSlot0==1 && F.State->RoundWinsSlot1==1);
+    F.State->RoundEndsAt=F.World->GetTimeSeconds();
+    F.Mode->OnElimination(F.Players[1],F.Players[0]);
+    TestEqual(TEXT("A kill at the deadline cannot alter the outcome"),F.Players[0]->GetPlayerState<AMRFPSPlayerState>()->Kills,0);
     Expire();
     TestTrue(TEXT("A tied third round without two wins ends the match in a draw"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->CompletedRounds==3 && F.State->WinnerSlot==-1 && F.State->LastRoundWinnerSlot==-1);
     F.Mode->ResetForFighterChange();
     TestTrue(TEXT("A fighter replacement clears all prior match results"),F.State->Phase==EMRFPSMatchPhase::Waiting && F.State->RoundNumber==0 && F.State->CompletedRounds==0 && F.State->RoundWinsSlot0==0 && F.State->RoundWinsSlot1==0 && F.State->RoundEndsAt==0);
     F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
     TestTrue(TEXT("A new match starts independently after replacement"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
-    F.Mode->OnElimination(F.Players[1],F.Players[0]); Expire(); Next();
-    F.Mode->OnElimination(F.Players[1],F.Players[0]); Expire();
+    F.FinishCountdown();
+    F.Mode->OnElimination(F.Players[1],F.Players[0]); Next();
+    F.Mode->OnElimination(F.Players[1],F.Players[0]);
     TestTrue(TEXT("Two round wins finish the match without a third round"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundNumber==2 && F.State->RoundWinsSlot0==2 && F.State->WinnerSlot==0);
     TestTrue(TEXT("The losing player's HUD uses their own result"),F.State->RoundScoreText(1).Contains(TEXT("敗北")));
     F.Mode->bRequireAdminStart=false;
@@ -398,7 +450,34 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     F.Mode->Tick(0);
     TestTrue(TEXT("A finished match never auto-restarts when admin start is optional"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundNumber==2 && F.State->RoundWinsSlot0==2);
     TestTrue(TEXT("An explicit admin start begins a new match after completion"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    F.FinishCountdown();
     TestTrue(TEXT("The new match has one fresh round and no old wins"),F.State->Phase==EMRFPSMatchPhase::Playing && F.State->RoundNumber==1 && F.State->RoundWinsSlot0==0 && F.State->RoundWinsSlot1==0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSEnemyHealthBarTest,"MRFPS.Weapon.EnemyHealthBar",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSEnemyHealthBarTest::RunTest(const FString& Parameters)
+{
+    FAdminWorld F; if (!TestTrue(TEXT("Health bar fixture starts"),F.Create())) return false;
+    auto* ViewerState=F.Admin->GetPlayerState<AMRFPSPlayerState>();
+    ViewerState->Slot=0; ViewerState->bInspector=false; ViewerState->bAdmin=false;
+    F.Admin->Possess(F.Players[0]);
+    if (!F.Admin->PlayerCameraManager) F.Admin->PlayerCameraManager=F.World->SpawnActor<APlayerCameraManager>();
+    if (!TestNotNull(TEXT("Local viewer camera"),F.Admin->PlayerCameraManager.Get())) return false;
+    auto* Target=F.Players[1]; Target->Health=75; Target->UpdateEnemyHealthBar();
+    TestTrue(TEXT("A living enemy shows its health widget"),Target->EnemyHealthBar && Target->EnemyHealthBar->IsVisible() && Target->EnemyHealthBar->GetSlateWidget().IsValid());
+    TestTrue(TEXT("The bar follows the enemy's head"),Target->EnemyHealthBar->GetComponentLocation().Equals(FVector(Target->Pose.Head)+FVector(0,0,28),.01));
+    F.Players[0]->UpdateEnemyHealthBar();
+    TestFalse(TEXT("The player's own head has no enemy bar"),F.Players[0]->EnemyHealthBar->IsVisible());
+    Target->Health=0; Target->UpdateEnemyHealthBar();
+    TestFalse(TEXT("The bar hides when the enemy is eliminated"),Target->EnemyHealthBar->IsVisible());
+    Target->Health=100; Target->Pose.bHeadTracked=false; Target->UpdateEnemyHealthBar();
+    TestFalse(TEXT("The bar hides when the enemy head position is unavailable"),Target->EnemyHealthBar->IsVisible());
+    Target->Pose.bHeadTracked=true; Target->UpdateEnemyHealthBar();
+    TestTrue(TEXT("Fresh enemy tracking restores the bar"),Target->EnemyHealthBar->IsVisible());
+    F.Admin->UnPossess(); Target->UpdateEnemyHealthBar();
+    TestFalse(TEXT("A viewer without a player pawn does not see an enemy bar"),Target->EnemyHealthBar->IsVisible());
     return true;
 }
 
@@ -416,6 +495,7 @@ public:
             if (!Test->TestTrue(TEXT("Pause fixture creates actual authority actors"),Fixture.Create())) return true;
             Fixture.Move(0,FVector(-150,0,170)); Fixture.Move(1,FVector(150,0,170));
             if (!Fixture.Mode->HandleAdminAction(Fixture.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error)) { Test->AddError(Error); return true; }
+            Fixture.FinishCountdown();
             Fixture.Players[0]->DeployWall();
             for (TActorIterator<AMRFPSBarrier> It(Fixture.World);It;++It) Wall=*It;
             if (!Test->TestTrue(TEXT("A real fighter barrier has a running lifetime before pause"),Wall.IsValid() && Wall->GetLifeSpan()>5.9f)) return true;

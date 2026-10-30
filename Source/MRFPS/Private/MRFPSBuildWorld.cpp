@@ -262,10 +262,11 @@ bool AMRFPSGameMode::RemoveAutomationObject(AMRFPSPlayerController* Admin,AMRFPS
     Target->Destroy(); Error.Empty(); return true;
 }
 
-void AMRFPSGameMode::SpawnDefaultStage()
+bool AMRFPSGameMode::SpawnDefaultStage(bool bReplaceExisting,FString* OutError)
 {
     auto* GS=GetGameState<AMRFPSGameState>();
-    if (!HasAuthority() || !GS || !GS->Layout.IsSane()) return;
+    if (OutError) *OutError=TEXT("ADMIN_INVALID_STATE");
+    if (!HasAuthority() || !GS || !GS->Layout.IsSane()) return false;
     struct FInitialPiece { EMRFPSBuildKind Kind; FVector Local; float Yaw; };
     const FInitialPiece Pieces[]={
         {EMRFPSBuildKind::Wall,FVector(-75,-70,100),90},
@@ -273,19 +274,39 @@ void AMRFPSGameMode::SpawnDefaultStage()
         {EMRFPSBuildKind::Crate,FVector(120,-175,50),0},
         {EMRFPSBuildKind::Crate,FVector(-120,175,50),0}
     };
-    int32 Spawned=0;
+    TArray<TWeakObjectPtr<AMRFPSBarrier>> Existing;
+    if (bReplaceExisting) {
+        if (MaxAdminWalls<UE_ARRAY_COUNT(Pieces)) { if (OutError) *OutError=TEXT("ADMIN_WALL_CAPACITY"); return false; }
+        for (const auto& Initial:Pieces) {
+            const FTransform Transform(FRotator(0,GS->Layout.YawDegrees+Initial.Yaw,0),GS->Layout.ToWorld(Initial.Local));
+            if (!MRFPSBuild::Fits(GS->Layout,Initial.Kind,Transform)) {
+                if (OutError) *OutError=TEXT("ADMIN_WALL_OUTSIDE_LAYOUT"); return false;
+            }
+        }
+        for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if (!It->bPlacementPreview) Existing.Add(*It);
+    }
+    TArray<TWeakObjectPtr<AMRFPSBarrier>> Spawned;
     for (const auto& Initial:Pieces) {
-        if (Spawned>=MaxAdminWalls) break;
+        if (Spawned.Num()>=MaxAdminWalls) break;
         const FTransform Transform(FRotator(0,GS->Layout.YawDegrees+Initial.Yaw,0),GS->Layout.ToWorld(Initial.Local));
         if (!MRFPSBuild::Fits(GS->Layout,Initial.Kind,Transform)) continue;
         auto* Piece=GetWorld()->SpawnActorDeferred<AMRFPSBarrier>(AMRFPSBarrier::StaticClass(),Transform,nullptr,nullptr,ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-        if (!Piece) continue;
+        if (!Piece) {
+            if (!bReplaceExisting) continue;
+            for (const auto& Item:Spawned) if (auto* Actor=Item.Get()) Actor->Destroy();
+            if (OutError) *OutError=TEXT("ADMIN_WALL_SPAWN_FAILED"); return false;
+        }
         Piece->bAdminPlaced=true;Piece->bDefaultStageObject=true;Piece->bMapAnchor=true;
         Piece->BuildKind=Initial.Kind;Piece->OwnerSlot=-1;
         Piece->MapLocalPosition=Initial.Local;Piece->MapLocalYaw=Initial.Yaw;
         UGameplayStatics::FinishSpawningActor(Piece,Transform);Piece->ApplyBuildKind();Piece->ForceNetUpdate();
-        ++Spawned;
+        Spawned.Add(Piece);
     }
+    if (bReplaceExisting) for (const auto& Item:Existing) if (auto* Actor=Item.Get()) {
+        PausedWallLifetimes.Remove(Actor); Actor->Destroy();
+    }
+    if (OutError) OutError->Empty();
+    return true;
 }
 bool AMRFPSGameMode::EditAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,EMRFPSWallEdit Edit,FString& Error)
 {

@@ -30,12 +30,13 @@ public:
         Human->LastPoseReceived=World->GetTimeSeconds();
         World->Tick(LEVELTICK_All,.05f);
         const double Now=World->GetTimeSeconds();
-        if (Now>20) { Test->AddError(TEXT("Bot scenario exceeded its simulated deadline")); return true; }
+        if (Now>30) { Test->AddError(TEXT("Bot scenario exceeded its simulated deadline")); return true; }
         if (Stage==0) return AwaitCombat(Now);
         if (Stage==1) return AwaitRespawn(Now);
         if (Stage==2) return AwaitTrackingRecovery(Now);
         if (Stage==3) return BeginGeometry(Now);
         if (Stage==4) return FinishGeometry(Now);
+        if (Stage==5) return AwaitHumanRespawn(Now);
         return true;
     }
 private:
@@ -96,14 +97,29 @@ private:
         Human->Health=100; Human->LastPoseReceived=Now;
         const int32 BeforeKills=HumanState->Kills;
         for (int32 I=0;I<4;++I) Fighter->ApplyShot(25,Human,false);
-        if (!Test->TestTrue(TEXT("Bot death uses normal server elimination and scoring"),Fighter->Health<=0 && HumanState->Kills==BeforeKills+1 && BotState && BotState->Deaths>0)) return true;
+        if (!Test->TestTrue(TEXT("Bot death ends the round and scores for the human"),Fighter->Health<=0 && HumanState->Kills==BeforeKills+1 && BotState && BotState->Deaths>0 &&
+            GS->Phase==EMRFPSMatchPhase::BetweenRounds && GS->RoundWinsSlot0==1 && GS->CompletedRounds==1)) return true;
         StageStarted=Now; Stage=1; return false;
     }
     bool AwaitRespawn(double Now)
     {
         if (!IsValid(Bot) || !IsValid(Fighter)) { Test->AddError(TEXT("Bot disappeared during respawn")); return true; }
         if (Fighter->Health<=0 && Now-StageStarted<4) return false;
-        if (!Test->TestEqual(TEXT("Bot respawns on the normal server timer"),Fighter->Health,100.f)) return true;
+        if (!Test->TestTrue(TEXT("Bot respawns for the second round with the first win retained"),Fighter->Health==100.f &&
+            GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundNumber==2 && GS->RoundWinsSlot0==1)) return true;
+        Human->Health=100; Human->LastPoseReceived=Fighter->LastPoseReceived=Now;
+        for (int32 I=0;I<4;++I) Human->ApplyShot(25,Fighter,false);
+        if (!Test->TestTrue(TEXT("A Bot kill ends the second round and scores for the Bot"),Human->Health<=0 &&
+            GS->Phase==EMRFPSMatchPhase::BetweenRounds && GS->RoundWinsSlot1==1 && GS->CompletedRounds==2)) return true;
+        StageStarted=Now; Stage=5; return false;
+    }
+    bool AwaitHumanRespawn(double Now)
+    {
+        if (!IsValid(Bot) || !IsValid(Fighter)) { Test->AddError(TEXT("Bot disappeared before the third round")); return true; }
+        if (Human->Health<=0 && Now-StageStarted<4) return false;
+        // The behavior tree can fire on the same tick the countdown ends.
+        if (!Test->TestTrue(TEXT("The player respawns for the third round with both scores retained"),Human->Health>0.f &&
+            GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundNumber==3 && GS->RoundWinsSlot0==1 && GS->RoundWinsSlot1==1)) return true;
         Human->Pose.bHeadTracked=false; Mode->Tick(0);
         Test->TestTrue(TEXT("Lost tracking pauses without destroying the bot or clearing the round"),GS->bCombatPaused && GS->bSoloBotSession && IsValid(Bot));
         Human->Pose.bHeadTracked=true; Human->LastPoseReceived=Now;
@@ -126,6 +142,7 @@ private:
         Mode->Tick(0);
         Test->TestTrue(TEXT("No delayed auto-start can undo admin reset"),GS->Phase==EMRFPSMatchPhase::Waiting);
         Test->TestTrue(TEXT("Admin can start the same prepared bot again"),Mode->HandleAdminAction(Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+        GS->RestartAt=Now; Mode->Tick(0);
         Human->Pose.bHeadTracked=false; Mode->Tick(0);
         Test->TestTrue(TEXT("Tracking loss creates an automatic pause"),MRFPSBot::IsTrackingPause(Mode));
         Test->TestTrue(TEXT("GUI admin pause takes ownership of automatic pause"),Mode->HandleAdminAction(Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));

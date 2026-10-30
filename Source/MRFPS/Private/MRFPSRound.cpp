@@ -14,7 +14,11 @@ int32 AMRFPSGameState::RoundSecondsRemaining() const
 FString AMRFPSGameState::RoundHeaderText() const
 {
     if (Phase==EMRFPSMatchPhase::Waiting) return TEXT("対戦待ち");
-    if (Phase==EMRFPSMatchPhase::BetweenRounds) return TEXT("次のラウンド");
+    if (Phase==EMRFPSMatchPhase::BetweenRounds) {
+        const double Now=bCombatPaused ? RoundPausedAt : GetServerWorldTimeSeconds();
+        const int32 Seconds=FMath::CeilToInt32(FMath::Clamp(RestartAt-Now,0.,3.));
+        return FString::Printf(TEXT("開始まで %d%s"),Seconds,bCombatPaused?TEXT("  一時停止"):TEXT(""));
+    }
     if (Phase==EMRFPSMatchPhase::Finished) return WinnerSlot<0 ? TEXT("引き分け") : TEXT("試合終了");
     const int32 Seconds=RoundSecondsRemaining();
     return FString::Printf(TEXT("第%d / %d   %02d:%02d%s"),RoundNumber,MaximumRounds,Seconds/60,Seconds%60,bCombatPaused?TEXT("  一時停止"):TEXT(""));
@@ -47,12 +51,12 @@ void AMRFPSGameMode::BeginRound()
     UE_LOG(LogMRFPSRound,Display,TEXT("MRFPS_ROUND_START round=%d seconds=%d"),GS->RoundNumber,AMRFPSGameState::RoundDurationSeconds);
 }
 
-void AMRFPSGameMode::FinishRound()
+void AMRFPSGameMode::FinishRound(bool bElimination)
 {
     auto* GS=GetGameState<AMRFPSGameState>();
     if (!GS || !GameState || GS->Phase!=EMRFPSMatchPhase::Playing || GS->bCombatPaused ||
         GS->RoundNumber<1 || GS->RoundNumber>AMRFPSGameState::MaximumRounds ||
-        GS->RoundEndsAt<=0 || GetWorld()->GetTimeSeconds()<GS->RoundEndsAt) return;
+        GS->RoundEndsAt<=0 || (!bElimination && GetWorld()->GetTimeSeconds()<GS->RoundEndsAt)) return;
     int32 Kills[2]={0,0};
     for (APlayerState* Base:GameState->PlayerArray) if (const auto* PS=Cast<AMRFPSPlayerState>(Base);
         PS && !PS->bInspector && PS->Slot>=0 && PS->Slot<2) Kills[PS->Slot]=PS->Kills;
@@ -89,5 +93,5 @@ bool AMRFPSGameMode::StartPreparedSoloMatch()
 {
     auto* GS=GetGameState<AMRFPSGameState>();
     if (!HasAuthority() || !GS || GS->Phase!=EMRFPSMatchPhase::Waiting || GS->bCombatPaused || !MRFPSBot::IsPrepared(this)) return false;
-    ResetMatch(); return GS->Phase==EMRFPSMatchPhase::Playing;
+    ResetMatch(); return GS->Phase==EMRFPSMatchPhase::BetweenRounds;
 }

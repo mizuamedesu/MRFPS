@@ -7,6 +7,7 @@
 #include "MRFPSViewCaptureSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Components/WidgetComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
 #include "Misc/Paths.h"
 #include "Misc/App.h"
@@ -48,6 +49,36 @@ public:
         const float Health=Pawn.IsValid()?FMath::Clamp(Pawn->Health/100.f,0.f,1.f):0.f;
         if (Health>0) Line({{20,H-20},{20+(W*.46f-20)*Health,H-20}},
             Health<=.25f?FLinearColor(1.f,.3f,.2f,1.f):FLinearColor(.25f,.95f,.84f,1.f),5.f);
+        return Layer+1;
+    }
+private:
+    TWeakObjectPtr<AMRFPSPawn> Pawn;
+};
+
+class SMRFPSEnemyHealthBar final : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SMRFPSEnemyHealthBar) {}
+        SLATE_ARGUMENT(TWeakObjectPtr<AMRFPSPawn>, Pawn)
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments& Args) { Pawn=Args._Pawn; }
+    virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(200,24); }
+    virtual int32 OnPaint(const FPaintArgs&,const FGeometry& Geometry,const FSlateRect&,
+        FSlateWindowElementList& Elements,int32 Layer,const FWidgetStyle&,bool) const override
+    {
+        const FVector2D Size=Geometry.GetLocalSize();
+        const float W=float(Size.X),H=float(Size.Y);
+        FSlateDrawElement::MakeBox(Elements,Layer,Geometry.ToPaintGeometry(),
+            FCoreStyle::Get().GetBrush("WhiteBrush"),ESlateDrawEffect::None,FLinearColor(.008f,.025f,.045f,.85f));
+        const auto Line=[&](TArray<FVector2f> Points,FLinearColor Color,float Thickness) {
+            FSlateDrawElement::MakeLines(Elements,Layer+1,Geometry.ToPaintGeometry(),MoveTemp(Points),
+                ESlateDrawEffect::None,Color,true,Thickness);
+        };
+        Line({{3,3},{W-3,3},{W-3,H-3},{3,H-3},{3,3}},FLinearColor(.19f,.82f,1.f,.9f),1.5f);
+        const float Fraction=Pawn.IsValid() && FMath::IsFinite(Pawn->Health)?FMath::Clamp(Pawn->Health/100.f,0.f,1.f):0.f;
+        if (Fraction>0) Line({{8,H*.5f},{8+(W-16)*Fraction,H*.5f}},
+            Fraction<=.25f?FLinearColor(1.f,.3f,.2f,1.f):FLinearColor(.25f,.95f,.84f,1.f),H*.40f);
         return Layer+1;
     }
 private:
@@ -180,5 +211,27 @@ void AMRFPSPawn::UpdatePlayerHud()
           ]
         ];
     PlayerHud->SetSlateWidget(PlayerHudSlate);
+#endif
+}
+
+void AMRFPSPawn::UpdateEnemyHealthBar()
+{
+#if !UE_SERVER
+    if (!EnemyHealthBar) return;
+    auto* Viewer=GetWorld()?Cast<AMRFPSPlayerController>(GetWorld()->GetFirstPlayerController()):nullptr;
+    const auto* ViewerPawn=Viewer?Viewer->GetPawn<AMRFPSPawn>():nullptr;
+    const auto* TargetState=GetPlayerState<AMRFPSPlayerState>();
+    const bool Show=Viewer && Viewer->PlayerCameraManager && ViewerPawn && ViewerPawn!=this &&
+        ViewerPawn->GetSlot()>=0 && GetSlot()>=0 && ViewerPawn->GetSlot()!=GetSlot() &&
+        TargetState && !TargetState->bInspector && !TargetState->bAdmin &&
+        FMath::IsFinite(Health) && Health>0 && Pose.bHeadTracked;
+    EnemyHealthBar->SetVisibility(Show);
+    if (!Show) return;
+    if (!EnemyHealthBarSlate.IsValid()) {
+        EnemyHealthBarSlate=SNew(SMRFPSEnemyHealthBar).Pawn(TWeakObjectPtr<AMRFPSPawn>(this));
+        EnemyHealthBar->SetSlateWidget(EnemyHealthBarSlate);
+    }
+    const FVector Position=FVector(Pose.Head)+FVector(0,0,28);
+    EnemyHealthBar->SetWorldLocationAndRotation(Position,(Viewer->PlayerCameraManager->GetCameraLocation()-Position).Rotation());
 #endif
 }
