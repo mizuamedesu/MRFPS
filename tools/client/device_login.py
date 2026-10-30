@@ -271,6 +271,14 @@ def quest_control(args: argparse.Namespace, address: str, code: str | None) -> N
     run_adb(args.adb, args.serial, ["shell", "-T", command], data=control_data(address, args.role, code))
 
 
+def clear_quest_control(args: argparse.Namespace) -> None:
+    root = run_adb(args.adb, args.serial, ["shell", "run-as", PACKAGE, "pwd"])
+    if not re.fullmatch(r"/data/(?:user/[0-9]+|data)/" + re.escape(PACKAGE), root):
+        raise RuntimeError("Quest development APK must support run-as")
+    # Called only while this package is stopped. Never remove other app data.
+    run_adb(args.adb, args.serial, ["shell", f"run-as {PACKAGE} rm -f files/MRFPS/device-control.json files/MRFPS/device-control.tmp"])
+
+
 def quest(args: argparse.Namespace) -> dict:
     address = endpoint(args.server)
     serial = args.serial
@@ -311,6 +319,9 @@ def stop_quest(args: argparse.Namespace) -> dict:
 
 def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> dict:
     serial = args.serial
+    show_settings = getattr(args, "show_settings", False)
+    if show_settings and args.code_file is not None:
+        raise ValueError("--show-settings cannot include a code")
     requested_glove = quest_glove_config(args)
     marker, code = submission(args.code_file)
     current_pid = quest_pid(args.adb, serial)
@@ -357,6 +368,7 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
             save_state(state_path, previous)
         quest_control(args, address, code)
         previous["config"] = wanted
+        previous["configured"] = True
         if marker is not None:
             previous["submitted"] = marker
             previous["submitted_config"] = wanted
@@ -369,11 +381,15 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
             previous["pid"] = current_pid
             previous["pending"] = False
             save_state(state_path, previous)
-        if previous.get("config") == wanted and marker is None:
+        if show_settings:
+            if previous.get("config") != wanted or previous.get("configured", True):
+                raise RuntimeError("settings page requires a new instance; use --replace")
+            return {"status": "already_running", "pid": current_pid, "config": wanted}
+        if previous.get("config") == wanted and previous.get("configured", True) and marker is None:
             return {"status": "already_running", "pid": current_pid, "config": wanted}
         submit_control(current_pid)
         return {"status": "login_queued" if marker else "settings_queued", "pid": current_pid, "config": wanted}
-    if current_pid and same_process and previous.get("config") == wanted and marker is None:
+    if current_pid and same_process and previous.get("config") == wanted and previous.get("configured", True) and marker is None and not show_settings:
         return {"status": "already_running", "pid": current_pid, "config": wanted}
     if current_pid and not args.replace:
         raise RuntimeError("Quest app is running with unknown or different settings; use --replace to restart this app")
@@ -388,7 +404,13 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     assert_quest_share_clear(args.adb, serial)
     if quest_pid(args.adb, serial):
         raise RuntimeError("Quest app restarted before launch; no dialog was closed")
-    submit_control(None)
+    if show_settings:
+        clear_quest_control(args)
+        previous["config"] = wanted
+        previous["configured"] = False
+        save_state(state_path, previous)
+    else:
+        submit_control(None)
     if quest_pid(args.adb, serial):
         raise RuntimeError("Quest app restarted before launch")
     cmdline = "/Game/Maps/MRFPSArena -vr -log"
@@ -765,6 +787,7 @@ def main() -> int:
             p.add_argument("--serial", required=True)
             p.add_argument("--replace", action="store_true")
             p.add_argument("--adopt", action="store_true", help="explicitly take control of an already running MRFPS app")
+            p.add_argument("--show-settings", action="store_true", help="start at the saved server settings page")
             p.add_argument("--glove-sender", help="pin the PC glove relay's IPv4 address when launching")
             p.add_argument("--glove-port", type=int, help="Quest receive port; defaults to 25788")
             p.add_argument("--glove-device", help="optional DivingStation device ID")

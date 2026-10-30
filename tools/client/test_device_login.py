@@ -396,6 +396,39 @@ class DeviceLoginControlTests(unittest.TestCase):
             saved = module.load_quest_state(root / "Saved" / "DeviceAuth" / "quest-fixture.json")
             self.assertEqual(saved["config"]["glove"]["sender"],"192.168.1.10")
 
+    def test_quest_show_settings_launches_once_and_can_configure_later(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player", adb="adb",
+                                      replace=False, code_file=None, show_settings=True)
+            pid = {"value": ""}
+            calls = []
+            def fake_adb(_adb, _serial, cmd, **_kwargs):
+                calls.append(cmd)
+                if cmd[:3] == ["shell", "am", "start"]:
+                    pid["value"] = "4321"
+                return ""
+            with mock.patch.object(module, "ROOT", root), mock.patch.object(module, "run_adb", fake_adb), \
+                 mock.patch.object(module, "quest_pid", side_effect=lambda *_: pid["value"]), \
+                 mock.patch.object(module, "assert_quest_share_clear"), \
+                 mock.patch.object(module, "clear_quest_control") as clear, \
+                 mock.patch.object(module, "quest_control") as control:
+                self.assertEqual(module.quest(args)["status"], "launched")
+                self.assertEqual(module.quest(args)["status"], "already_running")
+                self.assertEqual(clear.call_count, 1)
+                control.assert_not_called()
+                args.show_settings = False
+                self.assertEqual(module.quest(args)["status"], "settings_queued")
+                self.assertEqual(module.quest(args)["status"], "already_running")
+                self.assertEqual(control.call_count, 1)
+                args.show_settings = True
+                with self.assertRaisesRegex(RuntimeError, "settings page requires a new instance"):
+                    module.quest(args)
+                args.code_file = root / "code.txt"
+                with self.assertRaisesRegex(ValueError, "cannot include a code"):
+                    module.quest(args)
+                self.assertEqual(sum(cmd[:3] == ["shell", "am", "start"] for cmd in calls), 1)
+
     def test_quest_repeated_configuration_does_not_restart_or_redeem_again(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -33,6 +33,10 @@ $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\p
 # ガードに属する対象ウィンドウだけを通常終了（繰り返し実行可）
 & $mrfpsPython tools/client/device_login.py stop-windows --name MRFPS-Inspector-1
 
+# Quest（保存済みのサーバー設定画面から起動）
+& $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
+  --serial QUEST_SERIAL --role player --glove-sender 192.168.1.10 --show-settings
+
 # Quest（こちらも最初は --code-file を省いて起動できる）
 & $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
   --serial QUEST_SERIAL --role player --code-file .local\device-code.txt
