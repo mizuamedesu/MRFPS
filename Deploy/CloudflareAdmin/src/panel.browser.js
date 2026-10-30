@@ -65,6 +65,56 @@ async function api(path, body) {
   if (!response.ok) { const error=Error(`通信エラー (${response.status})`); error.code=result.error; throw error; }
   return result;
 }
+let rosterBusy = false;
+let rosterDeadline = 0, pingDeadlines = [];
+function expireParticipants() {
+  const now=performance.now();
+  for (const ping of pingDeadlines) if (now >= ping.deadline) ping.cell.textContent='不明';
+  if (rosterDeadline && now >= rosterDeadline) {
+    rosterDeadline=0; pingDeadlines=[]; $('participants').replaceChildren();
+    $('participants-state').textContent='サーバー未接続';
+  }
+}
+async function refreshParticipants() {
+  if (rosterBusy) return;
+  rosterBusy = true;
+  try {
+    const started=performance.now();
+    const response=await fetch('/api/admin/participants',{cache:'no-store',signal:AbortSignal.timeout(5000)});
+    if (!response.ok) throw Error('roster request');
+    const result=await response.json();
+    const now=performance.now(), elapsed=Math.max(0,now-started);
+    const body = $('participants');
+    body.replaceChildren(); pingDeadlines=[]; rosterDeadline=0;
+    if (!result.online || !Array.isArray(result.participants) || !Number.isFinite(result.expires_in_ms) || result.expires_in_ms<=elapsed) {
+      $('participants-state').textContent = 'サーバー未接続';
+      return;
+    }
+    rosterDeadline=now+result.expires_in_ms-elapsed;
+    const labels = {player:'プレイヤー', inspector:'観戦', admin:'管理者', bot:'Bot'};
+    for (const entry of result.participants) {
+      const row = document.createElement('tr');
+      for (const value of [entry.name || `#${entry.id}`, labels[entry.role] || '不明']) {
+        const cell=document.createElement('td'); cell.textContent=value; row.appendChild(cell);
+      }
+      const ping=document.createElement('td');
+      if (Number.isInteger(entry.ping_ms) && entry.ping_ms>=0 && Number.isFinite(entry.ping_expires_in_ms) && entry.ping_expires_in_ms>elapsed) {
+        ping.textContent=`${entry.ping_ms} ms`;
+        pingDeadlines.push({cell:ping,deadline:now+entry.ping_expires_in_ms-elapsed});
+      } else ping.textContent='不明';
+      row.appendChild(ping);
+      body.appendChild(row);
+    }
+    $('participants-state').textContent = `${result.participants.length} 人`;
+  } catch {
+    rosterDeadline=0; pingDeadlines=[]; $('participants').replaceChildren();
+    $('participants-state').textContent = '通信エラー';
+  } finally { rosterBusy = false; }
+}
+void refreshParticipants();
+setInterval(() => { expireParticipants(); }, 500);
+setInterval(() => { void refreshParticipants(); }, 2000);
+document.addEventListener('visibilitychange',expireParticipants);
 function clearCodes() {
   current = {};
   for (const role of roles) { $('code-' + role).textContent = '------'; $('time-' + role).textContent = ''; }

@@ -19,6 +19,24 @@ struct FGloveNeutral
     }
 };
 
+// Independent hysteresis for both glove streams. If one goes stale, its
+// contribution ends without stopping a valid press from the other stream.
+struct FGloveFiring
+{
+    bool FlexDown=false,ControllerDown=false;
+    void Reset() { FlexDown=ControllerDown=false; }
+    void Update(bool FlexAllowed,float Curl,bool ControllerAllowed,bool Button,float Trigger)
+    {
+        if (!FlexAllowed || !std::isfinite(Curl)) FlexDown=false;
+        else if (Curl>.55f) FlexDown=true;
+        else if (Curl<.30f) FlexDown=false;
+        if (!ControllerAllowed || !std::isfinite(Trigger)) ControllerDown=false;
+        else if (Button || Trigger>.55f) ControllerDown=true;
+        else if (Trigger<.30f) ControllerDown=false;
+    }
+    bool Down() const { return FlexDown || ControllerDown; }
+};
+
 // Owned by the game instance: the login pawn and controller can be destroyed
 // by ClientTravel while the trigger that selected Join is still held.
 struct FTransitionGate

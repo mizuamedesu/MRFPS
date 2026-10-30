@@ -1,6 +1,7 @@
 #include "MRFPSGame.h"
 #include "MRFPSInspectorHudLayout.h"
 #include "MRFPSHealthResponder.h"
+#include "MRFPSRosterPublisher.h"
 #include "MRFPSAvatar.h"
 #include "MRFPSHandPose.h"
 #include "MRFPSGloveInput.h"
@@ -460,7 +461,7 @@ void AMRFPSPawn::InvalidateCalibration()
 {
     if (!IsLocallyControlled() || MRFPS::HasDesktopFlag()) return;
     (void)MRFPSGeometryWire::AdvanceCalibrationFence(GeometryCalibrationFence,GeometryCalibrationGeneration);
-    bLocalReady=false; GeometryCalibratedEpoch=0; bFiring=false; bFingerTriggerDown=false; ServerCalibrate(false);
+    bLocalReady=false; GeometryCalibratedEpoch=0; bFiring=false; bFingerTriggerDown=false; GloveFireInput.Reset(); ServerCalibrate(false);
     if (Haptics) Haptics->StopHaptics();
 }
 void AMRFPSPawn::OnXRSpaceChanged()
@@ -590,7 +591,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     } else {
         Next.bHeadTracked=Next.bLeftTracked=Next.bRightTracked=false;
         Next.LeftOpenness=0;
-        bFiring=bFingerTriggerDown=false;
+        bFiring=bFingerTriggerDown=false; GloveFireInput.Reset();
         TrackingDescription=TEXT("XR tracking unavailable");
     }
     if (IsXR()) {
@@ -652,11 +653,13 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
         GloveFireNeutral.Observe(RightGlove.bFlexValid && RightGlove.FingerCurls.IsValidIndex(1),IndexCurl,
             RightGlove.bControllerValid,bGloveTrigger,TriggerAnalog);
     }
-    if (LoginOpen) { bFiring=false; bFingerTriggerDown=false; if (!GI) bRequireFireRelease=true; }
+    if (LoginOpen) { bFiring=false; bFingerTriggerDown=false; GloveFireInput.Reset(); if (!GI) bRequireFireRelease=true; }
     else {
         if (bRequireFireRelease && GloveFireNeutral.CanRearm(bPhysicalFireDown,AutomationFire)) bRequireFireRelease=false;
-        if (!bRequireFireRelease && ((FlexAllowed && IndexCurl>.55f) || (GloveControllerAllowed && (TriggerAnalog>.55f || bGloveTrigger)))) bFingerTriggerDown=true;
-        if ((!FlexAllowed || IndexCurl<.30f) && (!GloveControllerAllowed || (TriggerAnalog<.30f && !bGloveTrigger))) bFingerTriggerDown=false;
+        const auto& RightGlove=GloveFrames[1];
+        GloveFireInput.Update(!bRequireFireRelease && FlexAllowed && RightGlove.bFlexValid && RightGlove.FingerCurls.IsValidIndex(1),IndexCurl,
+            !bRequireFireRelease && GloveControllerAllowed && RightGlove.bControllerValid,bGloveTrigger,TriggerAnalog);
+        bFingerTriggerDown=GloveFireInput.Down();
     }
     Next.Sequence = Pose.Sequence + 1;
     // Client pose remains responsive; only the server can change combat state.
@@ -833,7 +836,7 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
     if (DeviceLogin && DeviceLogin->IsOpen() && Params.Key.GetFName()==FName(TEXT("OculusTouch_Right_Trigger_Click"))) {
         if (Params.Event==IE_Pressed || Params.Event==IE_Released) {
             const bool Down=Params.Event==IE_Pressed; DeviceLogin->SetPointerPressed(Down);
-            if (auto* Pawn=GetPawn<AMRFPSPawn>()) Pawn->SetFiring(Down);
+            if (auto* LocalPawn=GetPawn<AMRFPSPawn>()) LocalPawn->SetFiring(Down);
         }
         return true;
     }
@@ -1356,12 +1359,15 @@ void AMRFPSGameMode::BeginPlay()
     if (GetNetMode()==NM_DedicatedServer) {
         HealthResponder=MakeUnique<FMRFPSHealthResponder>();
         if (!HealthResponder->Start()) UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_HEALTH_LISTENER_UNAVAILABLE"));
+        RosterPublisher=MakeShared<FMRFPSRosterPublisher>();
+        if (!RosterPublisher->Start()) { RosterPublisher.Reset(); UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_ROSTER_PUBLISH_DISABLED")); }
     }
 #endif
 }
 void AMRFPSGameMode::EndPlay(const EEndPlayReason::Type Reason)
 {
     HealthResponder.Reset();
+    RosterPublisher.Reset();
     Super::EndPlay(Reason);
 }
 int32 AMRFPSGameMode::CountFighters(const AMRFPSPlayerState* Exclude) const
@@ -1527,6 +1533,10 @@ void AMRFPSGameMode::Tick(float Dt)
             }
         }
         for (auto* PC:Expired) if (GameSession) { UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_SESSION_EXPIRED")); GameSession->KickPlayer(PC,FText::FromString(TEXT("AUTH_EXPIRED"))); }
+    }
+    if (RosterPublisher && bNetworkAdmissionReady) {
+        UIpNetDriver* Driver=GetWorld()?Cast<UIpNetDriver>(GetWorld()->GetNetDriver()):nullptr;
+        if (Driver && Driver->IsNetResourceValid() && Driver->GetSocket()) RosterPublisher->Tick(GetWorld(),FPlatformTime::Seconds());
     }
     MRFPSBot::Maintain(this,Dt);
     auto* GS=GetGameState<AMRFPSGameState>(); if (!GS) return;

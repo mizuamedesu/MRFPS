@@ -5,6 +5,8 @@ import style from './panel.css';
 import cryptoScript from './crypto.browser.js';
 
 const roles = new Set(['player', 'inspector', 'admin']);
+// Roster-only category; never accepted by device-code authentication.
+const rosterRoles = new Set([...roles, 'bot']);
 const encoder = new TextEncoder();
 const commonHeaders = {
   'cache-control': 'no-store',
@@ -37,8 +39,10 @@ async function credentialsValid(request, env) {
   const expected = await crypto.subtle.digest('SHA-256', encoder.encode(`${env.MRFPS_ADMIN_USERNAME}:${env.MRFPS_ADMIN_PASSWORD}`));
   return crypto.subtle.timingSafeEqual(actual, expected);
 }
-async function bodyJson(request, limit = 8192) {
+async function bodyBytes(request, limit) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw Error('content_type');
+  const length=request.headers.get('content-length');
+  if (length && /^\d+$/.test(length) && Number(length)>limit) throw Error('body');
   const reader = request.body?.getReader();
   if (!reader) throw Error('body');
   let count = 0;
@@ -53,9 +57,50 @@ async function bodyJson(request, limit = 8192) {
   const bytes = new Uint8Array(count);
   let offset = 0;
   for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
+  return bytes;
+}
+function parseJson(bytes) {
   const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw Error('body');
   return parsed;
+}
+async function bodyJson(request, limit = 8192) {
+  return parseJson(await bodyBytes(request,limit));
+}
+const rosterTtlMs = 10000;
+const pingTtlMs = 5000;
+function rosterTimestampValid(value, now) {
+  return Number.isSafeInteger(value) && value >= now - rosterTtlMs && value <= now + 2000;
+}
+async function rosterSignatureValid(request, env, bytes) {
+  const secret = env.MRFPS_ROSTER_HMAC_KEY;
+  const signature = request.headers.get('x-mrfps-signature') || '';
+  if (typeof secret !== 'string' || !/^[0-9a-f]{64}$/.test(secret) || !/^[0-9a-f]{64}$/.test(signature)) return false;
+  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), {name:'HMAC',hash:'SHA-256'}, false, ['verify']);
+  const signatureBytes = Uint8Array.from(signature.match(/../g), pair => parseInt(pair, 16));
+  return crypto.subtle.verify('HMAC', key, signatureBytes, bytes);
+}
+function rosterSignatureShapeValid(request, env) {
+  return typeof env.MRFPS_ROSTER_HMAC_KEY === 'string' && /^[0-9a-f]{64}$/.test(env.MRFPS_ROSTER_HMAC_KEY) &&
+    /^[0-9a-f]{64}$/.test(request.headers.get('x-mrfps-signature') || '');
+}
+function validateRoster(input, now) {
+  if (!input || Object.keys(input).sort().join(',') !== 'captured_at_ms,instance,participants,seq' ||
+      !/^[0-9a-f]{32}$/.test(input.instance || '') || !Number.isSafeInteger(input.seq) || input.seq < 1 ||
+      !rosterTimestampValid(input.captured_at_ms, now) || !Array.isArray(input.participants) || input.participants.length > 4096) return false;
+  const ids = new Set();
+  for (const row of input.participants) {
+    if (!row || Array.isArray(row) || Object.keys(row).sort().join(',') !== 'id,name,ping_at_ms,ping_ms,role' ||
+        !Number.isSafeInteger(row.id) || row.id < 0 || row.id > 2147483647 || ids.has(row.id) ||
+        typeof row.name !== 'string' || row.name.length > 64 || /[\u0000-\u001f\u007f]/.test(row.name) ||
+        !rosterRoles.has(row.role) || row.role === 'bot' && (row.ping_ms !== null || row.ping_at_ms !== null) ||
+        !(row.ping_ms === null && row.ping_at_ms === null ||
+          Number.isInteger(row.ping_ms) && row.ping_ms >= 0 && row.ping_ms <= 60000 &&
+          Number.isSafeInteger(row.ping_at_ms) && row.ping_at_ms <= input.captured_at_ms &&
+          row.ping_at_ms >= input.captured_at_ms - pingTtlMs)) return false;
+    ids.add(row.id);
+  }
+  return true;
 }
 function b64decode(s) {
   if (!/^[A-Za-z0-9_-]+$/.test(s)) throw Error('encoding');
@@ -123,6 +168,11 @@ export class DeviceCodes extends DurableObject {
         id TEXT PRIMARY KEY, role TEXT NOT NULL, owner TEXT NOT NULL,
         expires_at INTEGER NOT NULL, request_hash TEXT, state TEXT NOT NULL)`);
       this.ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS issuance_receipts_expiry_idx ON issuance_receipts(expires_at)');
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS roster_publishers (
+        instance TEXT PRIMARY KEY, last_seq INTEGER NOT NULL, retired INTEGER NOT NULL DEFAULT 0, last_seen_ms INTEGER NOT NULL)`);
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS roster_current (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), instance TEXT NOT NULL,
+        received_at_ms INTEGER NOT NULL, captured_at_ms INTEGER NOT NULL, participants TEXT NOT NULL)`);
       // Codes created by the previous revision have no request fingerprint.
       // Preserve their exchange until expiry, but never republish their IDs.
       this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO issuance_receipts (id,role,owner,expires_at,request_hash,state)
@@ -149,6 +199,41 @@ export class DeviceCodes extends DurableObject {
     if (!ipState.allowed || !globalState.allowed) return false;
     if (!correct) { this.fail('basic:' + ip, ipState.window); this.fail('basic:global', globalState.window); }
     return correct;
+  }
+  publishRoster(data) {
+    // No asynchronous boundary: a single Durable Object serializes the
+    // checks and SQLite writes across every edge location and isolate.
+    return this.ctx.storage.transactionSync(() => {
+    const now = Date.now(), sql = this.ctx.storage.sql;
+    if (!validateRoster(data, now)) return {error:'invalid_roster'};
+    const current = sql.exec('SELECT instance,received_at_ms FROM roster_current WHERE singleton=1').toArray()[0];
+    const previous = sql.exec('SELECT last_seq,retired FROM roster_publishers WHERE instance=?', data.instance).toArray()[0];
+    if (previous && (previous.retired || data.seq <= previous.last_seq)) return {error:'stale_sequence'};
+    if (!previous && sql.exec('SELECT COUNT(*) AS total FROM roster_publishers').toArray()[0].total >= 4096)
+      return {error:'publisher_limit'};
+    if (current && current.instance !== data.instance) {
+      if (now < current.received_at_ms || now - current.received_at_ms <= rosterTtlMs) return {error:'active_server_conflict'};
+      sql.exec('UPDATE roster_publishers SET retired=1,last_seen_ms=? WHERE instance=?', now, current.instance);
+    }
+    // Never delete a retired boot fence while its signing key remains valid.
+    sql.exec(`INSERT INTO roster_publishers(instance,last_seq,retired,last_seen_ms) VALUES(?,?,0,?)
+      ON CONFLICT(instance) DO UPDATE SET last_seq=excluded.last_seq,last_seen_ms=excluded.last_seen_ms`, data.instance, data.seq, now);
+    sql.exec(`INSERT INTO roster_current(singleton,instance,received_at_ms,captured_at_ms,participants) VALUES(1,?,?,?,?)
+      ON CONFLICT(singleton) DO UPDATE SET instance=excluded.instance,received_at_ms=excluded.received_at_ms,captured_at_ms=excluded.captured_at_ms,participants=excluded.participants`,
+      data.instance, now, data.captured_at_ms, JSON.stringify(data.participants));
+    return {ok:true};
+    });
+  }
+  roster() {
+    const now=Date.now(), row=this.ctx.storage.sql.exec('SELECT received_at_ms,captured_at_ms,participants FROM roster_current WHERE singleton=1').toArray()[0];
+    if (!row || now < row.received_at_ms || now-row.received_at_ms > rosterTtlMs ||
+        now < row.captured_at_ms || now-row.captured_at_ms > rosterTtlMs) return {online:false,participants:[]};
+    const participants=JSON.parse(row.participants).map(({ping_at_ms,...entry}) => {
+      const remaining=ping_at_ms !== null && now >= ping_at_ms ? pingTtlMs-(now-ping_at_ms) : -1;
+      return {...entry,ping_ms:remaining>0?entry.ping_ms:null,ping_expires_in_ms:remaining>0?remaining:null};
+    });
+    const expires_in_ms=Math.min(rosterTtlMs-(now-row.received_at_ms),rosterTtlMs-(now-row.captured_at_ms));
+    return {online:true,expires_in_ms,participants};
   }
   async publish(data) {
     // Hash the entire immutable issuance in the DO, not a client-supplied hash.
@@ -296,6 +381,18 @@ export default {
     }
     const ip = request.headers.get('cf-connecting-ip') || 'local';
     const stub = env.DEVICE_CODES.getByName('mrfps');
+    if (url.pathname === '/api/server/roster') {
+      if (request.method !== 'POST') return json({error:'method'},405);
+      if (!rosterSignatureShapeValid(request,env)) return json({error:'unauthorized'},401);
+      let bytes, body;
+      try { bytes=await bodyBytes(request,524288); }
+      catch { return json({error:'invalid_roster'},400); }
+      if (!await rosterSignatureValid(request,env,bytes)) return json({error:'unauthorized'},401);
+      try { body=parseJson(bytes); } catch { return json({error:'invalid_roster'},400); }
+      if (!validateRoster(body,Date.now())) return json({error:'invalid_roster'},400);
+      const result=await stub.publishRoster(body);
+      return json(result,result.error?409:200);
+    }
     if (url.pathname === '/api/device/exchange') {
       if (request.method !== 'POST') return json({ error: 'method' }, 405);
       let body;
@@ -321,6 +418,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/panel.js') return textBody(script, 'text/javascript; charset=utf-8');
     if (request.method === 'GET' && url.pathname === '/crypto.js') return textBody(cryptoScript, 'text/javascript; charset=utf-8');
     if (request.method === 'GET' && url.pathname === '/panel.css') return textBody(style, 'text/css; charset=utf-8');
+    if (request.method === 'GET' && url.pathname === '/api/admin/participants') return json(await stub.roster());
     if (request.method === 'GET' && url.pathname === '/api/admin/status') {
       const owner=url.searchParams.get('owner') || '';
       if(owner && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner)) return json({error:'invalid'},400);

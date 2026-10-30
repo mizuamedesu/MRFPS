@@ -20,7 +20,8 @@ inline bool CanView(const AMRFPSPlayerController* PC)
     const auto* PS=PC?PC->GetPlayerState<AMRFPSPlayerState>():nullptr;
     const auto* Connection=PC?PC->GetNetConnection():nullptr;
     const int64 Now=FDateTime::UtcNow().ToUnixTimestamp();
-    return PC && PS && MRFPSRosterPolicy::CanView(PC->IsLocalController(),PC->GetNetMode()==NM_Client,
+    const bool Connected=PC && PC->GetNetMode()==NM_Client && Connection && Connection->GetConnectionState()==USOCK_Open;
+    return PC && PS && MRFPSRosterPolicy::CanView(PC->IsLocalController(),Connected,
         Connection && Connection->IsEncryptionEnabled(),PS->bAuthenticated,PS->bInspector,PS->IsABot(),PS->Slot,
         !PS->AuthSubject.IsEmpty(),PS->AuthExpiresAt,Now);
 }

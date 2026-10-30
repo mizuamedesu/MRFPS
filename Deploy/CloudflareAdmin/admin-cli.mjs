@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Local, retry-safe equivalents of panel operations. Never print bearer material.
-import { readFile, open, stat, mkdir, writeFile, rename, unlink, chmod } from 'node:fs/promises';
-import { createPublicKey, createHash, verify } from 'node:crypto';
+import { readFile, open, stat, lstat, link, mkdir, writeFile, rename, unlink, chmod } from 'node:fs/promises';
+import { createPublicKey, createHash, randomBytes, verify } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { generateBackup, restoreBackup, newCode } from './src/crypto.browser.js';
+import { encryptRosterKey, decryptRosterKey } from './roster-backup.mjs';
 
 const values = process.argv.slice(2), command = values.shift(), opts = {};
 while (values.length) {
@@ -23,6 +24,11 @@ const stateDir = resolve(opts['state-dir'] || join(process.env.LOCALAPPDATA || p
 const statePath = join(stateDir, 'state.json');
 function required(name) { if (!opts[name]) throw Error(`--${name} is required`); return opts[name]; }
 async function readPassphrase() { return (await readFile(required('passphrase-file'), 'utf8')).replace(/[\r\n]+$/, ''); }
+async function readRosterBackup(path) {
+  const info=await lstat(path);
+  if (!info.isFile() || info.size>8192) throw Error('invalid roster backup file');
+  return JSON.parse(await readFile(path,'utf8'));
+}
 async function loadKey() { return restoreBackup(JSON.parse(await readFile(required('key-file'), 'utf8')), await readPassphrase()); }
 async function basic() {
   const creds = JSON.parse(await readFile(required('credentials-file'), 'utf8'));
@@ -57,6 +63,20 @@ async function writePrivate(path, contents) {
     await writeFile(temporary, contents, { flag:'wx', mode:0o600 });
     await rename(temporary, path);
   } finally { await unlink(temporary).catch(e => { if (e.code !== 'ENOENT') throw e; }); }
+}
+async function writeFreshPrivate(path, contents) {
+  const temporary=path+'.'+crypto.randomUUID()+'.tmp';
+  let handle;
+  try {
+    handle=await open(temporary,'wx',0o600);
+    await handle.writeFile(contents); await handle.sync(); await handle.close(); handle=null;
+    // Same-directory hard link publishes a fully-written file without replacing
+    // a target created concurrently by another process.
+    await link(temporary,path);
+  } finally {
+    if (handle) await handle.close();
+    await unlink(temporary).catch(e=>{if(e.code!=='ENOENT') throw e;});
+  }
 }
 async function readState() {
   try {
@@ -265,7 +285,50 @@ async function exportExchange() {
   });
 }
 async function main() {
-  if (command === 'key-ensure') {
+  if (command === 'roster-key-ensure') {
+    const path=join(stateDir,'roster-hmac.key');
+    await withState(async () => {
+      try {
+        const saved=await readFile(path,'utf8');
+        if (!/^[0-9a-f]{64}$/.test(saved)) throw Error('invalid roster key; refusing to replace it');
+      } catch(error) {
+        if (error.code!=='ENOENT') throw error;
+        await writePrivate(path,randomBytes(32).toString('hex'));
+      }
+    });
+    output({ready:true,key_file:path});
+  } else if (command === 'roster-backup') {
+    const path=join(stateDir,'roster-hmac.key'), destination=resolve(required('backup-file'));
+    const passphrase=await readPassphrase();
+    const result=await withState(async () => {
+      const key=await readFile(path,'utf8');
+      if (!/^[a-f0-9]{64}$/.test(key)) throw Error('invalid roster key');
+      try {
+        const existing=await readRosterBackup(destination);
+        if (decryptRosterKey(existing,passphrase)!==key) throw Error('backup belongs to a different roster key');
+        return {saved:true,reused:true,backup_file:destination};
+      } catch(error) { if (error.code!=='ENOENT') throw error; }
+      const contents=JSON.stringify(encryptRosterKey(key,passphrase),null,2)+'\n';
+      await writeFreshPrivate(destination,contents);
+      return {saved:true,reused:false,backup_file:destination};
+    });
+    output(result);
+  } else if (command === 'roster-restore') {
+    const path=join(stateDir,'roster-hmac.key');
+    const key=decryptRosterKey(await readRosterBackup(resolve(required('backup-file'))),await readPassphrase());
+    const result=await withState(async () => {
+      try {
+        const existing=await readFile(path,'utf8');
+        if (existing!==key) throw Error('different roster key exists; refusing to overwrite it');
+        return {restored:true,reused:true,key_file:path};
+      } catch(error) { if (error.code!=='ENOENT') throw error; }
+      await writeFreshPrivate(path,key);
+      return {restored:true,reused:false,key_file:path};
+    });
+    output(result);
+  } else if (command === 'participants') {
+    output(await call('/api/admin/participants'));
+  } else if (command === 'key-ensure') {
     const key = await ensureKey(); output({created_or_existing:true,public_key:key.publicKey});
   } else if (command === 'public-key') {
     const key = await loadKey(); output({public_key:key.publicKey,MRFPS_AUTH_PUBLIC_KEY_B64:Buffer.from(key.publicKey).toString('base64')});
@@ -357,6 +420,6 @@ async function main() {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw Error('invalid operation ID');
     await withState(async () => { for (const extension of ['jwt','json']) await unlink(join(stateDir,'exchange-'+id+'.'+extension)).catch(e => {if(e.code!=='ENOENT')throw e;}); });
     output({cleaned:true});
-  } else throw Error('commands: key-ensure, public-key, status, local-status, stop, stop-all, ensure, watch, exchange-test, exchange-export, exchange-clean; see README.md');
+  } else throw Error('commands: roster-key-ensure, roster-backup, roster-restore, participants, key-ensure, public-key, status, local-status, stop, stop-all, ensure, watch, exchange-test, exchange-export, exchange-clean; see README.md');
 }
 main().catch(error => { process.stderr.write('MRFPS admin: '+error.message+'\n'); process.exitCode=1; });

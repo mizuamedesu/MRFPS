@@ -345,13 +345,13 @@ void UMRFPSMenu::RefreshRoster()
     FString Lines;
     for (const auto& Row:Rows) {
         if (!Lines.IsEmpty()) Lines+=TEXT("\n");
-        const TCHAR* Role=Row.Role==MRFPSRosterPolicy::ERole::Admin?TEXT("管理"):
+        const TCHAR* RoleLabel=Row.Role==MRFPSRosterPolicy::ERole::Admin?TEXT("管理"):
             Row.Role==MRFPSRosterPolicy::ERole::Inspector?TEXT("観戦"):
             Row.Role==MRFPSRosterPolicy::ERole::Bot?TEXT("BOT"):TEXT("プレイヤー");
-        const FString Slot=Row.Slot>=0?FString::Printf(TEXT(" P%d"),Row.Slot+1):FString();
-        const FString Ping=Row.Ping>=0?FString::Printf(TEXT("%d ms"),Row.Ping):TEXT("不明");
-        const FString Name=Row.Role==MRFPSRosterPolicy::ERole::Bot?FString():Row.Name;
-        Lines+=FString::Printf(TEXT("%s%s  %s%s  #%d  %s"),Role,*Slot,*Name,Row.Self?TEXT("（自分）"):TEXT(""),Row.Id,*Ping);
+        const FString SlotLabel=Row.Slot>=0?FString::Printf(TEXT(" P%d"),Row.Slot+1):FString();
+        const FString PingLabel=Row.Ping>=0?FString::Printf(TEXT("%d ms"),Row.Ping):TEXT("不明");
+        const FString PlayerLabel=Row.Role==MRFPSRosterPolicy::ERole::Bot?FString():Row.Name;
+        Lines+=FString::Printf(TEXT("%s%s  %s%s  #%d  %s"),RoleLabel,*SlotLabel,*PlayerLabel,Row.Self?TEXT("（自分）"):TEXT(""),Row.Id,*PingLabel);
     }
     if (Lines.IsEmpty()) Lines=TEXT("参加者なし");
     if (Lines!=LastRosterText) { LastRosterText=Lines; RosterText->SetText(FText::FromString(Lines)); }

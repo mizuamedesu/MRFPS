@@ -79,7 +79,11 @@ void AMRFPSArena::ApplyLayout(const FMRFPSArenaLayout& Layout)
 
 void AMRFPSPawn::ClientCombatStopped_Implementation()
 {
-    bFiring=false; bFingerTriggerDown=false; bDesktopShield=false; bRequireFireRelease=true;
+    bFiring=false; bFingerTriggerDown=false; GloveFireInput.Reset(); bDesktopShield=false;
+    if (auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance()); GI && IsXR()) {
+        if (!GI->FireTransition.Login) GI->FireTransition.SealForTravel();
+        bRequireFireRelease=false;
+    } else bRequireFireRelease=true;
     if (Haptics) Haptics->StopHaptics();
 }
 void AMRFPSPawn::OffsetCombatTimers(double Seconds)

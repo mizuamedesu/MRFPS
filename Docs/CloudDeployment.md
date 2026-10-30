@@ -200,6 +200,26 @@ and guarded `apply` reconciliation through the installed HeteroCloud CLI:
   --project-id <same-project-UUID> --state Saved/Deployments/Flash/service.json
 ```
 
+For an already-owned public, direct-mode service, a new immutable server image
+and the roster publisher key can be reconciled without writing the Flash
+manifest or key to disk:
+
+```powershell
+.local/auth-tools/Scripts/python.exe tools/cloud/update_owned_flash.py `
+  --state Saved/Deployments/Flash/service.json `
+  --image ghcr.io/<owner>/<server>@sha256:<digest> `
+  --roster-key-file "$env:LOCALAPPDATA/MRFPS/Admin/flash-roster/roster-hmac.key"
+```
+
+The command preserves the existing UDP service port and direct inbound mode,
+checks ownership and specification drift, and allows outbound traffic only to
+the current Cloudflare IP ranges after checking that the admin hostname resolves
+inside them. DNS is separately allowed by Flash. The allowlist covers shared
+Cloudflare IPs rather than a single hostname; the publisher also verifies the
+HTTPS peer and signs each roster. An ambiguous update is recorded as a digest
+and must be observed before another update is attempted. A server restart
+rotates its DTLS fingerprint and requires clients to receive a new token.
+
 It persists a unique deployment marker before creation, rejects a same-name
 unowned service, detects specification drift and updates only its saved service.
 An ambiguous response stops rather than adopting a resource. Creation and

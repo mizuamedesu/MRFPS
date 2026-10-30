@@ -121,6 +121,14 @@ int main()
     NoGlove.Observe(true,0,21,true,false,0,21);
     assert(NoGlove.CanFlex() && NoGlove.CanController() && NoGlove.CanPhysical());
 
+    MRFPSFireRelease::FGloveFiring FireStreams;
+    FireStreams.Update(true,.8f,true,false,.4f); assert(FireStreams.FlexDown && FireStreams.Down());
+    FireStreams.Update(false,0,true,false,.4f); assert(!FireStreams.Down()); // stale flex cannot leave a phantom press
+    FireStreams.Update(false,0,true,true,.8f); assert(FireStreams.ControllerDown && FireStreams.Down());
+    FireStreams.Update(true,0,false,false,0); assert(!FireStreams.Down());
+    FireStreams.Update(true,.8f,true,false,0); assert(FireStreams.Down());
+    FireStreams.Reset(); assert(!FireStreams.Down());
+
     FEventQueue Q; for(int I=0;I<1000;++I) Q.Push(EInput::Axis,0,10.+I*.001);
     assert(!Q.Overflow && Q.Count==1 && Q.Events[0].At==10.);
     Q.Push(EInput::Axis,.7f,11.01); Q.Push(EInput::Axis,.8f,11.02); Q.Push(EInput::Axis,0,11.03); assert(Q.Count==3);

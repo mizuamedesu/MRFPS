@@ -90,3 +90,29 @@ CLI のプロセスがロック回収中に強制終了すると `lock.recovery`
 GitHub Actions は secrets `MRFPS_ADMIN_USERNAME`、`MRFPS_ADMIN_PASSWORD`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN` と repository variable `MRFPS_ADMIN_CI_DEPLOY=true` が必要。現在は前者3つのみ設定し、API token 未設定のまま有効にしない。Cloudflare の [GitHub Actions の手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) に従って対象アカウントとゾーンに限定した `Edit Cloudflare Workers` トークンを作成し、`gh secret set CLOUDFLARE_API_TOKEN` に対話入力後、`gh variable set MRFPS_ADMIN_CI_DEPLOY --body true` で有効化する。現在の Wrangler OAuth はトークン管理 API で 403 のため、自動作成できない。Worker secrets はワークフローが安全な一時ファイルから設定する。
 
 発行端末と Worker の時計に最大5秒の進み差がある場合でも発行を受け付け、保存されるコードの期限はサーバー側で最大30秒に制限する。応答には実際の期限とサーバー時刻が含まれ、パネルは経過時間から表示を消す。応答喪失後の再試行では元のリクエストの receipt が一致することを確認してから期限を回復する。実際の公開 Worker への反映と実機接続は別途検証する。
+
+## 接続中の参加者
+
+専用サーバーは認証済みの player / inspector / admin について、名前、接続 ID と UE ネットワークの ACK に基づく Ping を管理パネルに送信する。サーバー内の対戦 bot も一覧に表示するが、ネットワーク接続がないため Ping は「不明」。Ping がまだ実測されていない場合、または最後の計測から 5 秒を過ぎた場合も「不明」。HTTP の応答時間や推測値で代用しない。Worker がサーバーの最新状態を 10 秒受け取れなければ「サーバー未接続」と表示する。時刻が未来の値も「不明」として扱う。ブラウザーでの表示も期限を過ぎれば自動的に消える。
+
+送信先は `https://mrfps-admin.mizuame.app/api/server/roster` に固定。専用サーバーの `MRFPS_ROSTER_HMAC_KEY` と、Worker secret の同名値に、同じランダム 32 バイトの小文字 hex 64 桁を設定する。UE は生 JSON に HMAC-SHA256 を付け、Worker は署名・送信時刻・起動ごとの識別子・連番を検証する。前の起動からの遅延リクエストと、同一連番の重複は受け付けない。新しい起動は旧サーバーの最終受信から 10 秒後に引き継ぐ。旧起動の拒否記録は有効な鍵の間は削除せず、記録が 4096 件に達した場合は新しい起動を受け付けない。安全に復旧するには鍵を両側でローテーションしてから拒否記録を管理者が消去する必要がある。送信元の時刻は Worker より最大 2 秒進み、10 秒遅れまで受け付ける。TLS 検証は必須。管理者 Basic 認証を通った `GET /api/admin/participants` のみ一覧を返す。
+
+参加者のスナップショットは最大 4096 人／UTF-8 512 KiB。超過時は不完全な一覧を送らず、サーバーログに `MRFPS_ROSTER_SNAPSHOT_LIMIT` を記録する。ゲームは継続し、管理パネルの一覧は期限後に未接続になる。この表示上限はゲームの観戦接続数を制限するものではない。
+
+鍵は Git やコマンド引数に置かず、以下の冪等コマンドでアクセス制限付きのローカルディレクトリに一度だけ生成する。出力はファイルパスのみで、鍵の値を表示しない。既存ファイルが不正な場合は上書きしない。
+
+```powershell
+node Deploy/CloudflareAdmin/admin-cli.mjs roster-key-ensure --state-dir "$env:LOCALAPPDATA\MRFPS\Admin\flash-roster"
+node Deploy/CloudflareAdmin/admin-cli.mjs participants --credentials-file "$env:LOCALAPPDATA\MRFPS\Admin\basic-credentials.json"
+```
+
+署名鍵バックアップと同じパスフレーズを使い、Downloads に roster 鍵の暗号化バックアップを作成できる。既存バックアップが同じ鍵なら再利用し、別の鍵なら上書きしない。平文の鍵は Downloads に保存されない。
+
+```powershell
+node Deploy/CloudflareAdmin/admin-cli.mjs roster-backup --state-dir "$env:LOCALAPPDATA\MRFPS\Admin\flash-roster" --passphrase-file "$env:LOCALAPPDATA\MRFPS\Admin\issuer-passphrase.txt" --backup-file "$env:USERPROFILE\Downloads\MRFPS-roster-key-backup.json"
+node Deploy/CloudflareAdmin/admin-cli.mjs roster-restore --state-dir "$env:LOCALAPPDATA\MRFPS\Admin\flash-roster" --passphrase-file "$env:LOCALAPPDATA\MRFPS\Admin\issuer-passphrase.txt" --backup-file "$env:USERPROFILE\Downloads\MRFPS-roster-key-backup.json"
+```
+
+バックアップは `PBKDF2-SHA256` 310000 回、ランダム salt と AES-256-GCM で保護する。復元時に既存の鍵が異なる場合は上書きせず失敗する。パスフレーズは別途安全に保管する。
+
+Worker secret はこのファイルから標準入力で `wrangler secret put MRFPS_ROSTER_HMAC_KEY` に渡す。Flash 側は既存 direct service と UDP port を維持し、同じ鍵を環境変数に渡す。HTTP 送信のため Cloudflare 宛ての egress が必要。Worker と Linux 専用サーバーの両方を更新し、実環境で確認するまでは本番動作を保証しない。鍵を変更する場合は両側を同じ値に更新する。

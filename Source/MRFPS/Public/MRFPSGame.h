@@ -41,6 +41,7 @@ class UMRFPSMenu;
 class UMRFPSLoginMenu;
 class UTexture2D;
 class UMRFPSAdminPanel;
+class FMRFPSRosterPublisher;
 class UMRFPSAvatarComponent;
 class UMRFPSViewCaptureSubsystem;
 class SWindow;
@@ -339,6 +340,7 @@ private:
     bool bFiring = false;
     bool bPhysicalFireDown = false;
     MRFPSFireRelease::FGloveNeutral GloveFireNeutral;
+    MRFPSFireRelease::FGloveFiring GloveFireInput;
     bool bDesktopShield = false;
     MRFPSOpenPalm::FState LocalShieldPalm;
     bool bShieldExhausted = false;
@@ -647,6 +649,7 @@ private:
     void TickRounds();
     TUniquePtr<FMRFPSAuthVerifier> AuthVerifier;
     TUniquePtr<FMRFPSHealthResponder> HealthResponder;
+    TSharedPtr<FMRFPSRosterPublisher> RosterPublisher;
     TMap<FString,FMRFPSAuthClaims> PendingAuthentication;
     TMap<FString,double> PendingAuthenticationDeadlines;
     bool bNetworkAdmissionReady = false;

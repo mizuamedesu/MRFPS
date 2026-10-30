@@ -345,10 +345,10 @@ void AMRFPSPlayerController::TickAutomation()
                 TArray<TSharedPtr<FJsonValue>> Participants;
                 for (const auto& Row:MRFPSRoster::Collect(this)) {
                     auto Item=MakeShared<FJsonObject>();
-                    const TCHAR* Role=Row.Role==MRFPSRosterPolicy::ERole::Admin?TEXT("admin"):
+                    const TCHAR* RoleName=Row.Role==MRFPSRosterPolicy::ERole::Admin?TEXT("admin"):
                         Row.Role==MRFPSRosterPolicy::ERole::Inspector?TEXT("inspector"):
                         Row.Role==MRFPSRosterPolicy::ERole::Bot?TEXT("bot"):TEXT("player");
-                    Item->SetStringField(TEXT("name"),Row.Name); Item->SetStringField(TEXT("role"),Role);
+                    Item->SetStringField(TEXT("name"),Row.Name); Item->SetStringField(TEXT("role"),RoleName);
                     Item->SetNumberField(TEXT("id"),Row.Id); Item->SetNumberField(TEXT("slot"),Row.Slot);
                     Item->SetBoolField(TEXT("self"),Row.Self);
                     if (Row.Ping>=0) Item->SetNumberField(TEXT("ping_ms"),Row.Ping);
