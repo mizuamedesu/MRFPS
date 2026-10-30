@@ -96,7 +96,7 @@ bool FMRFPSPracticeActionsTest::RunTest(const FString& Parameters)
     const auto Send=[&](float Dt) { World->Tick(LEVELTICK_All,Dt); ++Pose.Sequence; Pawn->ServerPose(Pose); };
     Send(.04f); Pawn->ServerFire();
     TestEqual(TEXT("Firing works before floor calibration and match start"),Pawn->MagazineRounds,29);
-    Pawn->Tick(.01f); TestTrue(TEXT("An open hand produces a shield immediately"),Pawn->bShieldActive);
+    Pawn->Tick(.01f); TestTrue(TEXT("A shield request works immediately"),Pawn->bShieldActive);
     Pose.Left=FVector(25,-30,100); Send(.1f); Pose.Left=FVector(25,-30,120); Send(.1f);
     TestTrue(TEXT("An upward hand motion deploys a wall before match start"),Pawn->WallReadyAt>World->GetTimeSeconds());
     TWeakObjectPtr<AMRFPSBarrier> FighterWall;

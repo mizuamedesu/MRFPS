@@ -16,7 +16,7 @@ bool FMRFPSGloveOSCValidationTest::RunTest(const FString& Parameters)
 {
     FMRFPSGloveHandFrame OpenHand;
     OpenHand.FingerCurls={.1818f,.1218f,.0734f,.0993f,.3730f};
-    TestFalse(TEXT("Stale fingers cannot activate a shield"),OpenHand.IsOpenPalm());
+    TestFalse(TEXT("Stale fingers cannot report an open hand"),OpenHand.IsOpenPalm());
     OpenHand.bFlexValid=true;
     TestTrue(TEXT("Measured open hand tolerates a slightly bent little finger"),OpenHand.IsOpenPalm());
     OpenHand.FingerCurls={.7f,.8f,.8f,.8f,.8f};

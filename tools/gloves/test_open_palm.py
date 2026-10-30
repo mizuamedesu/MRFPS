@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and exercise the production open-palm gesture without Unreal."""
+"""Compatibility command: exercise the fist shield gesture without Unreal."""
 import argparse
 from pathlib import Path
 import shutil
@@ -14,8 +14,8 @@ def main():
     compiler = args.compiler or next((found for name in ("cl", "c++", "g++", "clang++") if (found := shutil.which(name))), None)
     if not compiler:
         raise SystemExit("C++17 compiler not found")
-    source = Path(__file__).with_name("test_open_palm.cpp").resolve()
-    with tempfile.TemporaryDirectory(prefix="mrfps-open-palm-") as temp:
+    source = Path(__file__).with_name("test_shield_gesture.cpp").resolve()
+    with tempfile.TemporaryDirectory(prefix="mrfps-shield-gesture-") as temp:
         directory = Path(temp)
         msvc = Path(compiler).stem.lower() == "cl"
         output = directory / ("test.exe" if msvc else "test")

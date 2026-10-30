@@ -111,7 +111,7 @@ devices/connected_devicesは0、ARM0、PLAY0、physical_feedback_tested=falseで
 | 3D情報投影 | 実poseの頭・体・手・銃・盾・情報ラベル | 描画と実プレイヤーposeの照合 | 描画確認待ち |
 | 約10m四方 | cm単位の床座標と1000cm境界、手動原点/yaw校正 | 実空間の床・向き・境界を測定して照合 | 実機校正確認待ち |
 | 左手上昇で壁 | サーバーrecognizer、4s制限、6s寿命、HP | authority実trace/寿命テスト、実グローブ上昇 | RiseGesture・実ワールドの壁被弾／制限／寿命は合格。実グローブ上昇の照合待ち |
-| 左パーで小盾 | 掌状態・位置・エネルギー・trace遮蔽 | authority遮蔽テスト、実グローブ開閉 | 実ワールドの盾遮蔽automationは合格。実グローブの掌・位置・開閉の照合待ち |
+| 左グーで小盾 | 握り状態・位置・エネルギー・trace遮蔽 | authority遮蔽テスト、実グローブ開閉 | 実ワールドの盾遮蔽automationは合格。グー判定と実グローブの位置・開閉の照合待ち |
 | 発射/被弾MoBits | 公式SDK、アプリpreset、所有者event | SDK接続・receiptと、装着者による実際の発射/被弾フィードバック | 本体／host SDK診断とQuest native SDK両HELLO/Connected合格。devices0/ARM0/PLAY0、Quest motion frame数未測定、物理出力・UEイベント連動は未確認 |
 | ContactGlove 2 | 公式OSC形式、接続mask、freshness、PC relay、tracker校正 | 実DivingStationの両手接続・指変化・位置・ボタンの照合 | ドライバー導入・COM3認識・Station起動済み。実Device statusは左右とも未接続 |
 | Claude Code / Blender（追加指示） | Claude Opus 5.5 / xhighのgenerator、Blender5.2、6mesh・blend・FBX/GLB・board | 実manifest、render、UE再importとゲーム表示 | v2実生成5256tris・0errors/0warnings、head球内・board漏れなし。旧5meshの計測値は一致するがhash不一致で完全同一性は未証明。全6FBXのUE再import・寸法照合・Setup合格、ゲーム表示待ち |

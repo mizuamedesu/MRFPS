@@ -25,13 +25,13 @@ ContactGlove の `/DS/HC/Wrist` には WXYZ の回転のみが含まれ、手の
 
 `/DS/HC/Hand` の 20 floats は親指→人差し指→中指→薬指→小指の順で、各指は 3 関節の屈曲値と開き値です。`/DS/HC/HandQuat` は 15 関節の回転 WXYZ です。vendor の骨座標のまま格納し、UE の任意の skeleton へそのまま適用できるとは扱いません。DivingStation は信頼度の確率を提供しないため、plugin は受信済み・鮮度・位置トラッキングの有無を別々のフラグで返します。
 
-ゲーム内の両手の指表示とパー判定はContactGloveの `/DS/HC/Hand` を使い、Questの指関節から屈曲を推定しません。グローブ入力が途切れた間、観戦画面は最後に受けた指姿勢を表示しますが、盾や射撃の入力は古い値を使いません。手の位置・向きは別途コントローラーやQuestの掌位置を使用します。
+ゲーム内の両手の指表示と盾の握り判定はContactGloveの `/DS/HC/Hand` を使い、Questの指関節から屈曲を推定しません。グローブ入力が途切れた間、観戦画面は最後に受けた指姿勢を表示しますが、盾や射撃の入力は古い値を使いません。手の位置・向きは別途コントローラーやQuestの掌位置を使用します。
 
 接続状態の Device は既定で 1 秒、指・トリガーの各サンプルは 150 ms で失効します。Device の切断通知を受信した場合はサンプルを即時無効化します。UDP の切断通知が届かなかった場合、直前の接続状態が最大 1 秒残り、その間に Station が出す未接続時の既定サンプルと組み合わされる可能性があります。通知が届かない場合の即時切断は保証されません。リレーの停止・復帰時は古い受信キューを破棄し、再度 Device を受け取るまで手の入力を転送しません。
 
 診断時は PC リレーの `MRFPS_GLOVE_RELAY_METRICS`（10 秒ごとの Device と右手 Hand/Controller の受信・送信数と最大間隔、左右切断報告数）と Quest の `MRFPS_GLOVE_FRESH`（接続状態の鮮度、明示接続状態、指・トリガーの鮮度と経過時間）を照合します。Quest ログは各状態が変わった時に出ます。送受信の実測であり、グローブの指の値はログに含めません。
 
-左手の盾は親指以外の指4本のうち3本以上が十分に伸び、全体の曲げと親指が許容範囲なら反応します。小指が自然に曲がっていても受け付けます。解除の判定には余裕を持たせ、境界での点滅を抑えます。グローブ値や頭・左手の追跡が失効した場合は開手の状態を破棄します。閾値は保存済みの接続時データを参考にした暫定値であり、着用した本人の開手と握手で実機確認・調整が必要です。盾の生成には従来どおりサーバー側の認証、位置、キャリブレーションと残量の条件もあります。
+左手の盾はグーにしている間に展開し、手を開くと解除します。人差し指を含む親指以外の指4本のうち3本以上が十分に曲がり、4本の平均屈曲も閾値を超えたときに反応します。親指の向きは問いません。解除の判定には余裕を持たせ、境界での点滅を抑えます。グローブ値や頭・左手の追跡が失効した場合は握り状態を破棄します。閾値は暫定値であり、着用した本人の開手と握手で実機確認・調整が必要です。盾の生成には従来どおりサーバー側の認証、位置と残量の条件もあります。
 
 ## PC / Quest Link
 
@@ -75,7 +75,7 @@ Windows で同じ relay を重複起動せず管理する場合、Quest の実�
 
 `Ensure` は同じ設定であれば既存の管理対象を再利用し、異なる設定や使用中のポートがあるときは停止せずにエラーを返します。`Stop` はこのコマンドが起動し、プロセス ID と生成時刻を確認できた relay だけを停止します。ログと管理状態は `Saved/GloveRelay` に保存します。UE 付属 Python が見つからない環境では実体の `python.exe` を `-Python` で指定できます。
 
-PC relay は `127.0.0.1:25789/udp` で実際の DivingStation に購読し、Device snapshot と、実接続状態が確認できる手の Hand / HandQuat / Wrist / Controller メッセージだけを Quest の `25788/udp` に転送します。各 route/hand の新規sampleを最大90Hzへまとめます (`--rate-hz` で15〜120)。DivingStation が大量の重複パケットを送る場合は、受信処理を制限し、小さな受信キューから古いパケットの滞留を抑えます。古いcached sampleを再送して鮮度を作る処理はありません。複数 `--target` を指定すると同じ入力を複数の開発端末へ送れます。Quest の手をそれぞれ動かす用途では各プレイヤーの別 device ID と別 relay を使用します。relay を停止した場合、ゲーム側は 150ms で入力を無効化し、古いパーやトリガーを押し続けません。Wi-Fi の端末間通信を許可し、Quest が受信する送信元 IP を設定します。
+PC relay は `127.0.0.1:25789/udp` で実際の DivingStation に購読し、Device snapshot と、実接続状態が確認できる手の Hand / HandQuat / Wrist / Controller メッセージだけを Quest の `25788/udp` に転送します。各 route/hand の新規sampleを最大90Hzへまとめます (`--rate-hz` で15〜120)。DivingStation が大量の重複パケットを送る場合は、受信処理を制限し、小さな受信キューから古いパケットの滞留を抑えます。古いcached sampleを再送して鮮度を作る処理はありません。複数 `--target` を指定すると同じ入力を複数の開発端末へ送れます。Quest の手をそれぞれ動かす用途では各プレイヤーの別 device ID と別 relay を使用します。relay を停止した場合、ゲーム側は 150ms で入力を無効化し、古い握りやトリガーを押し続けません。Wi-Fi の端末間通信を許可し、Quest が受信する送信元 IP を設定します。
 
 独立した SteamVR tracker から位置を送る場合は、トラッカーのシリアル番号と Quest stage との校正値を JSON に用意します。
 
@@ -128,12 +128,15 @@ UE の transform 乗算規約に従い、external packet に対して `HandInTra
 ```cpp
 FMRFPSGloveHandFrame Frame;
 UMRFPSGloveSubsystem* Gloves = GetGameInstance()->GetSubsystem<UMRFPSGloveSubsystem>();
-if (Gloves && Gloves->GetLatestHand(EMRFPSGloveHand::Left, Frame))
+if (Gloves && Gloves->GetLatestHand(EMRFPSGloveHand::Left, Frame) &&
+    Frame.bFlexValid && Frame.FingerCurls.IsValidIndex(1))
 {
-    const bool bOpenPalm = Frame.IsOpenPalm();
-    // Frame.bPoseValid を別に確認して壁や盾の位置を取得する。
+    const float IndexCurl = Frame.FingerCurls[1];
+    // 位置を使う場合は Frame.bPoseValid も別に確認する。
 }
 ```
+
+`Frame.IsOpenPalm()` は一般的な開手確認用 API です。ゲーム内の盾は上記の握り判定を使用します。
 
 - `GetLatestHand()` と `bFlexValid` は Device heartbeat が新鮮で実handが connected、かつ finger flex が新鮮な場合だけ true です。DivingStation は未接続でも既定のゼロHand等を送るため、パケット鮮度だけでは有効にしません。`bDeviceStatusValid` / `bConnected` / `BatteryPercent` で機器状態、`bFlexStreamFresh` でraw packetの到着だけを別々に確認できます。
 - `bControllerValid`、`bJointRotationsValid`、`bWristImuValid` も、それぞれの鮮度と新鮮なconnected状態を必要とします。`bPoseValid` は別途実際にトラッキングされた位置の鮮度を表し、gloveの接続状態から架空の位置を作りません。
@@ -174,7 +177,7 @@ uv run --python 3.12 python tools/gloves/check_device.py --duration 10 --require
 
 [公式 CG2 FAQ](https://melt-interface-technologies.com/en/products/contactglove2/) は本体に位置追跡がなく、Quest standalone を直接サポートせず、公式構成では Quest Link / SteamVR と対応 tracker・tracking space 校正を使うことを明記しています。本プロジェクトの PC relay は独自の standalone 連携経路なので、実機での追加検証が必要です。Quest の光学手追跡がグローブ越しに正しく見えることは保証されず、CG2 の指入力を Quest の光学入力で検証済みと置き換えません。
 
-未確認の実機 gate: DivingStation で CG2 の左右指が追従すること、Quest 上で受信の鮮度が維持されること、SteamVR/Quest の座標校正、手の上昇による壁、パーによる盾、トリガーによる射撃、機器切断時に入力が解除されること。
+未確認の実機 gate: DivingStation で CG2 の左右指が追従すること、Quest 上で受信の鮮度が維持されること、SteamVR/Quest の座標校正、手の上昇による壁、グーによる盾、トリガーによる射撃、機器切断時に入力が解除されること。
 
 受信は描画フレームとは別の軽量スレッドで到着時刻を記録します。フレームが遅くても新しい指情報を取り込み、古い入力を再開時に新しいものとして扱いません。`MRFPS.Gloves.ResumeDiscardsOldInput` は左右の実形式OSCと低フレームレートを検証します。
 

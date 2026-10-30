@@ -643,9 +643,9 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
         }
     }
     // A shield requires live hand and head tracking as well as fresh glove
-    // data. Reset the hysteresis on loss rather than retaining an open hand.
-    if (IsXR()) Next.LeftOpenness=MRFPSGloveInput::LeftOpenness(GloveFrames[0],LocalShieldPalm,Next.bHeadTracked,Next.bLeftTracked);
-    else LocalShieldPalm.Reset();
+    // data. Reset the fist state on tracking loss.
+    if (IsXR()) Next.LeftOpenness=MRFPSGloveInput::ShieldRequest(GloveFrames[0],LocalShieldGesture,Next.bHeadTracked,Next.bLeftTracked);
+    else LocalShieldGesture.Reset();
     if (Next.bRightTracked) {
         Next.RightHandRotation=Next.RightRotation;
         if (IsXR()) {

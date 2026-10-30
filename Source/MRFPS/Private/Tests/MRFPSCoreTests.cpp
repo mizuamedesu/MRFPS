@@ -32,25 +32,27 @@ bool FMRFPSGloveFingerSourceTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Right glove flex is independently quantized"),int32(RightPose.Joint[1]),191);
     TestEqual(TEXT("Left glove spread is preserved"),int32(LeftPose.Splay[0]),64);
     TestEqual(TEXT("Right glove spread is preserved"),int32(RightPose.Splay[1]),191);
-    MRFPSOpenPalm::FState Palm;
-    TestEqual(TEXT("Fresh open glove activates the palm gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
-    Left.FingerCurls={.30f,.32f,.48f,.39f,.56f};
-    TestEqual(TEXT("A naturally bent little finger does not prevent the shield"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
-    Left.FingerCurls={.30f,.54f,.49f,.53f,.61f};
-    TestEqual(TEXT("Small movements near the open threshold keep the shield active"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
+    MRFPSShieldGesture::FState Gesture;
+    TestEqual(TEXT("An open left glove does not activate the shield"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),0.f);
+    Left.FingerCurls={.30f,.20f,.85f,.85f,.85f};
+    TestEqual(TEXT("Holding a controller with the index extended does not activate the shield"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),0.f);
     Left.FingerCurls={.70f,.83f,.88f,.84f,.75f};
-    TestEqual(TEXT("A closed glove releases the shield"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),0.f);
-    Left.FingerCurls={.30f,.54f,.49f,.53f,.61f};
-    TestEqual(TEXT("The hysteresis hold range does not activate a shield from closed"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),0.f);
+    TestEqual(TEXT("A fresh left fist requests the shield"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),1.f);
+    Left.FingerCurls={.10f,.52f,.54f,.53f,.51f};
+    TestEqual(TEXT("Small movements near the threshold keep the shield active"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),1.f);
     Left.FingerCurls={.18f,.12f,.07f,.10f,.37f};
-    TestEqual(TEXT("Open hand reactivates after closing"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
-    TestEqual(TEXT("Losing head tracking clears the open gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,false,true),0.f);
-    TestEqual(TEXT("Fresh open hand can reactivate"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
-    TestEqual(TEXT("Losing left hand tracking clears the open gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,false),0.f);
-    TestEqual(TEXT("Fresh open hand can reactivate again"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
+    TestEqual(TEXT("Opening the left hand releases the shield"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),0.f);
+    Left.FingerCurls={.10f,.52f,.54f,.53f,.51f};
+    TestEqual(TEXT("The hold range does not activate a released shield"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),0.f);
+    Left.FingerCurls={.10f,.83f,.88f,.84f,.75f};
+    TestEqual(TEXT("A fist can reactivate with a relaxed thumb"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),1.f);
+    TestEqual(TEXT("Losing head tracking clears the fist"),MRFPSGloveInput::ShieldRequest(Left,Gesture,false,true),0.f);
+    TestEqual(TEXT("Fresh fist can reactivate"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),1.f);
+    TestEqual(TEXT("Losing left hand tracking clears the fist"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,false),0.f);
+    TestEqual(TEXT("Fresh fist can reactivate again"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),1.f);
     Left.bFlexValid=false;MRFPSGloveInput::CopyFingers(Left,LeftPose);
     TestFalse(TEXT("Stale glove data cannot be presented as fresh finger tracking"),LeftPose.bValid);
-    TestEqual(TEXT("A missing glove cannot fall back to an optical open-palm gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),0.f);
+    TestEqual(TEXT("A missing glove cannot fall back to an optical fist"),MRFPSGloveInput::ShieldRequest(Left,Gesture,true,true),0.f);
     TestTrue(TEXT("Loss of the left glove does not invalidate the right"),RightPose.bValid);
     return true;
 }
@@ -114,11 +116,11 @@ bool FMRFPSPoseValidationTest::RunTest(const FString& Parameters)
     {
         Pose = Valid;
         Pose.LeftOpenness = Openness;
-        TestFalse(TEXT("Malformed palm input cannot activate a shield"), Pose.IsSane());
+        TestFalse(TEXT("Malformed shield input cannot activate a shield"), Pose.IsSane());
     }
     Pose = Valid;
     Pose.LeftOpenness = 1.f;
-    TestTrue(TEXT("A fully open palm is valid input"), Pose.IsSane());
+    TestTrue(TEXT("A shield request is valid input"), Pose.IsSane());
     Pose.Head.X = std::numeric_limits<double>::quiet_NaN();
     TestFalse(TEXT("Non-finite head coordinates are rejected"), Pose.IsSane());
     Pose = Valid;
@@ -301,7 +303,7 @@ public:
         case 3:
             if (Now - LastShotAt < .16) break;
             {
-                Test->TestTrue(TEXT("The open left palm activates the mini shield"), Target->bShieldActive);
+                Test->TestTrue(TEXT("A shield request activates the mini shield"), Target->bShieldActive);
                 const float Before = Target->ShieldEnergy;
                 Shooter->ServerFire();
                 Test->TestEqual(TEXT("The real shield collision blocks a shot before the body"), Target->Health, 40.f);

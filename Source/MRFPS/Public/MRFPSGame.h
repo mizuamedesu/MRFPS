@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "MRFPSLocalInputLease.h"
-#include "MRFPSOpenPalm.h"
+#include "MRFPSShieldGesture.h"
 #include "MRFPSFireReleaseGate.h"
 #include "MRFPSWeaponPose.h"
 #include "MRFPSConnectionStatus.h"
@@ -85,6 +85,8 @@ struct FMRFPSPose
     // keeps the avatar wrist independent of the weapon grip offset.
     UPROPERTY() FRotator RightRotation = FRotator::ZeroRotator;
     UPROPERTY() FRotator RightHandRotation = FRotator::ZeroRotator;
+    // Legacy network field: 1 requests the shield, 0 releases it. Retain the
+    // name and layout for compatibility with the deployed dedicated server.
     UPROPERTY() float LeftOpenness = 0;
     UPROPERTY() FMRFPSFingerPose LeftFingers;
     UPROPERTY() FMRFPSFingerPose RightFingers;
@@ -347,7 +349,7 @@ private:
     MRFPSFireRelease::FGloveNeutral GloveFireNeutral;
     MRFPSFireRelease::FGloveFiring GloveFireInput;
     bool bDesktopShield = false;
-    MRFPSOpenPalm::FState LocalShieldPalm;
+    MRFPSShieldGesture::FState LocalShieldGesture;
     bool bShieldExhausted = false;
     bool bFingerTriggerDown = false;
     bool bRequireFireRelease=false;
