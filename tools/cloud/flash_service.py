@@ -88,10 +88,11 @@ def summary(service):
             "game_health_verified": False, "internet_udp_verified": False, "runtime_fingerprint_verified": False}
 
 
-def reconcile(client, manifest, state_path, *, validation_allocated_port=False, operator_private_pull_ready=False):
+def reconcile(client, manifest, state_path, *, validation_allocated_port=False, operator_private_pull_ready=False,
+              attempt_private_pull=False):
     if not validation_allocated_port:
         raise ValueError("FLASH_FIXED_PUBLIC_UDP7777_UNSUPPORTED_BY_CURRENT_TENANT_API")
-    if not operator_private_pull_ready:
+    if not operator_private_pull_ready and not attempt_private_pull:
         raise ValueError("OPERATOR_PRIVATE_GHCR_INSPECTION_AND_PULL_SECRET_REQUIRED")
     project, name = manifest["project_id"], manifest["name"]
     state = json.loads(state_path.read_text(encoding="utf-8-sig")) if state_path.exists() else None
@@ -124,7 +125,10 @@ def reconcile(client, manifest, state_path, *, validation_allocated_port=False, 
     state.update(service_id=service["id"], desired_spec_sha256=desired_hash, observed_spec_sha256=digest(service["spec"]))
     save(state_path, state)
     result = summary(service)
-    result.update(operation=operation, validation_only=True, operator_private_pull_asserted=True, runtime_private_pull_verified=False)
+    result.update(operation=operation, validation_only=True,
+                  operator_private_pull_asserted=operator_private_pull_ready,
+                  private_pull_attempted_without_operator_assertion=attempt_private_pull and not operator_private_pull_ready,
+                  runtime_private_pull_verified=False)
     return result
 
 
@@ -142,6 +146,8 @@ def main():
     parser.add_argument("--cli", default="heterocloud")
     parser.add_argument("--validation-allocated-port", action="store_true")
     parser.add_argument("--operator-private-pull-ready", action="store_true")
+    parser.add_argument("--attempt-private-pull", action="store_true",
+                        help="attempt an authorized validation deployment without claiming registry readiness")
     args = parser.parse_args()
     uuid.UUID(args.project_id)
     if args.mode == "status":
@@ -161,7 +167,8 @@ def main():
                           "fixed_public_udp7777_supported": False, "mutations": False}))
         return
     result = reconcile(HeteroCLI(args.cli, args.endpoint, args.organization_id), manifest, args.state,
-                       validation_allocated_port=args.validation_allocated_port, operator_private_pull_ready=args.operator_private_pull_ready)
+                       validation_allocated_port=args.validation_allocated_port, operator_private_pull_ready=args.operator_private_pull_ready,
+                       attempt_private_pull=args.attempt_private_pull)
     print(json.dumps(result, sort_keys=True))
 
 

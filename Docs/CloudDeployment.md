@@ -182,9 +182,11 @@ An ambiguous response stops rather than adopting a resource. No cloud mutation
 has been tested: login is still missing. Default `apply` fails before any CLI
 mutation because the API cannot allocate public UDP7777. The explicit
 `--validation-allocated-port` switch is for a separately authorized cloud QA
-test and never counts as satisfying that port requirement; it additionally
-requires `--operator-private-pull-ready`. That flag is an operator assertion,
-not evidence that a real workload pulled the private image. Runtime game health,
+test and never counts as satisfying that port requirement. It additionally
+requires either the `--operator-private-pull-ready` assertion or an explicit
+`--attempt-private-pull` to test a real deployment while marking operator and
+runtime private-pull readiness unverified. An assertion is not evidence that a
+real workload pulled the private image. Runtime game health,
 external UDP reachability and the actual fingerprint remain separate checks.
 
 The installed CLI v0.1.110's JSON service list is a bare array: it unwraps the

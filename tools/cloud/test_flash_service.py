@@ -58,6 +58,15 @@ class FlashTests(unittest.TestCase):
         self.assertEqual(self.client.mutations, [])
         self.assertFalse(self.state.exists())
 
+    def test_authorized_pull_attempt_never_claims_private_registry_readiness(self):
+        result = flash.reconcile(self.client, self.manifest, self.state,
+                                 validation_allocated_port=True, attempt_private_pull=True)
+        self.assertEqual(result["operation"], "create-accepted")
+        self.assertTrue(result["private_pull_attempted_without_operator_assertion"])
+        self.assertFalse(result["operator_private_pull_asserted"])
+        self.assertFalse(result["runtime_private_pull_verified"])
+        self.assertEqual(self.client.mutations, [("flash", "create")])
+
     def test_create_then_repeat_is_unchanged_and_does_not_claim_7777_or_game_health(self):
         first = self.apply()
         second = self.apply()
