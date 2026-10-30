@@ -94,6 +94,15 @@ function Get-QuestRunningPid {
     throw 'Cannot reliably inspect the Quest app process; no dialog was closed.'
 }
 
+function Assert-QuestPermissionClear {
+    $activityDump = (& $adb @prefix shell dumpsys activity activities | Out-String -Width 8192)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Quest activities; no permission prompt was changed.' }
+    Assert-MRFPSQuestSharePermissionClear -ActivityDump $activityDump
+}
+
+# Install or force-stop can indirectly dismiss an app's permission request.
+# Check before either operation and again before continuing after a stop.
+if (-not $DryRun) { Assert-QuestPermissionClear }
 if (-not $SkipInstall) {
     if (-not $Apk) {
         $apks = @(Get-ChildItem -LiteralPath (Join-Path $root 'Artifacts\Packages') -Filter '*.apk' -File -Recurse | Where-Object Name -NotMatch '(?i)universal.*unsigned|unaligned')
@@ -103,15 +112,13 @@ if (-not $SkipInstall) {
     if (-not (Test-Path -LiteralPath $Apk -PathType Leaf)) { throw "APK not found: $Apk" }
     Invoke-MRFPSCommand $adb ($prefix + @('install','-r',$Apk)) -DryRun:$DryRun
 }
+if (-not $DryRun) { Assert-QuestPermissionClear }
 $stamp = Get-Date -Format yyyyMMdd-HHmmss
 $validation = Join-Path $root "Saved\Validation\Quest-$stamp"
 New-Item -ItemType Directory -Force -Path $validation | Out-Null
 if ($Server -notmatch '^[a-zA-Z0-9.:-]+$') { throw 'Server must be an IP address or hostname without URL/shell characters.' }
 Invoke-MRFPSCommand $adb ($prefix + @('shell','am','force-stop',$Package)) -DryRun:$DryRun
 if (-not $DryRun) {
-    # Horizon OS can retain a screen-sharing dialog after the requesting game
-    # activity has died, blocking the next launch. Close only the proven orphan
-    # of this package; this does not grant the new session's permission.
     $remainingPid = ''
     for ($attempt=0; $attempt -lt 8; $attempt++) {
         $remainingPid = Get-QuestRunningPid
@@ -119,23 +126,7 @@ if (-not $DryRun) {
         Start-Sleep -Milliseconds 250
     }
     if ($remainingPid) { throw 'Quest app still has a process after force-stop; no dialog was closed.' }
-    $activityDump = (& $adb @prefix shell dumpsys activity activities | Out-String -Width 8192)
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Quest activities after force-stop.' }
-    $orphans = @(Find-MRFPSOrphanedQuestShareTask -ActivityDump $activityDump -Package $Package)
-    if ($orphans.Count -gt 1) { throw 'Multiple orphaned MRFPS share tasks found; refusing to select one.' }
-    if ($orphans.Count -eq 1) {
-        $remainingPid = Get-QuestRunningPid
-        if ($remainingPid) { throw 'Quest app restarted; no dialog was closed.' }
-        $freshDump = (& $adb @prefix shell dumpsys activity activities | Out-String -Width 8192)
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot recheck Quest activities before orphan cleanup.' }
-        $freshOrphans = @(Find-MRFPSOrphanedQuestShareTask -ActivityDump $freshDump -Package $Package)
-        if ($freshOrphans.Count -ne 1 -or $freshOrphans[0] -ne $orphans[0]) { throw 'Quest share task changed; no dialog was closed.' }
-        Invoke-MRFPSCommand $adb ($prefix + @('shell','am','stack','remove',"$($orphans[0])"))
-        $activityDump = (& $adb @prefix shell dumpsys activity activities | Out-String -Width 8192)
-        if ($LASTEXITCODE -ne 0 -or @(Find-MRFPSOrphanedQuestShareTask -ActivityDump $activityDump -Package $Package).Count) {
-            throw 'The orphaned MRFPS share task could not be cleared.'
-        }
-    }
+    Assert-QuestPermissionClear
 }
 $appDataRoot = "/data/user/0/$Package"
 if (-not $DryRun) {
