@@ -1,9 +1,48 @@
 #include "MRFPSLoginInteraction.h"
+#include "MRFPSLoginRay.h"
+#include "Components/WidgetComponent.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "InputCoreTypes.h"
 
-void UMRFPSLoginInteraction::RefreshPointer() { SimulatePointerMovement(); }
+DEFINE_LOG_CATEGORY_STATIC(LogMRFPSLoginRay,Log,All);
+
+void UMRFPSLoginInteraction::SetLoginWorldWidget(UWidgetComponent* Widget)
+{
+    LoginWorldWidget=Widget; InteractionSource=EWidgetInteractionSource::Custom;
+}
+
+void UMRFPSLoginInteraction::RefreshPointer()
+{
+    if (InteractionSource==EWidgetInteractionSource::Custom) {
+        const FVector Start=GetComponentLocation();
+        const FVector Direction=GetComponentTransform().GetUnitAxis(EAxis::X);
+        const FVector End=Start+Direction*InteractionDistance;
+        FHitResult Hit(Start,End);
+        auto* Panel=LoginWorldWidget.Get();
+        auto Result=MRFPSLoginRay::EResult::Invalid;
+        if (Panel && Panel->GetWorld()==GetWorld() && Panel->IsWidgetVisible() &&
+            Panel->GetWidgetSpace()==EWidgetSpace::World && Panel->GetGeometryMode()==EWidgetGeometryMode::Plane) {
+            FVector Impact,Normal; double Distance=0;
+            Result=MRFPSLoginRay::Intersect(Panel->GetComponentTransform(),Panel->GetCurrentDrawSize(),Panel->GetPivot(),
+                Start,Direction,InteractionDistance,Impact,Normal,Distance);
+            if (Result==MRFPSLoginRay::EResult::Hit) {
+                Hit=FHitResult(Panel->GetOwner(),Panel,Impact,Normal);
+                Hit.bBlockingHit=true; Hit.TraceStart=Start; Hit.TraceEnd=End;
+                Hit.Location=Hit.ImpactPoint=Impact; Hit.Normal=Hit.ImpactNormal=Normal;
+                Hit.Distance=static_cast<float>(Distance); Hit.Time=static_cast<float>(Distance/InteractionDistance);
+            }
+        }
+        SetCustomHitResult(Hit);
+        const int32 Status=static_cast<int32>(Result);
+        if (Status!=LastIntersection) {
+            LastIntersection=Status;
+            static const TCHAR* const Results[]={TEXT("hit"),TEXT("invalid"),TEXT("parallel"),TEXT("behind"),TEXT("too_far"),TEXT("outside")};
+            UE_LOG(LogMRFPSLoginRay,Display,TEXT("MRFPS_LOGIN_POINTER_INTERSECT result=%s"),Results[Status]);
+        }
+    }
+    SimulatePointerMovement();
+}
 
 TWeakPtr<SWidget> UMRFPSLoginInteraction::HoveredTarget() const
 {
@@ -69,6 +108,7 @@ void UMRFPSLoginInteraction::CancelPointer()
     LastWidgetPath=FWeakWidgetPath();
     WeakHoveredWidgetComponent.Reset();
     LastHitResult=FHitResult();
+    if (InteractionSource==EWidgetInteractionSource::Custom) SetCustomHitResult(FHitResult());
     bIsHoveredWidgetInteractable=false;
     bIsHoveredWidgetFocusable=false;
     bIsHoveredWidgetHitTestVisible=false;

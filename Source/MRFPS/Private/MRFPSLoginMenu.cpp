@@ -2,6 +2,7 @@
 #include "MRFPSDeviceAuthUrl.h"
 #include "MRFPSConnectionSettings.h"
 #include "MRFPSLoginInteraction.h"
+#include "MRFPSLoginWidgetComponent.h"
 #include "MRFPSRetryAfter.h"
 
 #include "MRFPSGame.h"
@@ -112,9 +113,10 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         auto* Pawn=Owner->GetPawn<AMRFPSPawn>();
         if (!Pawn || !Pawn->Camera || !Pawn->XROrigin) { Menu->bOpen=false; return nullptr; }
         if (auto* GI=Cast<UMRFPSGameInstance>(Owner->GetGameInstance())) GI->FireTransition.BeginLogin();
-        auto* Component=NewObject<UWidgetComponent>(Pawn);
+        auto* Component=NewObject<UMRFPSLoginWidgetComponent>(Pawn);
         Component->SetWidgetSpace(EWidgetSpace::World); Component->SetDrawSize(FVector2D(900,720));
         Component->SetPivot(FVector2D(.5f,.5f)); Component->SetTwoSided(true);
+        Component->SetTickWhenOffscreen(true);
         Component->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
         Component->SetCollisionResponseToAllChannels(ECR_Ignore); Component->SetCollisionResponseToChannel(ECC_Visibility,ECR_Block);
         Component->SetupAttachment(Pawn->Camera); Component->SetRelativeLocation(FVector(115,0,-5));
@@ -123,6 +125,7 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         auto* Pointer=NewObject<UMRFPSLoginInteraction>(Pawn);
         Pointer->SetupAttachment(Pawn->XROrigin); Pointer->InteractionDistance=400;
         Pointer->TraceChannel=ECC_Visibility;
+        Pointer->SetLoginWorldWidget(Component);
         Pointer->RegisterComponent(); Pointer->SetComponentTickEnabled(false); Menu->Interaction=Pointer;
         // Engine debug lines are compiled out in Shipping. These tiny,
         // collision-free meshes remain visible to the local user in both
@@ -264,12 +267,29 @@ void UMRFPSLoginMenu::NativeDestruct()
     if (!bClosing) CloseLogin();
     Super::NativeDestruct();
 }
+#if WITH_DEV_AUTOMATION_TESTS
 void UMRFPSLoginMenu::NativeTick(const FGeometry& Geometry,float DeltaTime)
 {
     Super::NativeTick(Geometry,DeltaTime);
+    if (TestDuringPaint) TestDuringPaint();
+}
+#endif
+bool UMRFPSLoginMenu::ResolvePointerWeapon(AMRFPSPawn* Pawn,FMRFPSWeaponPose& Weapon)
+{
+#if WITH_DEV_AUTOMATION_TESTS
+    if (bUseTestWeapon) { Weapon=TestWeapon; return Weapon.Source!=MRFPSLoginPointer::ESource::None; }
+#endif
+    return Pawn && Pawn->GetLocalWeaponPose(Weapon);
+}
+void UMRFPSLoginMenu::TickXRPointerAfterPaint(UWidgetComponent* PaintedComponent,float DeltaTime)
+{
 #if !UE_SERVER
-    if (bVR && bOpen && Interaction) {
+    auto* PC=Controller.Get();
+    if (bVR && bOpen && !bClosing && Interaction && WorldWidget==PaintedComponent && IsValid(PC) &&
+        !PC->IsActorBeingDestroyed() && PC->DeviceLogin==this && PC->GetWorld() && !PC->GetWorld()->bIsTearingDown) {
         const double Now=FPlatformTime::Seconds();
+        if (!bPointerGridReady) UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_GRID ready=1"));
+        bPointerGridReady=true; LastPointerPaint=Now;
         if (LastPointerTick>=0 && Now-LastPointerTick>=.75) {
             // Pose and focus continuity during a suspended frame are unknown.
             // Do not replay those edges against the current widget position.
@@ -302,7 +322,7 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
 #if !UE_SERVER
     auto* PC=Controller.Get(); auto* Pawn=PC?PC->GetPawn<AMRFPSPawn>():nullptr;
     FMRFPSWeaponPose Weapon;
-    const bool HasWeapon=Pawn && Pawn->GetLocalWeaponPose(Weapon);
+    const bool HasWeapon=ResolvePointerWeapon(Pawn,Weapon);
     auto Source=HasWeapon?Weapon.Source:MRFPSLoginPointer::ESource::None;
     bool UsesVRFocus=false,HasVRFocus=true;
     UHeadMountedDisplayFunctionLibrary::GetVRFocusState(UsesVRFocus,HasVRFocus);
@@ -438,7 +458,7 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     } else {
         MRFPSLoginPointer::Dispatch(PointerInput,Events,LastPointerTick,End,
             [this](MRFPSLoginPointer::EAction Action) {
-                ApplyPointerAction(Action); return bOpen && Interaction;
+                ApplyPointerAction(Action); return bOpen && Interaction && bPointerGridReady;
             },
             [](const MRFPSLoginPointer::FEventQueue::FEvent& Event) {
                 UE_LOG(LogMRFPSLogin,VeryVerbose,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=%d valid=%d"),int(Event.Kind),Event.Valid);
@@ -446,7 +466,7 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     }
     QueuedTargets.Reset();
     LastPointerTick=End;
-    if (!bOpen || !Interaction) return;
+    if (!bOpen || !Interaction || !bPointerGridReady) return;
     if (!bInputAnnounced || AnnouncedInput!=PointerInput.Selected) {
         AnnouncedInput=PointerInput.Selected; bInputAnnounced=true;
         const TCHAR* PoseName=Source==MRFPSLoginPointer::ESource::Aim || Source==MRFPSLoginPointer::ESource::AimGrip?TEXT("右コントローラー"):
@@ -479,11 +499,15 @@ void UMRFPSLoginMenu::ApplyPointerAction(MRFPSLoginPointer::EAction Action)
     if (Action==MRFPSLoginPointer::EAction::Press) {
         const FHitResult& Hit=Interaction->GetLastHitResult();
         const auto CurrentTarget=Interaction->HoveredTarget().Pin();
-        if (!WorldWidget || Hit.GetComponent()!=WorldWidget.Get() || !Hit.bBlockingHit ||
-            !Interaction->IsOverHitTestVisibleWidget() ||
-            !MRFPSLoginPointer::SameHit(PreviousPointerHit.Pin().Get(),CurrentTarget.Get()) || !Interaction->BeginPointer()) {
+        const bool Blocking=Hit.bBlockingHit;
+        const bool WidgetMatch=WorldWidget && Hit.GetComponent()==WorldWidget.Get();
+        const bool SlateHit=Interaction->IsOverHitTestVisibleWidget();
+        const bool TargetMatch=MRFPSLoginPointer::SameHit(PreviousPointerHit.Pin().Get(),CurrentTarget.Get());
+        const bool Capture=Blocking && WidgetMatch && SlateHit && TargetMatch && Interaction->BeginPointer();
+        if (!Capture) {
             PointerInput.CancelActive(); PointerInput.Disarm();
-            UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS action=unavailable source=%s"),MRFPSLoginPointer::SourceName(PointerInput.Source));
+            UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS action=unavailable source=%s blocking=%d widget=%d slate=%d target=%d capture=%d"),
+                MRFPSLoginPointer::SourceName(PointerInput.Source),Blocking,WidgetMatch,SlateHit,TargetMatch,Capture);
             return;
         }
     } else if (Action==MRFPSLoginPointer::EAction::Release) Interaction->EndPointer();
@@ -574,6 +598,9 @@ void UMRFPSLoginMenu::CloseLogin()
 void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
 {
     if (!Interaction || !bOpen) return;
+    if (!bPointerGridReady || LastPointerPaint<0 || FPlatformTime::Seconds()-LastPointerPaint>=.75) {
+        PointerInput.SetButton(Pressed); PointerInput.ClearArm(MRFPSLoginPointer::EInput::Button); return;
+    }
     // Sample the actual muzzle and widget at the physical edge. The next
     // frame must never replay an A tap onto B after the hand has moved.
     TSharedPtr<SWidget> Target;
@@ -581,7 +608,7 @@ void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
     FMRFPSWeaponPose Weapon;
     bool UsesVRFocus=false,HasVRFocus=true;
     UHeadMountedDisplayFunctionLibrary::GetVRFocusState(UsesVRFocus,HasVRFocus);
-    if (PointerInput.Focused && (!UsesVRFocus || HasVRFocus) && Pawn && Pawn->GetLocalWeaponPose(Weapon) &&
+    if (PointerInput.Focused && (!UsesVRFocus || HasVRFocus) && Pawn && ResolvePointerWeapon(Pawn,Weapon) &&
         Weapon.Source==PointerInput.Source && Weapon.Source!=MRFPSLoginPointer::ESource::None) {
         const FTransform Muzzle=MRFPSWeaponPose::Muzzle(Weapon.GripWorld);
         Interaction->SetWorldLocationAndRotation(Muzzle.GetLocation(),Muzzle.GetRotation());
@@ -599,6 +626,9 @@ void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
 void UMRFPSLoginMenu::SetPointerTriggerAxis(float Value)
 {
     if (!Interaction || !bOpen) return;
+    if (!bPointerGridReady || LastPointerPaint<0 || FPlatformTime::Seconds()-LastPointerPaint>=.75) {
+        PointerInput.SetAxis(Value); PointerInput.ClearArm(MRFPSLoginPointer::EInput::Axis); return;
+    }
     PendingPointerEvents.Push(MRFPSLoginPointer::EInput::Axis,Value,FPlatformTime::Seconds());
 }
 void UMRFPSLoginMenu::SetEndpoint(const FString& Address) { if (AddressBox && !bExchanging) AddressBox->SetText(FText::FromString(Address.Left(255))); }
@@ -617,6 +647,14 @@ void UMRFPSLoginMenu::SetStatus(const FString& Message,bool Error)
 }
 void UMRFPSLoginMenu::SetStage(bool Login)
 {
+    // The old page's Slate hit grid remains valid until the next completed
+    // paint. Discard edges across the change instead of clicking an old key.
+    bPointerGridReady=false; LastPointerPaint=-1; bGloveCursorInitialized=false;
+    if (Interaction) Interaction->CancelPointer();
+    PointerInput.CancelActive(); PointerInput.ClearArms();
+    if (auto* PC=Controller.Get()) if (auto* GI=Cast<UMRFPSGameInstance>(PC->GetGameInstance()))
+        PointerInput.SetButton(GI->FireTransition.PhysicalDown);
+    PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); PreviousPointerHit.Reset();
     bLoginPage=Login;
     if (AddressPage) AddressPage->SetVisibility(Login?ESlateVisibility::Collapsed:ESlateVisibility::Visible);
     if (LoginPage) LoginPage->SetVisibility(Login?ESlateVisibility::Visible:ESlateVisibility::Collapsed);

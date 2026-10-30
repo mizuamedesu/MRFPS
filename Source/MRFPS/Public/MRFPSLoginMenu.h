@@ -5,9 +5,11 @@
 #include "Components/Button.h"
 #include "Interfaces/IHttpRequest.h"
 #include "MRFPSLoginPointer.h"
+#include "MRFPSWeaponPose.h"
 #include "MRFPSLoginMenu.generated.h"
 
 class AMRFPSPlayerController;
+class AMRFPSPawn;
 class UEditableTextBox;
 class UTextBlock;
 class UVerticalBox;
@@ -45,6 +47,7 @@ public:
     void CloseLogin();
     /** Poll on the owning player's game tick, even when Slate is not painting. */
     void TickControlFile();
+    void TickXRPointerAfterPaint(UWidgetComponent* PaintedComponent,float DeltaTime);
     bool IsOpen() const { return bOpen; }
     UFUNCTION() void Next();
     UFUNCTION() void Back();
@@ -58,12 +61,18 @@ protected:
     virtual void NativeOnInitialized() override;
     virtual void NativeConstruct() override;
     virtual void NativeDestruct() override;
+#if WITH_DEV_AUTOMATION_TESTS
     virtual void NativeTick(const FGeometry& Geometry,float DeltaTime) override;
+#endif
 
 private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMRFPSLoginControlTickTest;
+    friend class FMRFPSLoginWidgetPaintScenario;
     FString TestControlPath;
+    bool bUseTestWeapon=false;
+    FMRFPSWeaponPose TestWeapon;
+    TFunction<void()> TestDuringPaint;
 #endif
     bool ReadAddress(FString& Out) const;
     void SelectRole(const FString& InRole);
@@ -73,6 +82,7 @@ private:
     void ConnectAfterLogin();
     void ProcessControlFile();
     void UpdateXRPointer(float DeltaTime);
+    bool ResolvePointerWeapon(AMRFPSPawn* Pawn,FMRFPSWeaponPose& Weapon);
     void ApplyPointerAction(MRFPSLoginPointer::EAction Action);
     void HandleFocusLost();
     void HandleFocusGained();
@@ -95,6 +105,7 @@ private:
     FString Destination;
     bool bVR=false,bOpen=false,bLoginPage=false,bExchanging=false,bClosing=false;
     bool bPointerHit=false,bPointerPoseReported=false,bPointerHitReported=false;
+    bool bPointerGridReady=false;
     bool bRawTraceReported=false,bRawTraceWidget=false,bRawTraceSlate=false;
     MRFPSLoginPointer::FPressState PointerInput;
     MRFPSLoginPointer::FEventQueue PendingPointerEvents;
@@ -106,5 +117,5 @@ private:
     MRFPSLoginPointer::EInput AnnouncedInput=MRFPSLoginPointer::EInput::None;
     bool bInputAnnounced=false;
     FDelegateHandle FocusLostHandle,FocusGainedHandle,BackgroundHandle,ForegroundHandle;
-    double NextControlCheck=0,LastPointerTick=-1;
+    double NextControlCheck=0,LastPointerTick=-1,LastPointerPaint=-1;
 };

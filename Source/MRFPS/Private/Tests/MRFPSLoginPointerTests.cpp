@@ -1,5 +1,6 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MRFPSLoginPointer.h"
+#include "MRFPSLoginRay.h"
 #include "../MRFPSHandPose.h"
 #include "MRFPSGame.h"
 #include "Components/StaticMeshComponent.h"
@@ -13,6 +14,28 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSLoginPointerPoseTest,"MRFPS.Login.Pointer
 bool FMRFPSLoginPointerPoseTest::RunTest(const FString& Parameters)
 {
     using namespace MRFPSLoginPointer;
+    {
+        using namespace MRFPSLoginRay;
+        const FTransform Panel(FRotator(0,90,0),FVector(100,200,300),FVector(.1));
+        const FVector2D Size(900,720),Pivot(.5,.5);
+        const FVector Direction=Panel.GetUnitAxis(EAxis::X);
+        const FVector Start=Panel.TransformPosition(FVector(-500,0,0));
+        FVector Impact,Normal; double Distance=0;
+        TestTrue(TEXT("Scaled and rotated panel intersects the visible gun ray"),
+            Intersect(Panel,Size,Pivot,Start,Direction,400,Impact,Normal,Distance)==EResult::Hit &&
+            Impact.Equals(Panel.GetLocation(),.01) && FMath::IsNearlyEqual(Distance,50.,.01));
+        const FVector Back=Panel.TransformPosition(FVector(500,0,0));
+        TestTrue(TEXT("Panel is interactable from its reverse side"),
+            Intersect(Panel,Size,Pivot,Back,-Direction,400,Impact,Normal,Distance)==EResult::Hit &&
+            FVector::DotProduct(Normal,-Direction)<0);
+        TestTrue(TEXT("Parallel rays miss"),Intersect(Panel,Size,Pivot,Start,Panel.GetUnitAxis(EAxis::Y),400,Impact,Normal,Distance)==EResult::Parallel);
+        TestTrue(TEXT("A panel behind the ray misses"),Intersect(Panel,Size,Pivot,Start,-Direction,400,Impact,Normal,Distance)==EResult::Behind);
+        TestTrue(TEXT("Hits beyond interaction distance miss"),Intersect(Panel,Size,Pivot,Start,Direction,49,Impact,Normal,Distance)==EResult::TooFar);
+        const FVector Outside=Panel.TransformPosition(FVector(-500,-451,0));
+        TestTrue(TEXT("The ray outside the visible panel never hits"),Intersect(Panel,Size,Pivot,Outside,Direction,400,Impact,Normal,Distance)==EResult::Outside);
+        const FVector Inside=Panel.TransformPosition(FVector(-500,-449,0));
+        TestTrue(TEXT("The ray just inside the panel hits"),Intersect(Panel,Size,Pivot,Inside,Direction,400,Impact,Normal,Distance)==EResult::Hit);
+    }
     FXRMotionControllerState Aim,Grip;
     FXRHandTrackingState Hand;
     TestFalse(TEXT("Untracked controller is invalid"),ValidPose(Aim));

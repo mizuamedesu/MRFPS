@@ -3,6 +3,7 @@
 #include "MRFPSWeaponPose.h"
 
 #include "Components/SceneComponent.h"
+#include "Components/BoxComponent.h"
 #include "Components/WidgetComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -54,6 +55,10 @@ public:
             Test->AddError(TEXT("Real world traces did not hover both rendered fixture buttons"));
             return true;
         }
+        FHitResult WorldHit;
+        const bool WorldBlocked=World->LineTraceSingleByChannel(WorldHit,FVector(0,-22.5,0),FVector(150,-22.5,0),ECC_Visibility);
+        Test->TestTrue(TEXT("A world obstacle blocks the ordinary visibility trace"),WorldBlocked && WorldHit.GetComponent()==Obstacle);
+        Test->TestTrue(TEXT("The custom muzzle hit still identifies the real widget"),First->GetLastHitResult().GetComponent()==Panel);
         return RunAssertions();
     }
 
@@ -97,9 +102,9 @@ private:
 
         Panel=NewObject<UWidgetComponent>(Host);
         Panel->SetupAttachment(Root); Panel->SetWidgetSpace(EWidgetSpace::World);
-        Panel->SetDrawSize(FVector2D(300,120)); Panel->SetPivot(FVector2D(.5,.5));
+        Panel->SetDrawSize(FVector2D(900,720)); Panel->SetPivot(FVector2D(.5,.5)); Panel->SetRelativeScale3D(FVector(.1));
         Panel->SetRelativeLocation(FVector(150,0,0)); Panel->SetRelativeRotation(FRotator(0,180,0));
-        Panel->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+        Panel->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         Panel->SetCollisionResponseToAllChannels(ECR_Ignore);
         Panel->SetCollisionResponseToChannel(ECC_Visibility,ECR_Block);
         Panel->SetTickWhenOffscreen(true);
@@ -108,14 +113,24 @@ private:
             +SHorizontalBox::Slot().FillWidth(1.f) [ Button[1].ToSharedRef() ]);
         Panel->RegisterComponent();
 
-        const FTransform Grip(FRotator::ZeroRotator,FVector(-22,-75,0));
+        // A different actor blocks the ordinary visibility trace in front of
+        // the panel. The login overlay must still use its actual visible quad.
+        AActor* ObstacleHost=World->SpawnActor<AActor>();
+        if (!Test->TestNotNull(TEXT("Fixture occluder actor"),ObstacleHost)) return false;
+        Obstacle=NewObject<UBoxComponent>(ObstacleHost); ObstacleHost->SetRootComponent(Obstacle);
+        Obstacle->SetBoxExtent(FVector(5,80,80)); Obstacle->SetWorldLocation(FVector(75,0,0));
+        Obstacle->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+        Obstacle->SetCollisionResponseToAllChannels(ECR_Ignore);
+        Obstacle->SetCollisionResponseToChannel(ECC_Visibility,ECR_Block); Obstacle->RegisterComponent();
+
+        const FTransform Grip(FRotator::ZeroRotator,FVector(-22,-22.5,0));
         First=MakePointer(Host,Root,0,MRFPSWeaponPose::Muzzle(Grip).GetLocation());
         Test->TestTrue(TEXT("The real widget trace begins at the weapon muzzle"),
             First && First->GetComponentLocation().Equals(MRFPSWeaponPose::Muzzle(Grip).GetLocation(),.01));
-        Second=MakePointer(Host,Root,1,FVector(0,75,0));
+        Second=MakePointer(Host,Root,1,FVector(0,22.5,0));
         // Alias deliberately shares the second pointer index without pressing.
         // Cancelling it must not release another interaction's capture.
-        Alias=MakePointer(Host,Root,1,FVector(0,75,0));
+        Alias=MakePointer(Host,Root,1,FVector(0,22.5,0));
         if (!Test->TestTrue(TEXT("All fixture interactions are initialized"),First && Second && Alias)) return false;
         Handle=FSlateApplication::Get().FindOrCreateVirtualUser(VirtualUserIndex);
         User=FSlateApplication::Get().GetUser(Handle->GetUserIndex());
@@ -126,7 +141,7 @@ private:
     {
         auto* Pointer=NewObject<UMRFPSLoginInteraction>(Host);
         Pointer->VirtualUserIndex=VirtualUserIndex; Pointer->PointerIndex=Index;
-        Pointer->InteractionSource=EWidgetInteractionSource::World; Pointer->TraceChannel=ECC_Visibility;
+        Pointer->SetLoginWorldWidget(Panel); Pointer->TraceChannel=ECC_Visibility;
         Pointer->InteractionDistance=400; Pointer->SetupAttachment(Root);
         Pointer->SetRelativeLocation(Location); Pointer->SetRelativeRotation(FRotator::ZeroRotator);
         Pointer->RegisterComponent(); Pointer->SetComponentTickEnabled(false);
@@ -135,6 +150,19 @@ private:
 
     bool RunAssertions()
     {
+        // Exact production size/scale, a translated panel, an out-of-bounds
+        // ray, and the reverse side all go through the actual Slate grid.
+        Panel->SetWorldLocation(FVector(180,0,0)); First->RefreshPointer();
+        Test->TestTrue(TEXT("A moved head-following panel is hit at its current location"),
+            First->GetLastHitResult().GetComponent()==Panel && FMath::IsNearlyEqual(First->GetLastHitResult().ImpactPoint.X,180.,.1));
+        Panel->SetWorldLocation(FVector(150,0,0));
+        First->SetWorldLocation(FVector(0,-46,0)); First->RefreshPointer();
+        Test->TestFalse(TEXT("An outside ray clears the previous custom hit"),First->GetLastHitResult().bBlockingHit);
+        Test->TestFalse(TEXT("An outside ray has no Slate target"),First->IsOverHitTestVisibleWidget());
+        First->SetWorldLocation(FVector(300,-22.5,0)); First->SetWorldRotation(FRotator(0,180,0)); First->RefreshPointer();
+        Test->TestTrue(TEXT("A ray from the panel's reverse side hits the same widget"),
+            First->GetLastHitResult().GetComponent()==Panel && First->IsOverHitTestVisibleWidget());
+        First->SetWorldLocation(FVector(0,-22.5,0)); First->SetWorldRotation(FRotator::ZeroRotator); First->RefreshPointer();
         if (!Test->TestTrue(TEXT("The first pointer accepts a real press"),First->BeginPointer())) return true;
         if (!Test->TestTrue(TEXT("A normal down presses and captures the first button"),
                             Button[0]->IsPressed() && User->HasCapture(0))) return true;
@@ -161,7 +189,7 @@ private:
 
         First->SetWorldLocation(FVector(0,-250,0)); First->RefreshPointer();
         const auto BeforeEntry=First->HoveredTarget().Pin();
-        First->SetWorldLocation(FVector(0,-75,0)); First->RefreshPointer();
+        First->SetWorldLocation(FVector(0,-22.5,0)); First->RefreshPointer();
         const auto Entered=First->HoveredTarget().Pin();
         Test->TestFalse(TEXT("Entering a target while neutral does not cancel input"),
             MRFPSLoginPointer::CancelForHitChange(false,BeforeEntry.Get(),Entered.Get()));
@@ -170,14 +198,14 @@ private:
 
         First->RefreshPointer(); const auto OldTarget=First->HoveredTarget().Pin();
         if (!Test->TestTrue(TEXT("The original button captures a held press"),First->BeginPointer())) return true;
-        First->SetWorldLocation(FVector(0,75,0)); First->RefreshPointer();
+        First->SetWorldLocation(FVector(0,22.5,0)); First->RefreshPointer();
         const auto NewTarget=First->HoveredTarget().Pin();
         if (MRFPSLoginPointer::CancelForHitChange(true,OldTarget.Get(),NewTarget.Get())) First->CancelPointer();
         else Test->AddError(TEXT("A held press moving to another button must cancel"));
         First->EndPointer();
         Test->TestEqual(TEXT("Moving a held press cannot click its old target"),Clicks[0],3);
         Test->TestEqual(TEXT("Moving a held press cannot click its new target"),Clicks[1],0);
-        First->SetWorldLocation(FVector(0,-75,0)); First->RefreshPointer();
+        First->SetWorldLocation(FVector(0,-22.5,0)); First->RefreshPointer();
         if (!Test->TestTrue(TEXT("Returning to the old target after cancellation restores Slate hover"),Button[0]->IsHovered())) return true;
 
         // Exercise real Slate capture when the physical trigger takes over a
@@ -216,12 +244,14 @@ private:
         First->EndPointer(); Test->TestEqual(TEXT("Stale glove then physical trigger clicks once"),Clicks[0],5);
         First->RefreshPointer();
 
+        First->RefreshPointer();
+        if (!Test->TestTrue(TEXT("The first pointer captures its own button"),First->BeginPointer() && User->HasCapture(0))) return true;
+        // Establish B after A: Slate has one focus per virtual user, and
+        // SButton::OnFocusLost releases pressed state even with capture.
         Second->RefreshPointer();
         if (!Test->TestTrue(TEXT("The second pointer accepts a real press"),Second->BeginPointer())) return true;
-        if (!Test->TestTrue(TEXT("The unrelated second pointer captures its button"),
-                            Button[1]->IsPressed() && User->HasCapture(1))) return true;
-        First->RefreshPointer();
-        if (!Test->TestTrue(TEXT("The first pointer also captures its own button"),First->BeginPointer() && User->HasCapture(0))) return true;
+        if (!Test->TestTrue(TEXT("Both pointers have capture before cancel"),User->HasCapture(0) && User->HasCapture(1))) return true;
+        if (!Test->TestTrue(TEXT("The unrelated second button is pressed before cancel"),Button[1]->IsPressed())) return true;
         First->CancelPointer();
         Test->TestTrue(TEXT("Cancelling pointer zero preserves pointer one's capture"),
                        Button[1]->IsPressed() && User->HasCapture(1));
@@ -245,12 +275,12 @@ private:
 
         // The real Slate targets are snapshotted by the input callback. A
         // tap queued at A cannot be replayed against B at the next tick.
-        First->SetWorldLocation(FVector(0,-75,0)); First->RefreshPointer();
+        First->SetWorldLocation(FVector(0,-22.5,0)); First->RefreshPointer();
         const auto TapAtA=First->HoveredTarget().Pin();
         MRFPSLoginPointer::FEventQueue Queued;
         Queued.Push(MRFPSLoginPointer::EInput::Button,1,1,true,false,reinterpret_cast<std::uintptr_t>(TapAtA.Get()),true);
         Queued.Push(MRFPSLoginPointer::EInput::Button,0,1.01,true,false,reinterpret_cast<std::uintptr_t>(TapAtA.Get()),true);
-        First->SetWorldLocation(FVector(0,75,0)); First->RefreshPointer();
+        First->SetWorldLocation(FVector(0,22.5,0)); First->RefreshPointer();
         const auto AtB=First->HoveredTarget().Pin();
         if (!Test->TestTrue(TEXT("Fixture can distinguish both actual Slate controls"),TapAtA && AtB && TapAtA!=AtB)) return true;
         Test->TestFalse(TEXT("A queued tap cannot be routed to B"),MRFPSLoginPointer::ButtonTargetsMatch(Queued,AtB.Get()));
@@ -269,6 +299,7 @@ private:
     FAutomationTestBase* Test=nullptr;
     UWorld* World=nullptr;
     UWidgetComponent* Panel=nullptr;
+    UBoxComponent* Obstacle=nullptr;
     UMRFPSLoginInteraction* First=nullptr;
     UMRFPSLoginInteraction* Second=nullptr;
     UMRFPSLoginInteraction* Alias=nullptr;

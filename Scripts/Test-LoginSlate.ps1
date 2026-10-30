@@ -47,14 +47,18 @@ if (-not [MRFPSLoginSlateFixtureJobCheck]::IsContained()) { throw 'SLATE_FIXTURE
 if (Test-Path -LiteralPath $ReportDirectory) { throw 'SLATE_FIXTURE_REPORT_EXISTS' }
 New-Item -ItemType Directory -Path $ReportDirectory | Out-Null
 $arguments=@($project,'-unattended','-nohmd','-nosound','-NoSplash','-NoLiveCoding','-nop4',
-    '-stdout','-FullStdOutLogOutput','-ExecCmds=Automation RunTests QuestVisualFixture.LoginPointerCancel',
+    '-stdout','-FullStdOutLogOutput','-ExecCmds=Automation RunTests QuestVisualFixture',
     '-TestExit=Automation Test Queue Empty',"-ReportExportPath=$ReportDirectory", "-abslog=$(Join-Path $ReportDirectory 'engine.log')")
 Invoke-MRFPSCommand $editor $arguments -LogPath (Join-Path $ReportDirectory 'stdout.log')
 $index=Join-Path $ReportDirectory 'index.json'
 if (-not (Test-Path -LiteralPath $index -PathType Leaf)) { throw 'SLATE_FIXTURE_REPORT_MISSING' }
 $report=Get-Content -Raw -LiteralPath $index | ConvertFrom-Json
-$tests=@($report.tests | Where-Object { $_.fullTestPath -eq 'QuestVisualFixture.LoginPointerCancel' })
-if ($tests.Count -ne 1 -or $tests[0].state -ne 'Success' -or $tests[0].errors -ne 0) {
-    throw 'SLATE_FIXTURE_FAILED_OR_MISSING'
+$required=@('QuestVisualFixture.LoginPointerCancel','QuestVisualFixture.LoginWidgetPaintOrdering')
+foreach ($name in $required) {
+    $tests=@($report.tests | Where-Object { $_.fullTestPath -eq $name })
+    if ($tests.Count -ne 1 -or $tests[0].state -ne 'Success' -or $tests[0].errors -ne 0) {
+        throw "SLATE_FIXTURE_FAILED_OR_MISSING: $name"
+    }
 }
-Write-Output '{"status":"passed","scope":"UE Editor Slate and world-widget pointer cancellation"}'
+if (@($report.tests | Where-Object { $_.fullTestPath -like 'QuestVisualFixture.*' -and ($_.state -ne 'Success' -or $_.errors -ne 0) }).Count) { throw 'SLATE_FIXTURE_UNEXPECTED_FAILURE' }
+Write-Output '{"status":"passed","scope":"UE Editor Slate pointer interaction and completed widget paint"}'
