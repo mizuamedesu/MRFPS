@@ -24,6 +24,7 @@
 #include "Components/WidgetComponent.h"
 #include "Components/WidgetInteractionComponent.h"
 #include "Dom/JsonObject.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/StaticMesh.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
@@ -274,8 +275,21 @@ void UMRFPSLoginMenu::NativeTick(const FGeometry& Geometry,float DeltaTime)
         }
         UpdateXRPointer(DeltaTime);
     }
-    if (!bOpen || bExchanging || FPlatformTime::Seconds()<NextControlCheck) return;
-    NextControlCheck=FPlatformTime::Seconds()+.5;
+#endif
+}
+void UMRFPSLoginMenu::TickControlFile()
+{
+#if !UE_SERVER
+    if (!bOpen || bClosing || bExchanging) return;
+    auto* PC=Controller.Get();
+    if (!IsValid(PC) || PC->IsActorBeingDestroyed() || PC->DeviceLogin!=this || !PC->IsLocalController()) return;
+    UWorld* World=PC->GetWorld();
+    if (!World || World!=GetWorld() || World->bIsTearingDown || PC->GetNetMode()!=NM_Standalone) return;
+    const FWorldContext* Context=GEngine?GEngine->GetWorldContextFromWorld(World):nullptr;
+    if (!Context || !Context->TravelURL.IsEmpty() || Context->PendingNetGame || World->IsInSeamlessTravel()) return;
+    const double Now=FPlatformTime::Seconds();
+    if (Now<NextControlCheck) return;
+    NextControlCheck=Now+.5;
     ProcessControlFile();
 #endif
 }
@@ -458,7 +472,11 @@ void UMRFPSLoginMenu::HandleFocusGained()
 void UMRFPSLoginMenu::ProcessControlFile()
 {
 #if !UE_SERVER
-    const FString File=ControlPath(); if (File.IsEmpty()) return;
+    FString File=ControlPath();
+#if WITH_DEV_AUTOMATION_TESTS
+    if (!TestControlPath.IsEmpty()) File=TestControlPath;
+#endif
+    if (File.IsEmpty()) return;
     if (!IFileManager::Get().FileExists(*File)) return;
     // Claim the current instruction atomically. A subsequent CLI submission
     // may replace the source path while this unique file is being read; it

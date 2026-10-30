@@ -1064,6 +1064,11 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
         }
         if (!(DeviceLogin && DeviceLogin->IsOpen())) Instance->TickAutoReconnect();
     }
+#if !UE_SERVER
+    // A minimized or hidden window is not painted, so UUserWidget::NativeTick
+    // is not a reliable place to process local CLI control instructions.
+    if (DeviceLogin) DeviceLogin->TickControlFile();
+#endif
     if (bAdminWallPlacement && !IsAdmin()) SetAdminWallPlacement(false);
     TickAdminPreview();
     TickQuestVideo();

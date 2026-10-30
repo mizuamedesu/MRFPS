@@ -42,6 +42,8 @@ public:
     void LoginCodeFromFile(const FString& File, const FString& Role);
     void InsertKey(const FString& Key);
     void CloseLogin();
+    /** Poll on the owning player's game tick, even when Slate is not painting. */
+    void TickControlFile();
     bool IsOpen() const { return bOpen; }
     UFUNCTION() void Next();
     UFUNCTION() void Back();
@@ -58,6 +60,10 @@ protected:
     virtual void NativeTick(const FGeometry& Geometry,float DeltaTime) override;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+    friend class FMRFPSLoginControlTickTest;
+    FString TestControlPath;
+#endif
     bool ReadAddress(FString& Out) const;
     void SelectRole(const FString& InRole);
     void SetStage(bool bLogin);
