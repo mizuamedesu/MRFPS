@@ -65,6 +65,16 @@ ContactGlove 2 の公式配布から Android ネイティブ機器接続の保�
 uv run --python 3.12 python tools/gloves/contactglove_bridge.py --target 192.168.1.20
 ```
 
+Windows で同じ relay を重複起動せず管理する場合、Quest の実際の IP を指定します。
+
+```powershell
+.\Scripts\Manage-ContactGloveRelay.ps1 -Action Ensure -Target 192.168.1.20
+.\Scripts\Manage-ContactGloveRelay.ps1 -Action Status
+.\Scripts\Manage-ContactGloveRelay.ps1 -Action Stop
+```
+
+`Ensure` は同じ設定であれば既存の管理対象を再利用し、異なる設定や使用中のポートがあるときは停止せずにエラーを返します。`Stop` はこのコマンドが起動し、プロセス ID と生成時刻を確認できた relay だけを停止します。ログと管理状態は `Saved/GloveRelay` に保存します。UE 付属 Python が見つからない環境では実体の `python.exe` を `-Python` で指定できます。
+
 PC relay は `127.0.0.1:25789/udp` で実際の DivingStation に購読し、Device snapshot と、実接続状態が確認できる手の Hand / HandQuat / Wrist / Controller メッセージだけを Quest の `25788/udp` に転送します。各 route/hand の新規sampleを最大90Hzへまとめます (`--rate-hz` で15〜120)。DivingStation が大量の重複パケットを送る場合は、受信処理を制限し、小さな受信キューから古いパケットの滞留を抑えます。古いcached sampleを再送して鮮度を作る処理はありません。複数 `--target` を指定すると同じ入力を複数の開発端末へ送れます。Quest の手をそれぞれ動かす用途では各プレイヤーの別 device ID と別 relay を使用します。relay を停止した場合、ゲーム側は 150ms で入力を無効化し、古いパーやトリガーを押し続けません。Wi-Fi の端末間通信を許可し、Quest が受信する送信元 IP を設定します。
 
 独立した SteamVR tracker から位置を送る場合は、トラッカーのシリアル番号と Quest stage との校正値を JSON に用意します。
