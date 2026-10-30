@@ -56,6 +56,7 @@ static UGameViewportClient* OwnedViewportClient(const UGameInstance* Instance)
 
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
 #include "Android/AndroidJavaEnv.h"
+#include "MRFPSCaptureSessionGuards.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMRFPSViewCapture, Log, All);
 
@@ -100,6 +101,8 @@ struct FMailbox
     }
 };
 static FMailbox Mailbox;
+static MRFPSCaptureSessionGuards::FSessionState Sessions;
+using FTryMailboxLock = MRFPSCaptureSessionGuards::TTryLock<FCriticalSection>;
 
 static bool IsFresh(const FMailbox& Box)
 {
@@ -174,15 +177,65 @@ static bool CallJava(const char* MethodName, uint64 Session, bool bWithSession =
     Env->DeleteLocalRef(Class);
     return bSuccess;
 }
+
+// Poll a Java atomic only; the watchdog never enters JNI or takes Mailbox.Mutex.
+static bool JavaCaptureFailed(uint64 Session)
+{
+    JNIEnv* Env = AndroidJavaEnv::GetJavaEnv();
+    if (!Env || !Session) return false;
+    jclass Class = AndroidJavaEnv::FindJavaClass("com/mrfps/capture/MRFPSViewCapture");
+    if (!Class || Env->ExceptionCheck()) {
+        if (Env->ExceptionCheck()) Env->ExceptionClear();
+        if (Class) Env->DeleteLocalRef(Class);
+        return false;
+    }
+    jmethodID Method = Env->GetStaticMethodID(Class, "hasCaptureFailure", "(J)Z");
+    bool Failed = false;
+    if (Method && !Env->ExceptionCheck())
+        Failed = Env->CallStaticBooleanMethod(Class, Method, static_cast<jlong>(Session)) == JNI_TRUE;
+    if (Env->ExceptionCheck()) { Env->ExceptionClear(); Failed = false; }
+    Env->DeleteLocalRef(Class);
+    return Failed;
+}
+
+// The result may be unavailable if JNI/class lookup fails. In that case do not
+// infer that an existing OS consent dialog has finished.
+static bool JavaPendingConsent(bool& OutPending)
+{
+    OutPending = false;
+    JNIEnv* Env = AndroidJavaEnv::GetJavaEnv();
+    if (!Env) return false;
+    jclass Class = AndroidJavaEnv::FindJavaClass("com/mrfps/capture/MRFPSViewCapture");
+    if (!Class || Env->ExceptionCheck()) {
+        if (Env->ExceptionCheck()) Env->ExceptionClear();
+        if (Class) Env->DeleteLocalRef(Class);
+        return false;
+    }
+    jmethodID Method = Env->GetStaticMethodID(Class, "hasPendingConsent", "()Z");
+    bool Known = false;
+    if (Method && !Env->ExceptionCheck()) {
+        OutPending = Env->CallStaticBooleanMethod(Class, Method) == JNI_TRUE;
+        Known = !Env->ExceptionCheck();
+    }
+    if (Env->ExceptionCheck()) Env->ExceptionClear();
+    Env->DeleteLocalRef(Class);
+    return Known;
+}
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_mrfps_capture_MRFPSViewCapture_nativeOnState(JNIEnv*, jclass, jlong Session, jint State)
 {
     using namespace MRFPSViewCapture;
-    if (State < int32(EState::Stopped) || State > int32(EState::DebugWaiting)) return;
-    FScopeLock Lock(&Mailbox.Mutex);
-    if (Session <= 0 || uint64(Session) != Mailbox.Session) return;
+    if (Session <= 0 || State < int32(EState::Stopped) || State > int32(EState::DebugWaiting) ||
+        !Sessions.IsActive(uint64(Session))) return;
+    if (State == int32(EState::Active)) Sessions.MarkReady(uint64(Session));
+    else if (State == int32(EState::Busy)) Sessions.MarkBusy(uint64(Session));
+    else if (State == int32(EState::Stopped) || State == int32(EState::Denied) ||
+             State == int32(EState::Unavailable) || State == int32(EState::ProjectionStopped))
+        Sessions.MarkFailed(uint64(Session));
+    FTryMailboxLock Lock(Mailbox.Mutex);
+    if (!Lock || !Sessions.IsActive(uint64(Session)) || uint64(Session) != Mailbox.Session) return;
     Mailbox.State = static_cast<EState>(State);
     UE_LOG(LogMRFPSViewCapture, Display, TEXT("MRFPS_CAPTURE_NATIVE_STATE session=%llu state=%d"),
         static_cast<unsigned long long>(Mailbox.Session), State);
@@ -194,47 +247,47 @@ Java_com_mrfps_capture_MRFPSViewCapture_nativeOnState(JNIEnv*, jclass, jlong Ses
     }
 }
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mrfps_capture_MRFPSViewCapture_nativeOnFrame(JNIEnv* Env, jclass, jlong Session,
     jbyteArray Bytes, jint Width, jint Height, jlong SourceUtcNanoseconds)
 {
     using namespace MRFPSViewCapture;
-    if (!Bytes || Session <= 0) return;
+    if (!Bytes || Session <= 0 || !Sessions.IsActive(uint64(Session))) return JNI_FALSE;
     const jsize Length = Env->GetArrayLength(Bytes);
-    if (Length < 12 || Length > MaximumJpegBytes) return;
+    if (Length < 12 || Length > MaximumJpegBytes) return JNI_FALSE;
     bool bDebug = false;
     {
         FScopeLock Lock(&Mailbox.Mutex);
-        if (uint64(Session) != Mailbox.Session || !Mailbox.bRequested) return;
+        if (!Sessions.IsActive(uint64(Session)) || uint64(Session) != Mailbox.Session || !Mailbox.bRequested) return JNI_FALSE;
         bDebug = Mailbox.bDebug;
     }
     if (bDebug)
     {
         // Debug files can survive process restarts. Sequence is producer UTC Unix
         // nanoseconds, not a counter; tolerate the measured headset clock skew.
-        if (SourceUtcNanoseconds <= 0) return;
+        if (SourceUtcNanoseconds <= 0) return JNI_FALSE;
         const double SourceSeconds = double(SourceUtcNanoseconds) / 1000000000.0;
         const double NowSeconds = double(FDateTime::UtcNow().GetTicks() -
             FDateTime(1970, 1, 1).GetTicks()) / double(ETimespan::TicksPerSecond);
         const double Age = NowSeconds - SourceSeconds;
-        if (Age > MaximumFrameAge || Age < -5.0) return;
+        if (Age > MaximumFrameAge || Age < -5.0) return JNI_FALSE;
     }
     else if (SourceUtcNanoseconds != 0)
     {
-        return;
+        return JNI_FALSE;
     }
     TArray<uint8> Frame;
     Frame.SetNumUninitialized(Length);
     Env->GetByteArrayRegion(Bytes, 0, Length, reinterpret_cast<jbyte*>(Frame.GetData()));
-    if (Env->ExceptionCheck()) { Env->ExceptionClear(); return; }
+    if (Env->ExceptionCheck()) { Env->ExceptionClear(); return JNI_FALSE; }
     if (!ValidateJpeg(Frame, Width, Height, bDebug)) {
         FScopeLock Lock(&Mailbox.Mutex);
-        if (uint64(Session) == Mailbox.Session) ++Mailbox.InvalidJpegs;
-        return;
+        if (Sessions.IsActive(uint64(Session)) && uint64(Session) == Mailbox.Session) ++Mailbox.InvalidJpegs;
+        return JNI_FALSE;
     }
     FScopeLock Lock(&Mailbox.Mutex);
-    if (uint64(Session) != Mailbox.Session || !Mailbox.bRequested) return;
-    if (bDebug && uint64(SourceUtcNanoseconds) <= Mailbox.LastDebugSequence) return;
+    if (!Sessions.IsActive(uint64(Session)) || uint64(Session) != Mailbox.Session || !Mailbox.bRequested) return JNI_FALSE;
+    if (bDebug && uint64(SourceUtcNanoseconds) <= Mailbox.LastDebugSequence) return JNI_FALSE;
     Mailbox.LastDebugSequence = bDebug ? uint64(SourceUtcNanoseconds) : 0;
     Mailbox.Jpeg = MoveTemp(Frame);
     Mailbox.Width = Width;
@@ -242,8 +295,27 @@ Java_com_mrfps_capture_MRFPSViewCapture_nativeOnFrame(JNIEnv* Env, jclass, jlong
     Mailbox.ReceivedAt = FPlatformTime::Seconds();
     Mailbox.LastAcceptedAt = Mailbox.ReceivedAt;
     Mailbox.LastFrameBytes = Length;
-    ++Mailbox.AcceptedFrames;
     Mailbox.State = bDebug ? EState::DebugWaiting : EState::Active;
+    if (!Sessions.PublishFrame(uint64(Session), Mailbox.ReceivedAt)) { Mailbox.ClearFrame(); return JNI_FALSE; }
+    ++Mailbox.AcceptedFrames;
+    return JNI_TRUE;
+}
+#endif
+
+#if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
+bool UMRFPSViewCaptureSubsystem::HasAndroidCaptureFailure() const
+{
+    using namespace MRFPSViewCapture;
+    if (!CaptureSession || !Sessions.IsActive(CaptureSession)) return false;
+    if (Sessions.IsFailed(CaptureSession) || ObservedFailedSession == CaptureSession) return true;
+    if (bDebugSource) return false;
+    const double Now = FPlatformTime::Seconds();
+    if (Now < NextFailureCheckAt) return false;
+    NextFailureCheckAt = Now + 0.25;
+    if (!JavaCaptureFailed(CaptureSession)) return false;
+    ObservedFailedSession = CaptureSession;
+    Sessions.MarkFailed(CaptureSession);
+    return true;
 }
 #endif
 
@@ -258,9 +330,11 @@ void UMRFPSViewCaptureSubsystem::RequestCapture()
     if (!IsInGameThread()) return;
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
     using namespace MRFPSViewCapture;
+    if (CaptureSession && Sessions.IsActive(CaptureSession)) return;
+    if (Sessions.Active.load(std::memory_order_acquire) != 0) { bAndroidUnavailable = true; return; }
     {
-        FScopeLock Lock(&Mailbox.Mutex);
-        if (CaptureSession != 0 && Mailbox.Session == CaptureSession && Mailbox.bRequested) return;
+        FTryMailboxLock Lock(Mailbox.Mutex);
+        if (!Lock || Mailbox.NextSession >= uint64(MAX_int64)) { bAndroidUnavailable = true; return; }
         CaptureSession = ++Mailbox.NextSession;
         Mailbox.Session = CaptureSession;
         bDebugSource = FParse::Param(FCommandLine::Get(), TEXT("MRFPSVideoFromAdb"));
@@ -273,12 +347,17 @@ void UMRFPSViewCaptureSubsystem::RequestCapture()
         Mailbox.ClearFrame();
         Mailbox.State = bDebugSource ? EState::DebugWaiting : EState::AwaitingConsent;
         NextDebugPollAt = 0.0;
+        ObservedFailedSession = 0;
+        NextFailureCheckAt = 0.0;
+        bAndroidUnavailable = false;
+        Sessions.Start(CaptureSession);
     }
     // Debug source deliberately opens no projection/consent. It is opt-in only.
     if (!bDebugSource && !CallJava("request", CaptureSession))
     {
-        FScopeLock Lock(&Mailbox.Mutex);
-        if (Mailbox.Session == CaptureSession)
+        Sessions.MarkFailed(CaptureSession);
+        FTryMailboxLock Lock(Mailbox.Mutex);
+        if (Lock && Sessions.IsActive(CaptureSession) && Mailbox.Session == CaptureSession)
         {
             Mailbox.State = EState::Unavailable;
             Mailbox.bRequested = false;
@@ -307,11 +386,10 @@ void UMRFPSViewCaptureSubsystem::StopCapture()
     if (!IsInGameThread()) return;
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
     using namespace MRFPSViewCapture;
-    bool bOwned = false;
+    const bool bOwned = Sessions.Retire(CaptureSession);
     {
-        FScopeLock Lock(&Mailbox.Mutex);
-        bOwned = CaptureSession != 0 && CaptureSession == Mailbox.Session;
-        if (bOwned)
+        FTryMailboxLock Lock(Mailbox.Mutex);
+        if (Lock && bOwned && CaptureSession == Mailbox.Session)
         {
             Mailbox.Session = 0; // Late JNI callbacks cannot resurrect this session.
             Mailbox.bRequested = false;
@@ -319,7 +397,8 @@ void UMRFPSViewCaptureSubsystem::StopCapture()
             Mailbox.ClearFrame();
         }
     }
-    if (bOwned && !bDebugSource) CallJava("stop", CaptureSession, false);
+    if (bOwned && !bDebugSource) CallJava("stopForGeneration", CaptureSession);
+    bAndroidUnavailable = false;
 #elif (PLATFORM_WINDOWS || PLATFORM_MAC) && !UE_SERVER
     UGameViewportClient::OnViewportRendered().Remove(DesktopDrawHandle);
     DesktopDrawHandle.Reset();
@@ -336,8 +415,8 @@ bool UMRFPSViewCaptureSubsystem::IsCapturing() const
 {
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
     using namespace MRFPSViewCapture;
-    FScopeLock Lock(&Mailbox.Mutex);
-    return CaptureSession != 0 && CaptureSession == Mailbox.Session && Mailbox.bRequested && IsFresh(Mailbox);
+    return CaptureSession && !HasAndroidCaptureFailure() &&
+        Sessions.Fresh(CaptureSession, FPlatformTime::Seconds(), MaximumFrameAge);
 #elif (PLATFORM_WINDOWS || PLATFORM_MAC) && !UE_SERVER
     return IsDesktopFrameFresh();
 #else
@@ -348,30 +427,37 @@ bool UMRFPSViewCaptureSubsystem::IsCapturing() const
 bool UMRFPSViewCaptureSubsystem::IsCaptureRequestPending() const
 {
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
+    using namespace MRFPSViewCapture;
+    if (!CaptureSession || !Sessions.IsActive(CaptureSession) || HasAndroidCaptureFailure()) return false;
+    if (Sessions.IsReady(CaptureSession)) return false;
+    if (Sessions.IsBusy(CaptureSession)) {
+        bool Pending = false;
+        const bool Known = JavaPendingConsent(Pending);
+        const auto Decision = Sessions.DecideBusy(CaptureSession, Known, Pending);
+        return Decision == MRFPSCaptureSessionGuards::EBusyDecision::Waiting;
+    }
     {
         // request() posts to Android's UI thread. Until it runs, Java can still
         // report no dialog; this current native request must retain its lease.
-        using namespace MRFPSViewCapture;
-        FScopeLock Lock(&Mailbox.Mutex);
+        FTryMailboxLock Lock(Mailbox.Mutex);
+        if (!Lock) return true; // Never block the game thread behind a wedged JNI callback.
         if (CaptureSession!=0 && CaptureSession==Mailbox.Session && Mailbox.bRequested && Mailbox.State==EState::AwaitingConsent) return true;
     }
-    JNIEnv* Env = AndroidJavaEnv::GetJavaEnv();
-    if (Env) {
-        jclass Class = AndroidJavaEnv::FindJavaClass("com/mrfps/capture/MRFPSViewCapture");
-        if (Class && !Env->ExceptionCheck()) {
-            jmethodID Method = Env->GetStaticMethodID(Class, "hasPendingConsent", "()Z");
-            if (Method && !Env->ExceptionCheck()) {
-                const bool Pending = Env->CallStaticBooleanMethod(Class, Method) == JNI_TRUE;
-                if (!Env->ExceptionCheck()) { Env->DeleteLocalRef(Class); return Pending; }
-            }
-        }
-        if (Env->ExceptionCheck()) Env->ExceptionClear();
-        if (Class) Env->DeleteLocalRef(Class);
-    }
-    using namespace MRFPSViewCapture;
-    FScopeLock Lock(&Mailbox.Mutex);
+    bool Pending = false;
+    if (JavaPendingConsent(Pending)) return Pending;
+    FTryMailboxLock Lock(Mailbox.Mutex);
+    if (!Lock) return true;
     return CaptureSession != 0 && CaptureSession == Mailbox.Session &&
         (Mailbox.State == EState::AwaitingConsent || Mailbox.State == EState::Busy);
+#else
+    return false;
+#endif
+}
+
+bool UMRFPSViewCaptureSubsystem::HasCaptureError() const
+{
+#if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
+    return bAndroidUnavailable || HasAndroidCaptureFailure();
 #else
     return false;
 #endif
@@ -381,7 +467,10 @@ FString UMRFPSViewCaptureSubsystem::GetSafeStatus() const
 {
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
     using namespace MRFPSViewCapture;
-    FScopeLock Lock(&Mailbox.Mutex);
+    if (bAndroidUnavailable) return TEXT("映像共有の終了を待って X で再試行。戻らなければアプリを再起動してください。");
+    if (HasAndroidCaptureFailure()) return TEXT("映像共有が停止しました。終了後に X で再試行、戻らなければアプリを再起動してください。");
+    FTryMailboxLock Lock(Mailbox.Mutex);
+    if (!Lock) return TEXT("映像共有の終了を待っています。");
     if (CaptureSession == 0 || CaptureSession != Mailbox.Session) return TEXT("Headset view capture stopped.");
     if (Mailbox.bRequested && IsFresh(Mailbox))
         return Mailbox.bDebug ? TEXT("ADB debug headset view is fresh.") : TEXT("Headset view is being shared.");
@@ -412,13 +501,15 @@ bool UMRFPSViewCaptureSubsystem::DequeueLatestFrame(TArray<uint8>& Jpeg, int32& 
     if (!IsInGameThread()) return false;
 #if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
     using namespace MRFPSViewCapture;
+    if (!CaptureSession || !Sessions.IsActive(CaptureSession) || HasAndroidCaptureFailure()) return false;
     const double Now = FPlatformTime::Seconds();
     if (bDebugSource && CaptureSession != 0 && Now >= NextDebugPollAt)
     {
         NextDebugPollAt = Now + 0.2; // Debug file I/O is bounded to 5 Hz as well.
         CallJava("pollDebug", CaptureSession);
     }
-    FScopeLock Lock(&Mailbox.Mutex);
+    FTryMailboxLock Lock(Mailbox.Mutex);
+    if (!Lock) return false;
     if (Now >= Mailbox.NextDiagnosticAt && CaptureSession != 0) {
         Mailbox.NextDiagnosticAt = Now + 2.0;
         UE_LOG(LogMRFPSViewCapture, Display,

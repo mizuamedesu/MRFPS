@@ -12,9 +12,11 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** GameActivity bridge. No consent Intent or captured frame is stored on disk. */
 public final class MRFPSViewCapture {
@@ -22,6 +24,16 @@ public final class MRFPSViewCapture {
     private static final int REQUEST_CODE = 58481;
     private static final int MAX_JPEG_BYTES = 60 * 1024;
     private static final AtomicLong desiredGeneration = new AtomicLong(0);
+    private static final AtomicLong failedGeneration = new AtomicLong(0);
+    private static final class Owner {
+        final long generation;
+        final WeakReference<Activity> activity;
+        Owner(long generation, Activity activity) {
+            this.generation = generation;
+            this.activity = new WeakReference<>(activity);
+        }
+    }
+    private static final AtomicReference<Owner> owner = new AtomicReference<>();
     // Accessed exclusively on the Activity UI thread. Keep a cancelled request
     // pending until its result arrives, so it cannot be mistaken for a new grant.
     private static volatile long pendingGeneration = 0;
@@ -31,9 +43,14 @@ public final class MRFPSViewCapture {
     /** Read by the native game thread; the OS result remains the only writer of the grant. */
     public static boolean hasPendingConsent() { return pendingGeneration != 0; }
 
+    /** Written only for an actual failed generation, never for a request not yet run on the UI thread. */
+    public static boolean hasCaptureFailure(long generation) {
+        return generation > 0 && failedGeneration.get() == generation;
+    }
+
     private static native void nativeOnState(long generation, int state);
-    private static native void nativeOnFrame(long generation, byte[] jpeg,
-                                             int width, int height, long sourceUtcNanoseconds);
+    private static native boolean nativeOnFrame(long generation, byte[] jpeg,
+                                                int width, int height, long sourceUtcNanoseconds);
 
     static boolean isRequested(long generation) {
         return generation != 0 && desiredGeneration.get() == generation;
@@ -45,17 +62,31 @@ public final class MRFPSViewCapture {
         nativeOnState(generation, state);
     }
 
-    // True means JNI returned, not that the native mailbox/relay accepted it.
+    // True means the current native mailbox accepted the frame. It does not
+    // assert relay delivery or that an inspector displayed the frame.
     static boolean reportFrame(long generation, byte[] jpeg, int width, int height) {
-        if (isRequested(generation)) {
-            nativeOnFrame(generation, jpeg, width, height, 0);
-            return true;
-        }
-        return false;
+        return isRequested(generation) && nativeOnFrame(generation, jpeg, width, height, 0);
     }
 
     static void sessionEnded(long generation) {
-        desiredGeneration.compareAndSet(generation, 0);
+        if (desiredGeneration.compareAndSet(generation, 0)) clearOwner(generation);
+    }
+
+    private static void clearOwner(long generation) {
+        Owner current = owner.get();
+        if (current != null && current.generation == generation) owner.compareAndSet(current, null);
+    }
+
+    // Called from the main watchdog or worker before any potentially blocking
+    // cleanup. A delayed old failure cannot overwrite a newer failed session.
+    static void failSession(long generation) {
+        if (!desiredGeneration.compareAndSet(generation, 0)) return;
+        clearOwner(generation);
+        long previous;
+        do {
+            previous = failedGeneration.get();
+            if (generation <= previous) return;
+        } while (!failedGeneration.compareAndSet(previous, generation));
     }
 
     /** Called by JNI on the game thread; all consent/UI work moves to UI thread. */
@@ -75,6 +106,12 @@ public final class MRFPSViewCapture {
                 reportState(generation, 4);
                 return;
             }
+            if (MRFPSCaptureWorkerGate.isBusy()) {
+                // Do not consume a new one-use consent while an older worker is
+                // still unwinding or permanently blocked in platform/JNI code.
+                reportState(generation, 4);
+                return;
+            }
             final MediaProjectionManager manager = (MediaProjectionManager)
                     activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE);
             if (manager == null) {
@@ -82,6 +119,7 @@ public final class MRFPSViewCapture {
                 return;
             }
             desiredGeneration.set(generation);
+            owner.set(new Owner(generation, activity));
             pendingGeneration = generation;
             try {
                 // Request the default display for the actual headset composite.
@@ -131,10 +169,23 @@ public final class MRFPSViewCapture {
 
     public static void stop(final Activity activity) {
         activity.runOnUiThread(() -> {
-            Log.i(TAG, "MRFPS_CAPTURE_STOP desired=" + desiredGeneration.get());
-            desiredGeneration.set(0);
-            activity.stopService(new Intent(activity, MRFPSViewCaptureService.class));
+            Owner current = owner.get();
+            if (current == null || current.activity.get() != activity) return;
+            Log.i(TAG, "MRFPS_CAPTURE_STOP desired=" + current.generation);
+            if (desiredGeneration.compareAndSet(current.generation, 0))
+                activity.stopService(new Intent(activity, MRFPSViewCaptureService.class));
+            clearOwner(current.generation);
             // Do not reset pendingGeneration; its OS activity result must drain.
+        });
+    }
+
+    /** A delayed stop for an old generation must never terminate a newer one. */
+    public static void stopForGeneration(final Activity activity, final long generation) {
+        activity.runOnUiThread(() -> {
+            if (generation > 0 && desiredGeneration.compareAndSet(generation, 0)) {
+                activity.stopService(new Intent(activity, MRFPSViewCaptureService.class));
+                clearOwner(generation);
+            }
         });
     }
 

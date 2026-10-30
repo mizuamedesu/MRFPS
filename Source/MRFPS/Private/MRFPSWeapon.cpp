@@ -4,6 +4,8 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
 #if !UE_SERVER
+#include "MRFPSViewCaptureSubsystem.h"
+#include "Engine/GameInstance.h"
 #include "Components/WidgetComponent.h"
 #include "Misc/Paths.h"
 #include "Rendering/DrawElements.h"
@@ -124,6 +126,15 @@ void AMRFPSPawn::UpdatePlayerHud()
                     const auto* State=Weak.IsValid() && Weak->GetWorld()?Weak->GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
                     return State && State->bSoloBotSession && !State->bSoloGeometryReady
                         ? FText::FromString(TEXT("障害物スキャン未受信")):FText::GetEmpty();
+                }) ]
+              +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+              [ SNew(STextBlock).Font(Font(15)).ColorAndOpacity(FSlateColor(FLinearColor(1.f,.55f,.3f)))
+                .Text(FText::FromString(TEXT("映像共有停止　Xで再試行 / 直らなければ再起動")))
+                .Visibility_Lambda([Weak]() {
+                    auto* World=Weak.IsValid()?Weak->GetWorld():nullptr;
+                    auto* Instance=World?World->GetGameInstance():nullptr;
+                    const auto* Capture=Instance?Instance->GetSubsystem<UMRFPSViewCaptureSubsystem>():nullptr;
+                    return Capture && Capture->HasCaptureError()?EVisibility::Visible:EVisibility::Collapsed;
                 }) ]
             ];
         RoundHud->SetSlateWidget(RoundHudSlate);

@@ -36,6 +36,9 @@ public:
     /** True while Android still has an unresolved OS consent request. Never grants consent. */
     bool IsCaptureRequestPending() const;
 
+    /** True for a failed or blocked capture, without treating an unstarted request as failed. */
+    bool HasCaptureError() const;
+
     /** Fixed diagnostic text; never exposes tokens, paths, OS intents, or exception contents. */
     UFUNCTION(BlueprintPure, Category="MRFPS|Headset View")
     FString GetSafeStatus() const;
@@ -47,6 +50,13 @@ private:
     uint64 CaptureSession = 0;
     double NextDebugPollAt = 0.0;
     bool bDebugSource = false;
+
+#if PLATFORM_ANDROID && !UE_SERVER && USE_ANDROID_JNI
+    bool HasAndroidCaptureFailure() const;
+    mutable uint64 ObservedFailedSession = 0;
+    mutable double NextFailureCheckAt = 0.0;
+    bool bAndroidUnavailable = false;
+#endif
 
 #if (PLATFORM_WINDOWS || PLATFORM_MAC) && !UE_SERVER
     void OnDesktopViewportRendered(FViewport* DrawnViewport);

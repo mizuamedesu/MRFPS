@@ -18,6 +18,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -32,6 +33,7 @@ import java.io.PrintWriter;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** One foreground, one-use MediaProjection session; no audio and no recording. */
 public final class MRFPSViewCaptureService extends Service {
@@ -71,16 +73,20 @@ public final class MRFPSViewCaptureService extends Service {
     // Safe metadata only. Volatile snapshots also support Service.dump while
     // the capture worker is stalled; no pixels, tokens, Intents or paths appear.
     private volatile String stage = "created";
-    private volatile long startedAtMs, workerAtMs, lastImageAtMs, lastJniAtMs;
+    private volatile long startedAtMs, workerAtMs, lastImageAtMs, lastAcceptedAtMs;
     private volatile long acquiredImages, invalidImages, jpegDrops, jniCalls, jniReturns, skippedGeneration;
+    private volatile long jniAccepted, nativeRejected;
     private volatile long nullImages, duplicateImages, lastImageTimestampNs;
     private volatile int lastWidth, lastHeight, lastPlanes, lastPixelStride, lastRowStride, lastJpegBytes, lastQuality;
     private volatile int surfaceRebinds;
     private long nextSurfaceRecoveryAtMs;
     private long surfaceRecoveryDelayMs = SURFACE_STALL_MS;
+    private final MRFPSCaptureRecoveryPolicy recovery = new MRFPSCaptureRecoveryPolicy();
     private volatile boolean contentVisible = true;
     private volatile boolean waitingForOutput;
     private volatile int serviceStartId;
+    private volatile boolean ownsWorkerGate, workerExited, serviceDestroyed;
+    private final AtomicBoolean workerGateFinished = new AtomicBoolean();
     private long lastDiagnosticMs;
     private long observedWorkerAtMs, stalledObservedAtMs;
 
@@ -119,8 +125,7 @@ public final class MRFPSViewCaptureService extends Service {
                 lastDiagnosticMs = now;
                 Log.i(TAG, diagnostics("heartbeat", now));
             }
-            boolean busy = "acquire".equals(stage) || "pixels".equals(stage) || "jpeg".equals(stage)
-                    || "jni".equals(stage) || "projection_start".equals(stage);
+            boolean busy = MRFPSCaptureRecoveryPolicy.watchdogBusy(stage);
             if (!busy || workerAtMs == 0 || now - workerAtMs < WORKER_STALL_MS) {
                 stalledObservedAtMs = 0;
             } else if (stalledObservedAtMs == 0 || observedWorkerAtMs != workerAtMs) {
@@ -131,8 +136,9 @@ public final class MRFPSViewCaptureService extends Service {
             } else if (now - stalledObservedAtMs >= 3_000) {
                 Log.w(TAG, diagnostics("worker_timeout", now));
                 stopRequested = true;
-                MRFPSViewCapture.sessionEnded(generation);
-                stopProjectionFromMain();
+                // No JNI and no MediaProjection.stop() Binder call on this UI
+                // thread: either can be blocked by the worker/platform.
+                MRFPSViewCapture.failSession(generation);
                 stopForeground(STOP_FOREGROUND_REMOVE);
                 stopSelf();
                 // Native freshness naturally expires. Do not block the main
@@ -145,19 +151,41 @@ public final class MRFPSViewCaptureService extends Service {
 
     @Override public IBinder onBind(Intent intent) { return null; }
 
+    private boolean keepActiveOnInvalidStart(int startId) {
+        if (thread == null || stopRequested || released || !MRFPSViewCapture.isRequested(generation)) return false;
+        // Even an ignored START advances Android's startId. Remember it so the
+        // eventual cleanup can stop this same service after the worker ends.
+        serviceStartId = Math.max(serviceStartId, startId);
+        Log.i(TAG, "MRFPS_CAPTURE_IGNORED_STALE_START generation=" + generation);
+        return true;
+    }
+
+    private static Uri stopIdentity(long generation) {
+        // Intent extras are excluded from PendingIntent identity. The full
+        // 64-bit generation in data keeps an old notification token separate.
+        return Uri.parse("mrfps-capture://stop/" + generation);
+    }
+
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null || ACTION_STOP.equals(intent.getAction())) {
-            stopSelf();
+        if (intent == null) {
+            if (!keepActiveOnInvalidStart(startId)) stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        if (ACTION_STOP.equals(intent.getAction())) {
+            final long requestedStop = intent.getLongExtra(EXTRA_GENERATION, 0);
+            if (requestedStop == generation && MRFPSViewCapture.isRequested(generation) &&
+                    stopIdentity(generation).equals(intent.getData())) stopSelf();
+            else if (!keepActiveOnInvalidStart(startId)) stopSelf(startId);
             return START_NOT_STICKY;
         }
         final long requested = intent.getLongExtra(EXTRA_GENERATION, 0);
         if (!ACTION_START.equals(intent.getAction()) || !MRFPSViewCapture.isRequested(requested)) {
-            stopSelf(startId);
+            if (!keepActiveOnInvalidStart(startId)) stopSelf(startId);
             return START_NOT_STICKY;
         }
         if (thread != null) {
             if (requested == generation && !stopRequested && !released) {
-                serviceStartId = startId;
+                serviceStartId = Math.max(serviceStartId, startId);
                 Log.i(TAG, "MRFPS_CAPTURE_DUPLICATE_START generation=" + requested);
                 return START_NOT_STICKY;
             }
@@ -180,6 +208,14 @@ public final class MRFPSViewCaptureService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (!MRFPSCaptureWorkerGate.tryStart()) {
+            MRFPSViewCapture.reportState(generation, 4);
+            MRFPSViewCapture.sessionEnded(generation);
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        ownsWorkerGate = true;
+        boolean threadStarted = false;
         try {
             Notification notification = createNotification();
             if (Build.VERSION.SDK_INT >= 29) {
@@ -188,13 +224,21 @@ public final class MRFPSViewCaptureService extends Service {
             } else {
                 startForeground(NOTIFICATION_ID, notification);
             }
-            thread = new HandlerThread("MRFPSHeadsetView");
+            thread = new HandlerThread("MRFPSHeadsetView") {
+                @Override public void run() {
+                    try { super.run(); }
+                    finally { workerExited = true; finishWorkerGateIfComplete(); }
+                }
+            };
             thread.start();
+            threadStarted = true;
             worker = new Handler(thread.getLooper());
             startedAtMs = workerAtMs = SystemClock.elapsedRealtime();
             main.postDelayed(watchdog, 1_000);
             worker.post(() -> beginProjection(resultCode, resultData));
         } catch (RuntimeException failure) {
+            if (threadStarted && thread != null) thread.quitSafely();
+            else { workerExited = true; finishWorkerGateIfComplete(); }
             MRFPSViewCapture.reportState(generation, 4);
             MRFPSViewCapture.sessionEnded(generation);
             stopSelf();
@@ -214,7 +258,9 @@ public final class MRFPSViewCaptureService extends Service {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         manager.createNotificationChannel(new NotificationChannel(CHANNEL,
                 "Headset screen sharing", NotificationManager.IMPORTANCE_LOW));
-        Intent stop = new Intent(this, MRFPSViewCaptureService.class).setAction(ACTION_STOP);
+        Intent stop = new Intent(this, MRFPSViewCaptureService.class).setAction(ACTION_STOP)
+                .setData(stopIdentity(generation))
+                .putExtra(EXTRA_GENERATION, generation);
         PendingIntent stopIntent = PendingIntent.getService(this, NOTIFICATION_ID, stop,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Notification.Builder builder = new Notification.Builder(this, CHANNEL);
@@ -271,7 +317,11 @@ public final class MRFPSViewCaptureService extends Service {
             stage = "idle";
             workerAtMs = SystemClock.elapsedRealtime();
             Log.i(TAG, diagnostics("projection_ready", workerAtMs));
+            stage = "jni";
             MRFPSViewCapture.reportState(generation, 2);
+            workerAtMs = SystemClock.elapsedRealtime();
+            if (stopRequested || !MRFPSViewCapture.isRequested(generation)) { release(0); return; }
+            stage = "idle";
             worker.post(pump);
         } catch (RuntimeException failure) {
             Log.w(TAG, diagnostics("projection_error", SystemClock.elapsedRealtime()));
@@ -291,10 +341,10 @@ public final class MRFPSViewCaptureService extends Service {
             if (timestamp > 0 && timestamp <= lastImageTimestampNs) { ++duplicateImages; return; }
             if (timestamp > 0) lastImageTimestampNs = timestamp;
             lastImageAtMs = SystemClock.elapsedRealtime();
-            surfaceRecoveryDelayMs = SURFACE_STALL_MS;
-            nextSurfaceRecoveryAtMs = lastImageAtMs + SURFACE_STALL_MS;
             lastWidth = image.getWidth(); lastHeight = image.getHeight(); lastPlanes = image.getPlanes().length;
-            if (lastWidth != WIDTH || lastHeight != HEIGHT || lastPlanes != 1) { ++invalidImages; return; }
+            if (lastWidth != WIDTH || lastHeight != HEIGHT || lastPlanes != 1) {
+                ++invalidImages; recovery.badOutput(lastImageAtMs); return;
+            }
             Image.Plane plane = image.getPlanes()[0];
             ByteBuffer rgba = plane.getBuffer();
             int pixelStride = plane.getPixelStride();
@@ -302,7 +352,9 @@ public final class MRFPSViewCaptureService extends Service {
             lastPixelStride = pixelStride; lastRowStride = rowStride;
             int base = rgba.position();
             long lastByte = (long) base + (HEIGHT - 1L) * rowStride + (WIDTH - 1L) * pixelStride + 3;
-            if (pixelStride != 4 || rowStride < WIDTH * 4 || lastByte >= rgba.limit()) { ++invalidImages; return; }
+            if (pixelStride != 4 || rowStride < WIDTH * 4 || lastByte >= rgba.limit()) {
+                ++invalidImages; recovery.badOutput(lastImageAtMs); return;
+            }
             stage = "pixels";
             rgba.order(ByteOrder.BIG_ENDIAN);
             for (int y = 0; y < HEIGHT; ++y) {
@@ -335,10 +387,18 @@ public final class MRFPSViewCaptureService extends Service {
                     }
                     stage = "jni";
                     ++jniCalls;
-                    if (MRFPSViewCapture.reportFrame(generation, jpeg.toByteArray(), WIDTH, HEIGHT)) {
-                        ++jniReturns;
-                        lastJniAtMs = SystemClock.elapsedRealtime();
-                        if (jniReturns == 1) Log.i(TAG, diagnostics("first_jni_return", lastJniAtMs));
+                    boolean accepted = MRFPSViewCapture.reportFrame(generation, jpeg.toByteArray(), WIDTH, HEIGHT);
+                    ++jniReturns;
+                    if (accepted) {
+                        ++jniAccepted;
+                        lastAcceptedAtMs = SystemClock.elapsedRealtime();
+                        recovery.acceptedOutput();
+                        surfaceRecoveryDelayMs = SURFACE_STALL_MS;
+                        nextSurfaceRecoveryAtMs = lastAcceptedAtMs + SURFACE_STALL_MS;
+                        if (jniAccepted == 1) Log.i(TAG, diagnostics("first_native_accept", lastAcceptedAtMs));
+                    } else if (!stopRequested && MRFPSViewCapture.isRequested(generation)) {
+                        ++nativeRejected;
+                        recovery.badOutput(SystemClock.elapsedRealtime());
                     } else ++skippedGeneration;
                     return;
                 }
@@ -346,6 +406,7 @@ public final class MRFPSViewCaptureService extends Service {
             jpegQualityIndex = JPEG_QUALITIES.length - 1;
             qualityRecoveryFrames = 0;
             ++jpegDrops;
+            recovery.badOutput(SystemClock.elapsedRealtime());
         } catch (RuntimeException failure) {
             Log.w(TAG, diagnostics("frame_error", SystemClock.elapsedRealtime()));
             release(4);
@@ -354,13 +415,23 @@ public final class MRFPSViewCaptureService extends Service {
 
     private void checkProgress() {
         long now = SystemClock.elapsedRealtime();
-        long lastOutput = lastJniAtMs == 0 ? startedAtMs : lastJniAtMs;
+        long lastOutput = lastAcceptedAtMs == 0 ? startedAtMs : lastAcceptedAtMs;
         // OS-authorized projection can legitimately stop producing while unworn
         // or covered by system UI. Keep the same grant/display and poll; native
         // freshness expires independently. Silence alone never revokes consent.
         waitingForOutput = now - lastOutput >= SURFACE_STALL_MS;
+        if (stopRequested || !MRFPSViewCapture.isRequested(generation)) { release(0); return; }
         long lastImage = lastImageAtMs == 0 ? startedAtMs : lastImageAtMs;
-        if (now - lastImage < SURFACE_STALL_MS || now < nextSurfaceRecoveryAtMs || !contentVisible || display == null) return;
+        if (!contentVisible || display == null) { recovery.suspend(); return; }
+        boolean eligible = now >= nextSurfaceRecoveryAtMs;
+        MRFPSCaptureRecoveryPolicy.Decision decision = recovery.decide(now, true, eligible);
+        if (decision == MRFPSCaptureRecoveryPolicy.Decision.STOP) {
+            Log.w(TAG, diagnostics("bad_output_exhausted", now));
+            release(4);
+            return;
+        }
+        if (decision != MRFPSCaptureRecoveryPolicy.Decision.REBIND &&
+                (now - lastImage < SURFACE_STALL_MS || !eligible)) return;
         // Another system cast can temporarily take compositor output without
         // revoking this projection. Retry after it ends, using bounded backoff
         // and at most two readers during replacement; silence never re-prompts.
@@ -373,11 +444,18 @@ public final class MRFPSViewCaptureService extends Service {
             stage = "surface_rebind";
             if (surfaceRebinds < Integer.MAX_VALUE) ++surfaceRebinds;
             replacement = ImageReader.newInstance(WIDTH, HEIGHT, PixelFormat.RGBA_8888, 2);
+            if (stopRequested || !MRFPSViewCapture.isRequested(generation)) {
+                replacement.close(); replacement = null; release(0); return;
+            }
             display.setSurface(replacement.getSurface());
+            if (stopRequested || !MRFPSViewCapture.isRequested(generation)) {
+                replacement.close(); replacement = null; release(0); return;
+            }
             ImageReader previous = reader;
             reader = replacement;
             replacement = null;
             if (previous != null) previous.close();
+            if (stopRequested || !MRFPSViewCapture.isRequested(generation)) { release(0); return; }
             lastImageTimestampNs = 0; // A replacement producer may use a new time base.
             Log.i(TAG, diagnostics("surface_rebound", now));
         } catch (RuntimeException failure) {
@@ -388,6 +466,9 @@ public final class MRFPSViewCaptureService extends Service {
             // A platform can reject rebinding while retaining a valid projection.
             // Keep the existing/new selected reader and wait for actual frames;
             // retry with bounded backoff, preserving the user's current consent.
+        } finally {
+            if (!released) stage = "idle";
+            workerAtMs = SystemClock.elapsedRealtime();
         }
     }
 
@@ -395,10 +476,12 @@ public final class MRFPSViewCaptureService extends Service {
         return "MRFPS_CAPTURE event=" + event + " generation=" + generation
                 + " requested=" + MRFPSViewCapture.isRequested(generation) + " released=" + released
                 + " stage=" + stage + " workerAgeMs=" + age(now, workerAtMs)
-                + " imageAgeMs=" + age(now, lastImageAtMs) + " jniAgeMs=" + age(now, lastJniAtMs)
+                + " imageAgeMs=" + age(now, lastImageAtMs) + " acceptedAgeMs=" + age(now, lastAcceptedAtMs)
                 + " images=" + acquiredImages + " null=" + nullImages + " invalid=" + invalidImages
                 + " duplicate=" + duplicateImages + " jpegDrop=" + jpegDrops
-                + " jniEnter=" + jniCalls + " jniReturn=" + jniReturns + " skipped=" + skippedGeneration
+                + " jniEnter=" + jniCalls + " jniReturn=" + jniReturns + " accepted=" + jniAccepted
+                + " nativeRejected=" + nativeRejected + " skipped=" + skippedGeneration
+                + " badRebinds=" + recovery.badOutputRebinds()
                 + " rebinds=" + surfaceRebinds + " visible=" + contentVisible + " waiting=" + waitingForOutput
                 + " layout=" + lastWidth + "x" + lastHeight + "/" + lastPlanes
                 + " strides=" + lastPixelStride + "/" + lastRowStride
@@ -407,18 +490,14 @@ public final class MRFPSViewCaptureService extends Service {
 
     private static long age(long now, long then) { return then == 0 ? -1 : now - then; }
 
-    @Override protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
-        writer.println(diagnostics("dumpsys", SystemClock.elapsedRealtime()));
-        writer.println("jniReturn means call completed, not native mailbox/relay acceptance; no frame data logged.");
+    private void finishWorkerGateIfComplete() {
+        if (ownsWorkerGate && workerExited && serviceDestroyed && workerGateFinished.compareAndSet(false, true))
+            MRFPSCaptureWorkerGate.finish();
     }
 
-    private void stopProjectionFromMain() {
-        MediaProjection active = projection;
-        if (active != null) {
-            try { active.stop(); } catch (RuntimeException ignored) {
-                Log.w(TAG, "MRFPS_CAPTURE projection_stop_error generation=" + generation);
-            }
-        }
+    @Override protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
+        writer.println(diagnostics("dumpsys", SystemClock.elapsedRealtime()));
+        writer.println("accepted means native mailbox acceptance, not relay delivery or display; no frame data logged.");
     }
 
     /** Worker-thread-only, idempotent for callback/onDestroy/error races. */
@@ -428,8 +507,20 @@ public final class MRFPSViewCaptureService extends Service {
         stopRequested = true;
         stage = "release";
         Log.i(TAG, diagnostics("release_" + status, SystemClock.elapsedRealtime()));
+        // Publish terminal state and request foreground-service shutdown before
+        // any driver/Binder cleanup that could itself block indefinitely.
+        if (status != 0) MRFPSViewCapture.failSession(generation);
+        else MRFPSViewCapture.sessionEnded(generation);
         main.removeCallbacks(watchdog);
         if (worker != null) worker.removeCallbacks(pump);
+        final long endedGeneration = generation;
+        main.post(() -> {
+            if (!released || generation != endedGeneration) return;
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            // Read the latest startId on the UI thread: a stale intent may have
+            // been ignored while this worker was beginning its release.
+            stopSelfResult(serviceStartId);
+        });
         if (display != null) {
             try { display.release(); } catch (RuntimeException ignored) { Log.w(TAG, "MRFPS_CAPTURE display_release_error"); }
             display = null;
@@ -452,12 +543,6 @@ public final class MRFPSViewCaptureService extends Service {
         }
         pixels = null;
         jpeg = null;
-        MRFPSViewCapture.sessionEnded(generation);
-        final int endedStartId = serviceStartId;
-        main.post(() -> {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelfResult(endedStartId);
-        });
         if (thread != null) thread.quitSafely();
         // Cleanup/stop is already scheduled even if a native mutex stalls this.
         MRFPSViewCapture.reportState(generation, status);
@@ -465,9 +550,12 @@ public final class MRFPSViewCaptureService extends Service {
 
     @Override public void onDestroy() {
         stopRequested = true;
-        MRFPSViewCapture.sessionEnded(generation);
+        if (!released) MRFPSViewCapture.failSession(generation);
+        serviceDestroyed = true;
+        finishWorkerGateIfComplete();
         main.removeCallbacks(watchdog);
-        stopProjectionFromMain();
+        // Cleanup is posted to the owning worker. If a platform call never
+        // returns, the worker lease stays occupied and new captures fail closed.
         if (worker != null) worker.post(() -> release(0));
         else {
             MRFPSViewCapture.sessionEnded(generation);

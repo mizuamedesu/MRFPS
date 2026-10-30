@@ -14,6 +14,10 @@
               dst="$S(BuildDir)/src/com/mrfps/capture/MRFPSViewCapture.java" />
     <copyFile src="$S(PluginDir)/Android/Java/com/mrfps/capture/MRFPSViewCaptureService.java"
               dst="$S(BuildDir)/src/com/mrfps/capture/MRFPSViewCaptureService.java" />
+    <copyFile src="$S(PluginDir)/Android/Java/com/mrfps/capture/MRFPSCaptureRecoveryPolicy.java"
+              dst="$S(BuildDir)/src/com/mrfps/capture/MRFPSCaptureRecoveryPolicy.java" />
+    <copyFile src="$S(PluginDir)/Android/Java/com/mrfps/capture/MRFPSCaptureWorkerGate.java"
+              dst="$S(BuildDir)/src/com/mrfps/capture/MRFPSCaptureWorkerGate.java" />
   </resourceCopies>
   <gameActivityOnActivityResultAdditions>
     <insert>
