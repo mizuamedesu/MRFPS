@@ -1,7 +1,10 @@
 import copy
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -26,14 +29,19 @@ class FakeFlash:
                                  "ports": [{"container_port": 7777, "protocol": "udp", "service_port": 30000}]}}
         self.updates = 0
         self.ambiguous = False
+        self.timeout_after_accept = False
+        self.list_calls = 0
 
     def call(self, *args, payload=None):
         if args[:2] == ("flash", "list"):
+            self.list_calls += 1
             return [copy.deepcopy(self.service)]
         if args[:2] == ("flash", "update"):
             self.updates += 1
             self.service["spec"] = copy.deepcopy(payload["spec"])
             self.service["generation"] += 1
+            if self.timeout_after_accept:
+                raise subprocess.TimeoutExpired("fixture", 1)
             if self.ambiguous:
                 raise ValueError("HETEROCLOUD_COMMAND_FAILED_AUTH_OR_OPERATION_REQUIRED")
             return {}
@@ -68,6 +76,96 @@ class OwnedFlashUpdateTests(unittest.TestCase):
             update(self.client, self.path, IMAGE, KEY, CIDRS)
         self.assertEqual(update(self.client, self.path, IMAGE, KEY, CIDRS)["operation"], "pending-reconciled")
         self.assertEqual(self.client.updates, 1)
+
+    def test_timeout_after_accept_is_sanitized_and_reconciled_without_retry(self):
+        self.client.timeout_after_accept = True
+        with self.assertRaisesRegex(ValueError, "FLASH_UPDATE_OUTCOME_UNKNOWN"):
+            update(self.client, self.path, IMAGE, KEY, CIDRS)
+        self.assertEqual(update(self.client, self.path, IMAGE, KEY, CIDRS)["operation"], "pending-reconciled")
+        self.assertEqual(self.client.updates, 1)
+
+    def test_simultaneous_calls_are_locked_and_do_not_send_twice(self):
+        entered, release = threading.Event(), threading.Event()
+        original = self.client.call
+        def slow(*args, **kwargs):
+            if args[:2] == ("flash", "list") and not entered.is_set():
+                entered.set()
+                if not release.wait(5): raise RuntimeError("fixture wait timed out")
+            return original(*args, **kwargs)
+        self.client.call = slow
+        results = []
+        def first():
+            try: results.append(update(self.client, self.path, IMAGE, KEY, CIDRS))
+            except Exception as exc: results.append(exc)
+        thread = threading.Thread(target=first)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            with self.assertRaisesRegex(ValueError, "FLASH_STATE_LOCK_HELD"):
+                update(self.client, self.path, IMAGE, KEY, CIDRS)
+        finally:
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], dict)
+        self.assertEqual(results[0]["operation"], "update-accepted")
+        self.assertEqual(self.client.updates, 1)
+
+    def test_lock_is_exclusive_across_processes_and_released_on_exit(self):
+        code = ("import sys; from pathlib import Path; from update_owned_flash import state_lock; "
+                "lock=state_lock(Path(sys.argv[1])); lock.__enter__(); "
+                "print('ready',flush=True); sys.stdin.readline(); lock.__exit__(None,None,None)")
+        child = subprocess.Popen([sys._base_executable, "-c", code, str(self.path)],
+                                 cwd=Path(__file__).resolve().parent,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            ready=child.stdout.readline().strip()
+            if ready != "ready":
+                _, stderr=child.communicate(timeout=5)
+                self.fail("lock fixture failed to start: " + stderr[-500:])
+            with self.assertRaisesRegex(ValueError, "FLASH_STATE_LOCK_HELD"):
+                update(self.client, self.path, IMAGE, KEY, CIDRS)
+            self.assertEqual(self.client.updates, 0)
+        finally:
+            try:
+                child.communicate(input="\n" if child.poll() is None else None, timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate(timeout=5)
+        self.assertEqual(child.returncode, 0)
+        self.assertEqual(update(self.client, self.path, IMAGE, KEY, CIDRS)["operation"], "update-accepted")
+        self.assertEqual(self.client.updates, 1)
+
+    def test_drift_or_generation_change_between_reads_prevents_put(self):
+        for change in ("spec", "generation"):
+            with self.subTest(change=change):
+                client=FakeFlash()
+                state={**self.state, "observed_spec_sha256":digest(client.service["spec"])}
+                self.path.write_text(json.dumps(state), encoding="utf-8")
+                original=client.call
+                def mutate(*args, **kwargs):
+                    if args[:2] == ("flash", "list") and client.list_calls == 1:
+                        if change == "spec": client.service["spec"]["env"]["RACE"] = "changed"
+                        else: client.service["generation"] += 1
+                    return original(*args, **kwargs)
+                client.call=mutate
+                with self.assertRaisesRegex(ValueError, "FLASH_DRIFT_BEFORE_UPDATE"):
+                    update(client, self.path, IMAGE, KEY, CIDRS)
+                self.assertEqual(client.updates,0)
+                self.assertNotIn("pending_spec_sha256",json.loads(self.path.read_text(encoding="utf-8")))
+
+    def test_service_and_deployment_identity_and_generation_are_required(self):
+        for field,value in (("service_id",None),("service_id","not-uuid"),("deployment_id",None),("project_id",None)):
+            with self.subTest(field=field,value=value):
+                self.path.write_text(json.dumps({**self.state,field:value}),encoding="utf-8")
+                with self.assertRaisesRegex(ValueError,"OWNED_FLASH_IDENTITY_INVALID"):
+                    update(self.client,self.path,IMAGE,KEY,CIDRS)
+                self.assertEqual(self.client.updates,0)
+        self.path.write_text(json.dumps(self.state),encoding="utf-8")
+        self.client.service["generation"]=None
+        with self.assertRaisesRegex(ValueError,"FLASH_GENERATION_UNVERIFIED"):
+            update(self.client,self.path,IMAGE,KEY,CIDRS)
 
     def test_existing_drift_or_non_direct_mode_fails_closed(self):
         self.client.service["spec"]["env"]["OTHER"] = "changed"

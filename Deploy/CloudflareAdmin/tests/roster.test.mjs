@@ -55,11 +55,11 @@ function fixture(t) {
 test('read requires Basic and writes require a valid HMAC over the exact body',async t=>{
   const f=fixture(t);
   assert.equal((await f.read(false)).status,401);
-  assert.deepEqual(await f.read(),{status:200,body:{online:false,participants:[]}});
+  assert.deepEqual(await f.read(),{status:200,body:{online:false,instance:null,participants:[]}});
   assert.equal((await f.publish(f.data(), 'b'.repeat(64))).status,401);
-  assert.deepEqual(await f.read(),{status:200,body:{online:false,participants:[]}});
+  assert.deepEqual(await f.read(),{status:200,body:{online:false,instance:null,participants:[]}});
   assert.equal((await f.publish(f.data())).status,200);
-  assert.equal((await f.read()).body.online,true);
+  assert.equal((await f.read()).body.online,true); assert.equal((await f.read()).body.instance,a);
 });
 
 test('signature shape and HMAC are checked before JSON parsing',async t=>{
@@ -82,7 +82,7 @@ test('only measured fresh pings are displayed and stale server status expires',a
   assert.equal(view.participants[3].role,'bot'); assert.equal(view.participants[3].ping_ms,null);
   now=base+5001; view=(await f.read()).body;
   assert.equal(view.online,true); assert(view.participants.every(p=>p.ping_ms===null));
-  now=base+10001; assert.deepEqual((await f.read()).body,{online:false,participants:[]});
+  now=base+10001; assert.deepEqual((await f.read()).body,{online:false,instance:null,participants:[]});
 });
 
 test('concurrent duplicate and reordered writes cannot roll back the roster',async t=>{
@@ -99,6 +99,7 @@ test('concurrent duplicate and reordered writes cannot roll back the roster',asy
   assert.equal((await f.publish(f.data(b,1,[f.row(3,'admin')]))).status,200);
   assert.equal((await f.publish(f.data(a,999,[f.row(1,'player')]))).status,409);
   assert.equal((await f.read()).body.participants[0].id,3);
+  assert.equal((await f.read()).body.instance,b);
   now=base+86_410_000;
   assert.equal((await f.publish(f.data(b,2,[f.row(3,'admin')]))).status,200);
   assert.equal((await f.publish(f.data(a,1000,[f.row(1,'player')]))).status,409);

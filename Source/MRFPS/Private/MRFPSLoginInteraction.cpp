@@ -54,13 +54,16 @@ void UMRFPSLoginInteraction::CancelPointer()
 {
     // SButton clears its pressed state on capture loss without firing OnClicked.
     // Do not synthesize mouse-up: it could activate the last hovered button.
+    TSharedPtr<FSlateUser> OwnedUser;
     if (PressedKeys.Contains(EKeys::LeftMouseButton) && FSlateApplication::IsInitialized() && VirtualUser.IsValid()) {
         if (auto User=FSlateApplication::Get().GetUser(VirtualUser->GetUserIndex())) {
             auto Owned=CapturedByThisPointer.Pin();
             if (Owned && User->GetPointerCaptor(static_cast<uint32>(PointerIndex))==Owned)
-                User->ReleaseCapture(static_cast<uint32>(PointerIndex));
+                OwnedUser=User;
         }
     }
+    // Clear our ownership first: capture-lost and mouse-leave delegates may
+    // re-enter this component. Never cancel another component's capture.
     CapturedByThisPointer.Reset();
     PressedKeys.Remove(EKeys::LeftMouseButton);
     LastWidgetPath=FWeakWidgetPath();
@@ -69,4 +72,17 @@ void UMRFPSLoginInteraction::CancelPointer()
     bIsHoveredWidgetInteractable=false;
     bIsHoveredWidgetFocusable=false;
     bIsHoveredWidgetHitTestVisible=false;
+    if (OwnedUser && FSlateApplication::IsInitialized() && VirtualUser.IsValid()) {
+        const uint32 Index=static_cast<uint32>(PointerIndex);
+        OwnedUser->ReleaseCapture(Index);
+        if (!OwnedUser->GetPointerCaptor(Index)) {
+            // UE's ReleaseCapture records the old captor path as the last
+            // hover even if the pointer already left it while captured. An
+            // empty synthetic move emits leave without a click and resets that
+            // path; the next real trace can then enter the correct control.
+            const FPointerEvent Event(VirtualUser->GetUserIndex(),Index,LocalHitLocation,LocalHitLocation,
+                PressedKeys,FKey(),0.f,ModifierKeys);
+            FSlateApplication::Get().RoutePointerMoveEvent(FWidgetPath(),Event,true);
+        }
+    }
 }

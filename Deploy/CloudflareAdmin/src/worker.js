@@ -225,15 +225,15 @@ export class DeviceCodes extends DurableObject {
     });
   }
   roster() {
-    const now=Date.now(), row=this.ctx.storage.sql.exec('SELECT received_at_ms,captured_at_ms,participants FROM roster_current WHERE singleton=1').toArray()[0];
+    const now=Date.now(), row=this.ctx.storage.sql.exec('SELECT instance,received_at_ms,captured_at_ms,participants FROM roster_current WHERE singleton=1').toArray()[0];
     if (!row || now < row.received_at_ms || now-row.received_at_ms > rosterTtlMs ||
-        now < row.captured_at_ms || now-row.captured_at_ms > rosterTtlMs) return {online:false,participants:[]};
+        now < row.captured_at_ms || now-row.captured_at_ms > rosterTtlMs) return {online:false,instance:null,participants:[]};
     const participants=JSON.parse(row.participants).map(({ping_at_ms,...entry}) => {
       const remaining=ping_at_ms !== null && now >= ping_at_ms ? pingTtlMs-(now-ping_at_ms) : -1;
       return {...entry,ping_ms:remaining>0?entry.ping_ms:null,ping_expires_in_ms:remaining>0?remaining:null};
     });
     const expires_in_ms=Math.min(rosterTtlMs-(now-row.received_at_ms),rosterTtlMs-(now-row.captured_at_ms));
-    return {online:true,expires_in_ms,participants};
+    return {online:true,instance:row.instance,expires_in_ms,participants};
   }
   async publish(data) {
     // Hash the entire immutable issuance in the DO, not a client-supplied hash.

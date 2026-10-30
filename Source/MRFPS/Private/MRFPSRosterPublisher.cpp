@@ -6,6 +6,7 @@
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
+#include "HAL/PlatformProcess.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
@@ -54,6 +55,10 @@ void FMRFPSRosterPublisher::Tick(UWorld* World, double Now)
         const auto Response=Pending->GetResponse();
         if (Pending->GetStatus()!=EHttpRequestStatus::Succeeded || !Response.IsValid() || Response->GetResponseCode()!=200)
             UE_LOG(LogMRFPSRoster,Warning,TEXT("MRFPS_ROSTER_PUBLISH_FAILED http=%d"),Response.IsValid()?Response->GetResponseCode():0);
+        else if (!bLoggedSuccess) {
+            bLoggedSuccess=true;
+            UE_LOG(LogMRFPSRoster,Display,TEXT("MRFPS_ROSTER_PUBLISH_OK instance=%s pid=%u"),*Instance,FPlatformProcess::GetCurrentProcessId());
+        }
         Pending.Reset();
     }
     const int64 CapturedAt=FDateTime::UtcNow().ToUnixTimestamp()*1000;

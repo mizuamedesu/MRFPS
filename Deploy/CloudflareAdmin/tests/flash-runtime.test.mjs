@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { ownedReadyService, oneReadyPod, parseTerminalOutput, shellProbe, specDigest } from '../flash-runtime.mjs';
+import { ownedReadyService, oneReadyPod, parseTerminalOutput, shellProbe, specDigest, stableRosterInstance } from '../flash-runtime.mjs';
 
 const { WebSocketServer } = createRequire(import.meta.url)('ws');
 const fingerprint = 'a'.repeat(64);
@@ -42,10 +42,22 @@ test('requires exactly one running, ready pod', () => {
 
 test('parses complete runtime markers, exposes failed health and rejects ambiguity', () => {
   const evidence = `__MRFPS_HEALTH__0\r\n# __MRFPS_START__32:678\r\n# __MRFPS_FP__${fingerprint}\r\n# __MRFPS_DONE__\r\n`;
-  assert.deepEqual(parseTerminalOutput('shell command echo\r\n' + evidence), {fingerprint,pid:'32',start_ticks:'678',health_exit_code:0});
+  assert.deepEqual(parseTerminalOutput('shell command echo\r\n' + evidence), {fingerprint,pid:'32',start_ticks:'678',health_exit_code:0,roster_instance:null});
   assert.equal(parseTerminalOutput(evidence.replace('__MRFPS_HEALTH__0', '__MRFPS_HEALTH__1')).health_exit_code, 1);
   assert.throws(() => parseTerminalOutput(evidence.replace('__MRFPS_DONE__', 'missing')));
   assert.throws(() => parseTerminalOutput(evidence + `__MRFPS_FP__${fingerprint}\r\n`));
+});
+
+test('roster proof requires one matching PID and identical instances on both probes', () => {
+  const id='c'.repeat(32);
+  const evidence=`__MRFPS_HEALTH__0\n__MRFPS_START__32:678\n__MRFPS_FP__${fingerprint}\n__MRFPS_ROSTER__${id}:32\n__MRFPS_DONE__\n`;
+  const first=parseTerminalOutput(evidence);
+  assert.equal(first.roster_instance,id);
+  assert.equal(stableRosterInstance(first,parseTerminalOutput(evidence)),id);
+  const otherPid=parseTerminalOutput(evidence.replace(`${id}:32`,`${id}:33`));
+  assert.equal(otherPid.roster_instance,null); assert.equal(stableRosterInstance(first,otherPid),null);
+  assert.equal(stableRosterInstance(first,parseTerminalOutput(evidence.replace(id,'d'.repeat(32)))),null);
+  assert.equal(parseTerminalOutput(evidence.replace('__MRFPS_DONE__',`__MRFPS_ROSTER__${id}:32\n__MRFPS_DONE__`)).roster_instance,null);
 });
 
 test('websocket probe sends a binary command and handles fragmented terminal output', async () => {
@@ -61,6 +73,6 @@ test('websocket probe sends a binary command and handles fragmented terminal out
       });
     });
     const result = await shellProbe(`ws://127.0.0.1:${server.address().port}`, {});
-    assert.deepEqual(result, {fingerprint,pid:'32',start_ticks:'678',health_exit_code:0});
+    assert.deepEqual(result, {fingerprint,pid:'32',start_ticks:'678',health_exit_code:0,roster_instance:null});
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

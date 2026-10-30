@@ -18,5 +18,6 @@ private:
     FString Instance;
     uint64 Sequence = 0;
     double NextPublishAt = 0;
+    bool bLoggedSuccess = false;
     TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> Pending;
 };

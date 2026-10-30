@@ -22,6 +22,7 @@ const SHELL_COMMAND = [
   'p="$(pidof MRFPSServer MRFPSServer-Linux-Shipping 2>/dev/null | awk \'{print $1}\')"',
   'if [ -n "$p" ]; then awk -v n="$p" \'{printf "__MRFPS_START__%s:%s\\n",n,$22}\' "/proc/$p/stat"; fi',
   'grep -oE \'MRFPS_AUTH_TRANSPORT_READY fingerprint=[0-9a-f]{64}\' /opt/mrfps/MRFPS/Saved/Logs/MRFPS.log | tail -n 1 | sed \'s/^MRFPS_AUTH_TRANSPORT_READY fingerprint=/__MRFPS_FP__/\'',
+  `if [ -n "$p" ]; then grep -oE 'MRFPS_ROSTER_PUBLISH_OK instance=[a-f0-9]{32} pid=[0-9]+' /opt/mrfps/MRFPS/Saved/Logs/MRFPS.log | awk -v p="$p" '$3 == "pid=" p {sub("instance=", "", $2); print "__MRFPS_ROSTER__" $2 ":" p}' | tail -n 1; fi`,
   'printf "__MRFPS_DONE__\\n"',
   'exit',
 ].join('\n') + '\n';
@@ -73,9 +74,15 @@ export function parseTerminalOutput(output) {
   const health = find(/^__MRFPS_HEALTH__(\d{1,3})$/);
   const start = find(/^__MRFPS_START__(\d+):(\d+)$/);
   const fingerprint = find(/^__MRFPS_FP__([a-f0-9]{64})$/);
+  const roster = find(/^__MRFPS_ROSTER__([a-f0-9]{32}):(\d+)$/);
   if (health.length !== 1 || Number(health[0][1]) > 255 || start.length !== 1 || fingerprint.length !== 1 ||
       !lines.includes('__MRFPS_DONE__')) throw Error('GAME_RUNTIME_EVIDENCE_INCOMPLETE');
-  return { fingerprint: fingerprint[0][1], pid: start[0][1], start_ticks: start[0][2], health_exit_code: Number(health[0][1]) };
+  const roster_instance = roster.length === 1 && roster[0][2] === start[0][1] ? roster[0][1] : null;
+  return { fingerprint: fingerprint[0][1], pid: start[0][1], start_ticks: start[0][2], health_exit_code: Number(health[0][1]), roster_instance };
+}
+
+export function stableRosterInstance(first, second) {
+  return /^[a-f0-9]{32}$/.test(first.roster_instance || '') && first.roster_instance === second.roster_instance ? first.roster_instance : null;
 }
 
 export async function shellProbe(url, headers) {
@@ -156,6 +163,7 @@ async function main() {
   process.stdout.write(JSON.stringify({ service_id: state.service_id, generation: after.generation, pod: after.pod,
     image: options['--expected-image'], fingerprint: second.fingerprint,
     udp_socket_health_verified: second.health_exit_code === 0, health_exit_code: second.health_exit_code,
+    roster_instance: stableRosterInstance(first,second),
     endpoints: after.endpoints, internet_udp_verified: false }) + '\n');
 }
 

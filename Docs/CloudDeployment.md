@@ -220,6 +220,15 @@ HTTPS peer and signs each roster. An ambiguous update is recorded as a digest
 and must be observed before another update is attempted. A server restart
 rotates its DTLS fingerprint and requires clients to receive a new token.
 
+Concurrent invocations using the same state file are prevented by an OS lock,
+and ownership, specification hash and generation are checked again directly
+before submission. The current Flash update API replaces the complete spec and
+does not support an `If-Match` / expected-generation condition for this request;
+a separate operator could still change the service between the last check and
+the PUT. Coordinate the update with other operators; a local lock cannot fence
+an unrelated API client. A timed-out request remains pending until the exact
+desired specification is observed.
+
 It persists a unique deployment marker before creation, rejects a same-name
 unowned service, detects specification drift and updates only its saved service.
 An ambiguous response stops rather than adopting a resource. Creation and

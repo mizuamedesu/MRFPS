@@ -6,19 +6,50 @@ blind retry after an ambiguous cloud response.
 """
 import argparse
 import copy
+from contextlib import contextmanager
 import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import socket
+import subprocess
 import time
+import uuid
 from urllib.request import urlopen
 
 from flash_service import HeteroCLI, digest, owned_service, save, summary
 
 IMAGE = re.compile(r"ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}\Z")
 ROSTER_KEY = re.compile(r"[0-9a-f]{64}\Z")
+
+
+@contextmanager
+def state_lock(path):
+    """OS-managed exclusive lock; a crashed process cannot leave a stale lock."""
+    with path.with_suffix(path.suffix + ".lock").open("a+b") as lock:
+        lock.seek(0, os.SEEK_END)
+        if not lock.tell():
+            lock.write(b"0")
+            lock.flush()
+        lock.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ValueError("FLASH_STATE_LOCK_HELD") from exc
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def cloudflare_cidrs():
@@ -50,13 +81,31 @@ def cloudflare_cidrs():
 
 
 def update(client, state_path, image, key, cidrs):
+    # Canonicalize aliases before locking, so relative paths and symlinks to the
+    # same state cannot bypass mutual exclusion.
+    state_path = state_path.resolve(strict=True)
+    with state_lock(state_path):
+        return update_locked(client, state_path, image, key, cidrs)
+
+
+def update_locked(client, state_path, image, key, cidrs):
     if not IMAGE.fullmatch(image) or not ROSTER_KEY.fullmatch(key):
         raise ValueError("IMMUTABLE_IMAGE_AND_256_BIT_HEX_KEY_REQUIRED")
     state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+    for field in ("project_id", "service_id", "deployment_id"):
+        try:
+            if not isinstance(state.get(field), str):
+                raise ValueError()
+            uuid.UUID(state[field])
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError("OWNED_FLASH_IDENTITY_INVALID") from None
     project, name = state["project_id"], state["service_name"]
     service = owned_service(client, state, project, name)
     if not service:
         raise ValueError("OWNED_FLASH_SERVICE_REQUIRED")
+    generation = service.get("generation")
+    if type(generation) is not int or generation < 1:
+        raise ValueError("FLASH_GENERATION_UNVERIFIED")
     live = service["spec"]
     if live.get("exposure", {}).get("traffic_mode") != "direct" or live.get("exposure", {}).get("type") != "public":
         raise ValueError("DIRECT_PUBLIC_FLASH_MODE_REQUIRED")
@@ -95,8 +144,22 @@ def update(client, state_path, image, key, cidrs):
     # response a later invocation must observe this exact intent before acting.
     state["pending_spec_sha256"] = wanted_hash
     save(state_path, state)
-    client.call("flash", "update", service["id"], "--file", "-", "--no-wait",
-                payload={"project_id": project, "name": name, "spec": desired})
+    try:
+        rechecked = owned_service(client, state, project, name)
+        if not rechecked or rechecked.get("generation") != generation or digest(rechecked["spec"]) != old_hash:
+            raise ValueError("FLASH_DRIFT_BEFORE_UPDATE")
+    except BaseException:
+        # No mutation request has been submitted. Clear this operation's own
+        # intent; if the cleanup fails, the remaining intent still fails closed.
+        state.pop("pending_spec_sha256", None)
+        save(state_path, state)
+        raise
+    try:
+        client.call("flash", "update", service["id"], "--file", "-", "--no-wait",
+                    payload={"project_id": project, "name": name, "spec": desired})
+    except subprocess.SubprocessError:
+        # Even a timeout can follow acceptance; retain the pending hash.
+        raise ValueError("FLASH_UPDATE_OUTCOME_UNKNOWN") from None
     for _ in range(20):
         observed = owned_service(client, state, project, name)
         if observed and digest(observed["spec"]) == wanted_hash:
@@ -125,7 +188,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, OSError, KeyError) as error:
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         value = str(error)
         safe = value if isinstance(error, ValueError) and value.isascii() and value.replace("_", "").isalnum() else type(error).__name__
         raise SystemExit("MRFPS_FLASH_UPDATE_ERROR " + safe)

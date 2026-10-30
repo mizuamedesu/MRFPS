@@ -1,11 +1,13 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_SERVER
 #include "MRFPSGame.h"
+#include "Engine/DemoNetDriver.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/GameSession.h"
 #include "GameFramework/WorldSettings.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/StrongObjectPtr.h"
 
 namespace
 {
@@ -50,6 +52,16 @@ struct FAdmissionWorld
         if (World) { World->EndPlay(EEndPlayReason::EndPlayInEditor); World->DestroyWorld(false); GEngine->DestroyWorldContext(World); }
     }
 };
+
+// A real engine NetDriver with no connection and no socket. Install it only
+// while calling ApproveLogin, so AtCapacity sees a server, not standalone.
+// Restore the world before spawning actors or tearing it down.
+struct FScopedServerNetMode
+{
+    UWorld* World;
+    FScopedServerNetMode(UWorld* InWorld,UNetDriver* Driver):World(InWorld) { World->SetNetDriver(Driver); }
+    ~FScopedServerNetMode() { World->SetNetDriver(nullptr); }
+};
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSSessionAdmissionTest,"MRFPS.Admin.SessionAdmission",
@@ -63,22 +75,31 @@ bool FMRFPSSessionAdmissionTest::RunTest(const FString& Parameters)
     // even if the host machine's Game.ini happens to specify a larger limit.
     F.Session->MaxPlayers=16;
     F.Session->MaxSplitscreensPerConnection=4;
+    TStrongObjectPtr<UDemoNetDriver> Driver(NewObject<UDemoNetDriver>());
+    if (!TestNotNull(TEXT("Socket-free server-mode fixture driver"),Driver.Get())) return false;
     for (int32 Index=0;Index<20;++Index) {
-        if (!TestTrue(FString::Printf(TEXT("Observer %d passes the actual UE ApproveLogin"),Index+1),
-                      F.Session->ApproveLogin(TEXT("?Inspector=1")).IsEmpty())) return false;
+        {
+            FScopedServerNetMode ServerMode(F.World,Driver.Get());
+            if (!TestTrue(TEXT("ApproveLogin uses a network-server mode"),F.Session->GetNetMode()!=NM_Standalone && F.Session->GetNetMode()!=NM_Client)) return false;
+            if (!TestTrue(FString::Printf(TEXT("Observer %d passes the actual UE ApproveLogin"),Index+1),
+                          F.Session->ApproveLogin(TEXT("?Inspector=1")).IsEmpty())) return false;
+        }
         if (!TestNotNull(TEXT("Observer player state"),F.Add(true,false,-1))) return false;
     }
     TestTrue(TEXT("More than the generic engine player limit is actually present"),F.Mode->GetNumPlayers()>16);
     auto* OrdinarySession=F.World->SpawnActor<AGameSession>();
     if (!TestNotNull(TEXT("Ordinary engine session used as the control"),OrdinarySession)) return false;
     OrdinarySession->MaxPlayers=16; OrdinarySession->MaxSplitscreensPerConnection=4;
-    TestEqual(TEXT("The ordinary engine session rejects the same populated world"),
-              OrdinarySession->ApproveLogin(TEXT("?Inspector=1")),FString(TEXT("Server full.")));
     TestTrue(TEXT("The role check still permits more inspectors"),F.Mode->RoleCapacityError(TEXT("inspector")).IsEmpty());
-    TestTrue(TEXT("Splitscreen count at the configured limit is accepted"),
-             F.Session->ApproveLogin(TEXT("?Inspector=1?SplitscreenCount=4")).IsEmpty());
-    TestEqual(TEXT("Splitscreen count above the limit is rejected by UE"),
-              F.Session->ApproveLogin(TEXT("?Inspector=1?SplitscreenCount=5")),FString(TEXT("Maximum splitscreen players")));
+    {
+        FScopedServerNetMode ServerMode(F.World,Driver.Get());
+        TestEqual(TEXT("The ordinary engine session rejects the same populated world"),
+                  OrdinarySession->ApproveLogin(TEXT("?Inspector=1")),FString(TEXT("Server full.")));
+        TestTrue(TEXT("Splitscreen count at the configured limit is accepted"),
+                 F.Session->ApproveLogin(TEXT("?Inspector=1?SplitscreenCount=4")).IsEmpty());
+        TestEqual(TEXT("Splitscreen count above the limit is rejected by UE"),
+                  F.Session->ApproveLogin(TEXT("?Inspector=1?SplitscreenCount=5")),FString(TEXT("Maximum splitscreen players")));
+    }
 
     TestTrue(TEXT("Observers do not consume either player slot"),F.Mode->RoleCapacityError(TEXT("player")).IsEmpty());
     auto* Player0=F.Add(false,false,0);

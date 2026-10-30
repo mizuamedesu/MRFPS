@@ -150,6 +150,7 @@ private:
         Test->TestEqual(TEXT("Cancelling a held pointer fires no click"),Clicks[0],1);
         Test->TestFalse(TEXT("Cancellation resets the Slate button"),Button[0]->IsPressed());
         Test->TestFalse(TEXT("Cancellation releases only its pointer capture"),User->HasCapture(0));
+        Test->TestFalse(TEXT("Cancellation clears the old hover before a new trace"),Button[0]->IsHovered());
         First->EndPointer();
         Test->TestEqual(TEXT("A late physical release after cancellation cannot click"),Clicks[0],1);
 
@@ -177,6 +178,7 @@ private:
         Test->TestEqual(TEXT("Moving a held press cannot click its old target"),Clicks[0],3);
         Test->TestEqual(TEXT("Moving a held press cannot click its new target"),Clicks[1],0);
         First->SetWorldLocation(FVector(0,-75,0)); First->RefreshPointer();
+        if (!Test->TestTrue(TEXT("Returning to the old target after cancellation restores Slate hover"),Button[0]->IsHovered())) return true;
 
         // Exercise real Slate capture when the physical trigger takes over a
         // held glove press. Cancel clears the WIC hit, so retrace before down.
@@ -187,7 +189,10 @@ private:
         const auto Expected=First->HoveredTarget().Pin();
         Takeover.SetButton(true);
         if (!Test->TestTrue(TEXT("Physical takeover cancels the old glove capture"),Takeover.Next()==MRFPSLoginPointer::EAction::Cancel)) return true;
-        First->CancelPointer(); First->RefreshPointer();
+        First->CancelPointer();
+        Test->TestEqual(TEXT("Takeover cancellation itself never clicks"),Clicks[0],3);
+        First->RefreshPointer();
+        if (!Test->TestTrue(TEXT("Same-target takeover restores hover before the new down"),Button[0]->IsHovered())) return true;
         if (!Test->TestTrue(TEXT("Retrace restores the same login target"),MRFPSLoginPointer::SameHit(Expected.Get(),First->HoveredTarget().Pin().Get()))) return true;
         if (!Test->TestTrue(TEXT("Physical takeover accepts a fresh down"),Takeover.Next()==MRFPSLoginPointer::EAction::Press && First->BeginPointer())) return true;
         Takeover.SetButton(false);
@@ -202,6 +207,7 @@ private:
         const auto StaleTarget=First->HoveredTarget().Pin(); Stale.SetGloveFlex(false,0);
         if (!Test->TestTrue(TEXT("Stale glove cancels capture"),Stale.Next()==MRFPSLoginPointer::EAction::Cancel)) return true;
         First->CancelPointer(); First->RefreshPointer(); Stale.SetButton(true);
+        if (!Test->TestTrue(TEXT("Stale-input cancellation restores the next physical hover"),Button[0]->IsHovered())) return true;
         if (!Test->TestTrue(TEXT("A physical trigger works after stale glove cancellation"),
             MRFPSLoginPointer::SameHit(StaleTarget.Get(),First->HoveredTarget().Pin().Get()) &&
             Stale.Next()==MRFPSLoginPointer::EAction::Press && First->BeginPointer())) return true;
@@ -214,9 +220,12 @@ private:
         if (!Test->TestTrue(TEXT("The second pointer accepts a real press"),Second->BeginPointer())) return true;
         if (!Test->TestTrue(TEXT("The unrelated second pointer captures its button"),
                             Button[1]->IsPressed() && User->HasCapture(1))) return true;
+        First->RefreshPointer();
+        if (!Test->TestTrue(TEXT("The first pointer also captures its own button"),First->BeginPointer() && User->HasCapture(0))) return true;
         First->CancelPointer();
         Test->TestTrue(TEXT("Cancelling pointer zero preserves pointer one's capture"),
                        Button[1]->IsPressed() && User->HasCapture(1));
+        Test->TestEqual(TEXT("Cancelling a concurrent first capture does not click it"),Clicks[0],5);
         Alias->CancelPointer();
         if (!Test->TestTrue(TEXT("An unpressed alias cannot cancel another component's capture"),
                             Button[1]->IsPressed() && User->HasCapture(1))) return true;
