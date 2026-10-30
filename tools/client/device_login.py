@@ -284,7 +284,12 @@ def quest(args: argparse.Namespace) -> dict:
     serial = args.serial
     state_path = quest_state_path(serial)
     with state_lock(state_path):
-        return quest_locked(args, address, state_path)
+        result = quest_locked(args, address, state_path)
+        if getattr(args, "show_settings", False):
+            # The app owns the saved address; no control message is sent here.
+            # It may already have advanced since launch, so don't assert a page.
+            result.update(serverArgumentApplied=False, pageConfirmed=False)
+        return result
 
 
 def quest_state_path(serial: str) -> Path:

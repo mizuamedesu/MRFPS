@@ -413,8 +413,14 @@ class DeviceLoginControlTests(unittest.TestCase):
                  mock.patch.object(module, "assert_quest_share_clear"), \
                  mock.patch.object(module, "clear_quest_control") as clear, \
                  mock.patch.object(module, "quest_control") as control:
-                self.assertEqual(module.quest(args)["status"], "launched")
-                self.assertEqual(module.quest(args)["status"], "already_running")
+                first = module.quest(args)
+                self.assertEqual(first["status"], "launched")
+                self.assertFalse(first["serverArgumentApplied"])
+                self.assertFalse(first["pageConfirmed"])
+                again = module.quest(args)
+                self.assertEqual(again["status"], "already_running")
+                self.assertFalse(again["serverArgumentApplied"])
+                self.assertFalse(again["pageConfirmed"])
                 self.assertEqual(clear.call_count, 1)
                 control.assert_not_called()
                 args.show_settings = False

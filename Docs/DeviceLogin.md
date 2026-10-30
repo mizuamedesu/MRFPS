@@ -14,6 +14,8 @@ Quest のポインターは右コントローラーの OpenXR Aim pose を優先
 
 Mac の画面起動とコード投入は [Macでの開発・観戦](Mac.md) の `--device-login` と `tools/client/mac_login.py` を使います。Mac 実機でのビルド・ログイン・接続は未検証です。
 
+Quest の `--show-settings` は起動時の制御ファイルを消して設定画面を開きます。接続先はアプリの保存値で、同時に指定した `--server` は画面に反映されません。結果の `serverArgumentApplied=false` と `pageConfirmed=false` は、引数を適用していないことと、起動後の現在画面を確認していないことを示します。接続前に画面で接続先を確認してください。
+
 ```powershell
 $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
 # 設定画面をそのまま表示したい場合は --show-settings を追加
