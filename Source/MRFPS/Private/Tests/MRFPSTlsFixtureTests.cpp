@@ -86,7 +86,7 @@ private:
 
 // This is outside the normal MRFPS filter because it requires an explicit
 // local HTTPS fixture and a per-process test CA; it must not silently skip.
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSTlsFixtureTest,"MRFPSAuthFixture.PeerVerification",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSTlsFixtureTest,"TLSAuthFixture.PeerVerification",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
 
 bool FMRFPSTlsFixtureTest::RunTest(const FString& Parameters)

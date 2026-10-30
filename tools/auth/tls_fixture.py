@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 BODY=b'MRFPS_TLS_FIXTURE_OK'
-TEST_NAME='MRFPSAuthFixture.PeerVerification'
+TEST_NAME='TLSAuthFixture.PeerVerification'
 
 
 def certs(directory: Path, name: str) -> tuple[Path,Path,Path]:
