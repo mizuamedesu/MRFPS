@@ -4,8 +4,9 @@
 
 - 1ラウンド180秒、最大3ラウンド、先に2勝した側が勝利します。1人の場合は本人の校正と追跡が有効になると Bot が入り、管理者操作を待たずに開始します。操作と停止条件は [Rounds.md](Rounds.md) を参照してください。
 - 実 Linux コンテナと Windows 配布版の1人用テストでは、2ラウンドがそれぞれ180.026秒・180.007秒で終了し、Bot の2勝で試合が終了しました。実 Quest の姿勢・校正・障害物スキャンの確認には代わりません。証拠はローカルの `Saved/Validation/RoundBot-p14/packaged-player-qa-report.json` と `qa-server/observations.log` です。
-- 観戦メイン画面と独立観戦窓に、ラウンドと勝数を中央上へ表示します。Windows 配布版で画面を確認済みです。UE Automation は55件成功（警告4件、失敗0件）しました。
-- 管理 Worker `mrfps-admin.mizuame.app` を更新済みです。最新 Quest APK を実機へ導入し、発行されたプレイヤー資格情報と一致するサーバー参加を確認しました。**現時点の映像は Quest の OS 共有許可待ち**で、新しい protocol 14 の実映像や装着時の追跡は未確認です。旧 protocol の映像結果を新しい結果として扱いません。
+- 観戦メイン画面と独立観戦窓に、ラウンドと勝数を中央上へ表示します。Windows 配布版で画面を確認済みです。最新の UE Automation は58件成功（警告17件、失敗0件）しました。レポートは `Saved/Validation/RoundBot-p14/automation-capture-update/report.json` です。
+- 管理 Worker `mrfps-admin.mizuame.app` を更新済みです。更新 Quest APK と Windows 配布版はそれぞれビルド成功し、実機 APK の導入後、両方が発行された資格情報と一致する同じローカル専用サーバーに参加しました。更新した Windows 版は P1・P2・観戦2 の独立窓も開きました。P1 ウィンドウの画像を実際に確認した結果、**映像は Quest の OS 共有許可待ち**でした。新しい protocol 14 の実映像、FPS、装着時の追跡は未確認です。旧 protocol の映像結果を新しい結果として扱いません。
+- Quest APK は `Artifacts/Packages-RoundBot-P14-20261030-06/Android_ASTC/MRFPS-arm64.apk`（SHA-256 `2f586329e945b0be5fe551dc7163bb04301c89f802339b89fbb40b7ca4f532e8`）、Windows 版は `Artifacts/Packages-RoundBot-P14-20261030-07/Windows/MRFPS/Binaries/Win64/MRFPS.exe`（SHA-256 `189410cc7ab72cfb961f102afa488dd4802eaf0c22704676f3825b6e4b8307b3`）です。どちらもメモリ監視付きでビルドし、最低空き RAM はそれぞれ約10.50 GiB、12.54 GiB でした。これらローカル成果物は Git に含めません。
 - 新しい専用サーバーを private GHCR に公開しました。source commit と digest、公開境界、HeteroCloud の残る要件は [CloudDeployment.md](CloudDeployment.md) を参照してください。HeteroCloud CLI は未ログインで、Flash への実デプロイと `mrfps.mizuame.app:7777` の到達性は未確認です。
 - ContactGlove の PC 中継と、Quest からの送信元 IPv4 固定起動を用意しています。現在の DivingStation は左右とも未接続と報告しており、実機の指・射撃・盾・壁操作は未確認です。[DeviceLogin.md](DeviceLogin.md) と [ContactGlove.md](ContactGlove.md) を参照してください。
 - Mac の実機ビルド・描画・接続、2台の物理共有原点、実障害物による弾の遮蔽、MoBits の実出力も未確認です。ローカル画像・資格情報は Git に含めません。
