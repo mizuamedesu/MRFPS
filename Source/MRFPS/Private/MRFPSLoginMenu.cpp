@@ -1,6 +1,7 @@
 #include "MRFPSLoginMenu.h"
 #include "MRFPSDeviceAuthUrl.h"
 #include "MRFPSConnectionSettings.h"
+#include "MRFPSRetryAfter.h"
 
 #include "MRFPSGame.h"
 #include "MRFPSAuthClientSubsystem.h"
@@ -380,7 +381,16 @@ void UMRFPSLoginMenu::HandleExchange(FHttpRequestPtr Request,FHttpResponsePtr Re
     if (!bOpen || !PendingRequest || Request!=PendingRequest) return;
     PendingRequest.Reset(); bExchanging=false;
     if (!OK || !Response.IsValid()) { UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=NETWORK")); SetStatus(TEXT("認証サーバーに接続できません"),true); return; }
-    if (Response->GetResponseCode()!=200) { UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=HTTP_%d"),Response->GetResponseCode()); SetStatus(Response->GetResponseCode()==429?TEXT("しばらく待ってから再試行してください"):TEXT("コードが無効か期限切れです"),true); return; }
+    if (Response->GetResponseCode()!=200) {
+        UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=HTTP_%d"),Response->GetResponseCode());
+        if (Response->GetResponseCode()==429) {
+            const FString RetryAfter=Response->GetHeader(TEXT("Retry-After"));
+            const int Seconds=MRFPSRetryAfter::Parse(*RetryAfter,static_cast<std::size_t>(RetryAfter.Len()));
+            SetStatus(Seconds?FString::Printf(TEXT("%d秒後、新しいコードで再試行してください"),Seconds):
+                              FString(TEXT("しばらく待ってから再試行してください")),true);
+        } else SetStatus(TEXT("コードが無効か期限切れです"),true);
+        return;
+    }
     if (Response->GetContent().Num()>8192) { SetStatus(TEXT("認証応答が無効です"),true); return; }
     TSharedPtr<FJsonObject> Json; const auto Reader=TJsonReaderFactory<>::Create(Response->GetContentAsString());
     FString Token,Key;
