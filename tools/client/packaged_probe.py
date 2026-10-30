@@ -11,6 +11,7 @@ import argparse
 from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
+import datetime
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -30,6 +32,16 @@ SHA256=re.compile(r"[0-9a-f]{64}\Z")
 CONTAINER=re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}\Z")
 SUBJECT_SUFFIX=r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 ROLES=("player","inspector")
+SERVER_ID=re.compile(r"[0-9a-f]{64}\Z")
+UTC_TIMESTAMP=re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z\Z")
+SERVER_FINGERPRINT=re.compile(r"MRFPS_DTLS_SERVER_SHA256=([0-9a-f]{64})(?=\s|$)")
+SERVER_EVENT=re.compile(r"MRFPS_AUTH_ACCEPT role=(?:player|inspector) subject=[A-Za-z0-9._:-]{1,128}(?=\s|$)"
+                        r"|MRFPS_JOIN role=(?:player|inspector) slot=(?:-1|0|1) name=[A-Za-z0-9._:-]{1,128}(?=\s|$)")
+INSPECT_FORMAT=("{{.Id}}|{{.State.StartedAt}}|{{.RestartCount}}|{{.State.Pid}}|{{.State.Running}}|"
+                "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}")
+MAX_LOG_LINE_BYTES=64*1024
+MAX_SERVER_EVIDENCE_BYTES=1024*1024
+STARTUP_WINDOW_SECONDS=300
 
 
 def run_safe(command,timeout=25):
@@ -42,18 +54,106 @@ def docker(*args):
     command=["wsl.exe","-d","Ubuntu","-u","root","--exec","docker",*args]
     result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=25,creationflags=CREATE_FLAGS)
     if result.returncode: raise RuntimeError("a required local or server operation failed")
-    return (result.stdout+(result.stderr if args and args[0]=="logs" else b"")).decode("utf-8","replace")
+    return result.stdout.decode("utf-8","replace")
+
+
+def docker_log_lines(*args,timeout=25):
+    """Stream one finite Docker log query; cap each line and its lifetime.
+
+    The watchdog terminates only our WSL CLI process, never the server. No raw
+    log, error text, or potentially sensitive line is written to a file/output.
+    """
+    command=["wsl.exe","-d","Ubuntu","-u","root","--exec","docker","logs",*args]
+    process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                             bufsize=MAX_LOG_LINE_BYTES,creationflags=CREATE_FLAGS)
+    expired=threading.Event()
+    def stop_owned_process():
+        if process.poll() is None:
+            expired.set()
+            try: process.kill()
+            except OSError: pass
+    watchdog=threading.Timer(timeout,stop_owned_process); watchdog.daemon=True; watchdog.start()
+    try:
+        while True:
+            line=process.stdout.readline(MAX_LOG_LINE_BYTES+1)
+            if not line: break
+            if len(line)>MAX_LOG_LINE_BYTES or (len(line)==MAX_LOG_LINE_BYTES and not line.endswith(b"\n")):
+                raise RuntimeError("server log line exceeds its safe bound")
+            text=line.decode("utf-8","replace")
+            if JWT_RE.search(text) or "-----BEGIN PRIVATE KEY-----" in text:
+                raise RuntimeError("server log failed privacy check")
+            yield text
+        code=process.wait()
+        if expired.is_set(): raise RuntimeError("server log inspection timed out")
+        if code: raise RuntimeError("a required local or server operation failed")
+    finally:
+        watchdog.cancel()
+        if process.poll() is None:
+            try: process.kill()
+            except OSError: pass
+        process.wait()
+        if process.stdout: process.stdout.close()
+
+
+def timestamp(value):
+    """Parse Docker UTC RFC3339 timestamps without rounding nanoseconds."""
+    match=UTC_TIMESTAMP.fullmatch(value)
+    if not match: raise ValueError("invalid server timestamp")
+    instant=datetime.datetime.strptime(match.group(1),"%Y-%m-%dT%H:%M:%S")
+    delta=instant-datetime.datetime(1970,1,1)
+    if delta.days<0: raise ValueError("invalid server timestamp")
+    nanos=(delta.days*86400+delta.seconds)*1_000_000_000+int((match.group(2) or "").ljust(9,"0"))
+    return instant, nanos
+
+
+def current_log_line(line,started_ns):
+    prefix,separator,_rest=line.partition(" ")
+    if not separator: return False
+    try: return timestamp(prefix)[1]>=started_ns
+    except ValueError: return False
+
+
+def inspect_server(name):
+    fields=docker("inspect","--format",INSPECT_FORMAT,name).strip().split("|")
+    if len(fields)!=6 or not SERVER_ID.fullmatch(fields[0]): raise RuntimeError("test server identity is invalid")
+    try:
+        started,started_ns=timestamp(fields[1])
+        restarts,pid=int(fields[2]),int(fields[3])
+    except ValueError:
+        raise RuntimeError("test server identity is invalid") from None
+    if restarts<0 or pid<=0 or fields[4]!="true" or fields[5]!="healthy":
+        raise RuntimeError("test server is not healthy")
+    return {"id":fields[0],"started":fields[1],"restarts":restarts},pid,started,started_ns
 
 
 def server_snapshot(name,fingerprint):
     if not CONTAINER.fullmatch(name) or not SHA256.fullmatch(fingerprint): raise ValueError("invalid container or fingerprint")
-    value=json.loads(docker("inspect",name))[0]; state=value.get("State",{})
-    if not state.get("Running") or state.get("Health",{}).get("Status")!="healthy": raise RuntimeError("test server is not healthy")
-    log=docker("logs","--tail","5000",name)
-    if JWT_RE.search(log) or "-----BEGIN PRIVATE KEY-----" in log: raise RuntimeError("server log failed privacy check")
-    fingerprints=re.findall(r"MRFPS_DTLS_SERVER_SHA256=([0-9a-f]{64})(?:\s|$)",log)
-    if not fingerprints or fingerprints[-1]!=fingerprint: raise RuntimeError("server fingerprint does not match")
-    return {"id":value.get("Id"),"started":state.get("StartedAt"),"restarts":value.get("RestartCount")},log
+    identity,pid,started,started_ns=inspect_server(name)
+    # The key is logged at startup, not necessarily among the latest 5000
+    # entries. Bound the query to this run's first five minutes, while scanning
+    # it line by line. Missing/rotated startup logs fail closed.
+    fraction=UTC_TIMESTAMP.fullmatch(identity["started"]).group(2)
+    until=(started+datetime.timedelta(seconds=STARTUP_WINDOW_SECONDS)).strftime("%Y-%m-%dT%H:%M:%S")
+    until+=("."+fraction if fraction else "")+"Z"
+    observed=None
+    for line in docker_log_lines("--timestamps","--since",identity["started"],"--until",until,identity["id"]):
+        if current_log_line(line,started_ns):
+            for match in SERVER_FINGERPRINT.finditer(line): observed=match.group(1)
+    if observed is None: raise RuntimeError("server startup fingerprint is unavailable")
+    if observed!=fingerprint: raise RuntimeError("server fingerprint does not match")
+    # Keep only compact authentication/join markers, not arbitrary log lines.
+    # The actual query remains the previous 5000-line window, now restricted to
+    # the current container start so old admissions cannot be mistaken as new.
+    events=[]; event_bytes=0
+    for line in docker_log_lines("--timestamps","--since",identity["started"],"--tail","5000",identity["id"]):
+        if not current_log_line(line,started_ns): continue
+        for match in SERVER_EVENT.finditer(line):
+            event=match.group(0)+"\n"; event_bytes+=len(event)
+            if event_bytes>MAX_SERVER_EVIDENCE_BYTES: raise RuntimeError("server evidence exceeds its safe bound")
+            events.append(event)
+    after,after_pid,_after_started,_after_ns=inspect_server(name)
+    if after!=identity or after_pid!=pid: raise RuntimeError("test server changed during verification")
+    return identity,"".join(events)
 
 
 def server_join_matches(log,expected_hash,role="inspector"):

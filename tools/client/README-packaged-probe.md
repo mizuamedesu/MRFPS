@@ -4,6 +4,8 @@
 
 実行前に、同じ protocol で構築された健康な検証用コンテナの名前・現在の DTLS fingerprint と、新しい Windows package のネイティブ exe を用意してください。管理パネル用の暗号化鍵バックアップ・パスフレーズ・Basic 資格情報が `%LOCALAPPDATA%\MRFPS\Admin` に必要です。対象のコンテナは検証中に再作成しないでください。
 
+fingerprint は直近のログ行数ではなく、そのコンテナの現在の起動時刻から 5 分以内のログで確認します。長時間動いていても、起動時ログが残っていれば照合できます。ログがローテーションなどで失われた場合は確認不能として停止します。取得前後にコンテナ ID・起動時刻・再起動回数・PID・health を確認し、途中で変更された場合も停止します。ログは逐次読み取りし、参加照合に必要な最小限の情報だけをメモリに保持します。
+
 ```powershell
 $python = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
 $exe = '<新規パッケージ>\Windows\MRFPS\Binaries\Win64\MRFPS.exe'

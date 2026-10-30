@@ -1,11 +1,14 @@
 import argparse
 import hashlib
+import io
+import itertools
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -14,6 +17,111 @@ import packaged_probe as probe
 
 
 class PackagedProbeTests(unittest.TestCase):
+    @staticmethod
+    def server_inspect(identity="c"*64,started="2026-10-30T00:10:00.123456789Z",restarts=1,pid=42,healthy=True):
+        return f"{identity}|{started}|{restarts}|{pid}|true|{'healthy' if healthy else 'unhealthy'}\n"
+
+    def test_snapshot_reads_startup_fingerprint_beyond_recent_tail(self):
+        started="2026-10-30T00:10:00.123456789Z"; identity="c"*64
+        subject="inspector-12345678-1234-4234-8234-123456789abc"
+        startup=[f"{started} LogMRFPSTransport: MRFPS_DTLS_SERVER_SHA256={'a'*64}\n"]
+        recent=itertools.chain((f"2026-10-30T01:00:00.000000001Z noisy message {n}\n" for n in range(5000)),[
+            f"2026-10-30T01:00:01.000000001Z MRFPS_AUTH_ACCEPT role=inspector subject={subject} expires=123\n",
+            f"2026-10-30T01:00:01.000000002Z MRFPS_JOIN role=inspector slot=-1 name={subject}\n"])
+        def logs(*args):
+            self.assertIn(identity,args)
+            self.assertIn(started,args)
+            if "--until" in args:
+                self.assertIn("2026-10-30T00:15:00.123456789Z",args)
+                self.assertNotIn("--tail",args)
+                return iter(startup)
+            self.assertIn("--tail",args)
+            return recent
+        with mock.patch.object(probe,"docker",return_value=self.server_inspect()) as inspect, \
+             mock.patch.object(probe,"docker_log_lines",side_effect=logs) as read:
+            snapshot,evidence=probe.server_snapshot("fixture","a"*64)
+        self.assertEqual(snapshot,{"id":identity,"started":started,"restarts":1})
+        self.assertEqual(inspect.call_count,2)
+        self.assertEqual(read.call_count,2)
+        self.assertNotIn("noisy message",evidence)
+        self.assertTrue(probe.server_join_matches(evidence,hashlib.sha256(subject.encode()).hexdigest()))
+
+    def test_snapshot_rejects_pre_restart_or_missing_startup_fingerprint(self):
+        old="2026-10-30T00:10:00.123456788Z"  # one nanosecond before the actual start
+        line=f"{old} MRFPS_DTLS_SERVER_SHA256={'a'*64}\n"
+        with mock.patch.object(probe,"docker",return_value=self.server_inspect()), \
+             mock.patch.object(probe,"docker_log_lines",return_value=iter([line])):
+            with self.assertRaisesRegex(RuntimeError,"startup fingerprint is unavailable"):
+                probe.server_snapshot("fixture","a"*64)
+        with mock.patch.object(probe,"docker",return_value=self.server_inspect()), \
+             mock.patch.object(probe,"docker_log_lines",return_value=iter([])):
+            with self.assertRaisesRegex(RuntimeError,"startup fingerprint is unavailable"):
+                probe.server_snapshot("fixture","a"*64)
+
+    def test_snapshot_uses_latest_current_start_fingerprint_and_current_events(self):
+        old="2026-10-30T00:10:00.123456788Z"; now="2026-10-30T00:10:00.123456790Z"
+        subject="inspector-12345678-1234-4234-8234-123456789abc"
+        previous=f"{old} MRFPS_DTLS_SERVER_SHA256={'a'*64}\n"
+        current=f"{now} MRFPS_DTLS_SERVER_SHA256={'b'*64}\n"
+        previous_join=f"{old} MRFPS_JOIN role=inspector slot=-1 name={subject}\n"
+        accept=f"{now} MRFPS_AUTH_ACCEPT role=inspector subject={subject} expires=123\n"
+        def logs(*args): return iter([previous,current] if "--until" in args else [previous_join,accept])
+        with mock.patch.object(probe,"docker",return_value=self.server_inspect()), \
+             mock.patch.object(probe,"docker_log_lines",side_effect=logs):
+            with self.assertRaisesRegex(RuntimeError,"fingerprint does not match"):
+                probe.server_snapshot("fixture","a"*64)
+            _,evidence=probe.server_snapshot("fixture","b"*64)
+        self.assertFalse(probe.server_join_matches(evidence,hashlib.sha256(subject.encode()).hexdigest()))
+
+    def test_snapshot_rechecks_id_start_restart_pid_and_health(self):
+        initial=self.server_inspect()
+        changes=(self.server_inspect(identity="d"*64),
+                 self.server_inspect(started="2026-10-30T00:10:00.123456790Z"),
+                 self.server_inspect(restarts=2),self.server_inspect(pid=43),self.server_inspect(healthy=False))
+        line=f"2026-10-30T00:10:00.123456790Z MRFPS_DTLS_SERVER_SHA256={'a'*64}\n"
+        for changed in changes:
+            with self.subTest(changed=changed), mock.patch.object(probe,"docker",side_effect=[initial,changed]), \
+                 mock.patch.object(probe,"docker_log_lines",side_effect=lambda *args: iter([line] if "--until" in args else [])):
+                with self.assertRaises(RuntimeError): probe.server_snapshot("fixture","a"*64)
+
+    def test_snapshot_bounds_accumulated_join_evidence(self):
+        stamp="2026-10-30T00:10:00.123456790Z"
+        startup=f"{stamp} MRFPS_DTLS_SERVER_SHA256={'a'*64}\n"
+        event=f"{stamp} MRFPS_JOIN role=inspector slot=-1 name=inspector-example\n"
+        def logs(*args): return iter([startup] if "--until" in args else [event]*20)
+        with mock.patch.object(probe,"docker",return_value=self.server_inspect()), \
+             mock.patch.object(probe,"docker_log_lines",side_effect=logs), \
+             mock.patch.object(probe,"MAX_SERVER_EVIDENCE_BYTES",100):
+            with self.assertRaisesRegex(RuntimeError,"evidence exceeds its safe bound"):
+                probe.server_snapshot("fixture","a"*64)
+
+    def test_server_log_stream_has_bounded_lines_and_privacy_checks(self):
+        class Process:
+            def __init__(self,data): self.stdout=io.BytesIO(data)
+            def poll(self): return 0
+            def wait(self): return 0
+            def kill(self): self.fail("completed fixture must not be killed")
+        for data,error in ((b"x"*(probe.MAX_LOG_LINE_BYTES+1),"safe bound"),
+                           (b"-----BEGIN PRIVATE KEY-----\n","privacy check"),
+                           (b"eyJ"+b"a"*12+b"."+b"b"*20+b"."+b"c"*80+b"\n","privacy check")):
+            with self.subTest(error=error), mock.patch.object(probe.subprocess,"Popen",return_value=Process(data)):
+                with self.assertRaisesRegex(RuntimeError,error): list(probe.docker_log_lines("fixture"))
+
+    def test_server_log_timeout_stops_only_its_owned_process(self):
+        class Blocked:
+            def __init__(self): self.event=threading.Event(); self.killed=False; self.stdout=self
+            def readline(self,limit):
+                self.event.wait(3)
+                return b""
+            def poll(self): return -9 if self.killed else None
+            def kill(self): self.killed=True; self.event.set()
+            def wait(self): return -9 if self.killed else 0
+            def close(self): pass
+        process=Blocked()
+        with mock.patch.object(probe.subprocess,"Popen",return_value=process):
+            with self.assertRaisesRegex(RuntimeError,"timed out"): list(probe.docker_log_lines("fixture",timeout=.05))
+        self.assertTrue(process.killed)
+
     def make_issuer(self,root,role="inspector"):
         issuer=root/"issuer"; issuer.mkdir()
         code=issuer/(role+".code"); code.write_text("000123",encoding="ascii")
