@@ -281,6 +281,57 @@ bool UMRFPSLoginMenu::ResolvePointerWeapon(AMRFPSPawn* Pawn,FMRFPSWeaponPose& We
 #endif
     return Pawn && Pawn->GetLocalWeaponPose(Weapon);
 }
+void UMRFPSLoginMenu::LogPointerGeometry(AMRFPSPawn* Pawn,const FMRFPSWeaponPose& Weapon,bool HasWeapon,const TCHAR* Input)
+{
+    // Never expose key locations while the six-digit code is being entered.
+    // Coordinates on the setup page are expressed relative to the panel or
+    // camera; no room/world origin, UI text or device code is recorded.
+    if (bLoginPage) { UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_GEOM input=%s suppressed=auth"),Input); return; }
+    if (!HasWeapon || !Pawn || !Pawn->Camera || !WorldWidget || !Interaction) {
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_GEOM input=%s available=0"),Input); return;
+    }
+    const FTransform Muzzle=MRFPSWeaponPose::Muzzle(Weapon.GripWorld);
+    const FTransform Panel=WorldWidget->GetComponentTransform(),Camera=Pawn->Camera->GetComponentTransform();
+    const FVector Origin=Muzzle.GetLocation(),Direction=Muzzle.GetRotation().GetForwardVector().GetSafeNormal();
+    const FVector LocalOrigin=Panel.InverseTransformPosition(Origin),LocalDirection=Panel.InverseTransformVector(Direction);
+    const FVector2D Size=WorldWidget->GetCurrentDrawSize(),Pivot=WorldWidget->GetPivot();
+    const bool TValid=FMath::Abs(LocalDirection.X)>UE_SMALL_NUMBER;
+    const double T=TValid ? -LocalOrigin.X/LocalDirection.X : 0;
+    const FVector LocalPoint=LocalOrigin+LocalDirection*T;
+    const bool UVValid=TValid && FMath::IsFinite(T) && Size.X>0 && Size.Y>0;
+    const double U=UVValid ? (-LocalPoint.Y+Size.X*Pivot.X)/Size.X : 0;
+    const double V=UVValid ? (-LocalPoint.Z+Size.Y*Pivot.Y)/Size.Y : 0;
+    const FTransform PanelInCamera=Panel.GetRelativeTransform(Camera);
+    const FVector PanelPos=PanelInCamera.GetLocation(),PanelScale=Panel.GetScale3D();
+    const FRotator PanelRot=PanelInCamera.Rotator();
+    const FVector OriginCamera=Camera.InverseTransformPosition(Origin),DirectionCamera=Camera.InverseTransformVectorNoScale(Direction);
+    const bool HasRay=PointerRay && PointerRay->IsVisible();
+    const bool HasGun=Pawn->GunVisual && Pawn->GunVisual->IsVisible();
+    const FVector RayAxis=HasRay?PointerRay->GetComponentTransform().GetUnitAxis(EAxis::Z):FVector::ZeroVector;
+    const FVector GunAxis=HasGun?Pawn->GunVisual->GetComponentTransform().GetUnitAxis(EAxis::X):FVector::ZeroVector;
+    const FVector RayCamera=Camera.InverseTransformVectorNoScale(RayAxis),GunCamera=Camera.InverseTransformVectorNoScale(GunAxis);
+    const FVector RayOffset=HasRay?PointerRay->GetComponentLocation()-Origin:FVector::ZeroVector;
+    const double RayPerpendicular=HasRay?FVector::CrossProduct(RayOffset,Direction).Size():-1;
+    const double Now=FPlatformTime::Seconds();
+    const bool HasTick=LastGeometryTick>=0;
+    const double TickAge=HasTick?FMath::Max(0.,(Now-LastGeometryTick)*1000.):-1;
+    const double MuzzleDelta=HasTick?FVector::Distance(LastGeometryMuzzle.GetLocation(),Origin):-1;
+    const double MuzzleAngle=HasTick?FMath::RadiansToDegrees(LastGeometryMuzzle.GetRotation().AngularDistance(Muzzle.GetRotation())):-1;
+    const double PanelDelta=HasTick?FVector::Distance(LastGeometryPanel.GetLocation(),Panel.GetLocation()):-1;
+    const double PanelAngle=HasTick?FMath::RadiansToDegrees(LastGeometryPanel.GetRotation().AngularDistance(Panel.GetRotation())):-1;
+    const double CameraDelta=HasTick?FVector::Distance(LastGeometryCamera.GetLocation(),Camera.GetLocation()):-1;
+    const double CameraAngle=HasTick?FMath::RadiansToDegrees(LastGeometryCamera.GetRotation().AngularDistance(Camera.GetRotation())):-1;
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_GEOM input=%s source=%s origin_panel=(%.2f,%.2f,%.2f) direction_panel=(%.4f,%.4f,%.4f) t_valid=%d t_cm=%.2f uv_valid=%d uv=(%.4f,%.4f)"),
+        Input,MRFPSLoginPointer::SourceName(Weapon.Source),LocalOrigin.X,LocalOrigin.Y,LocalOrigin.Z,
+        LocalDirection.X,LocalDirection.Y,LocalDirection.Z,TValid,T,UVValid,U,V);
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_GEOM_FRAME origin_camera=(%.2f,%.2f,%.2f) direction_camera=(%.4f,%.4f,%.4f) panel_camera=(%.2f,%.2f,%.2f;%.2f,%.2f,%.2f) panel_scale=(%.4f,%.4f,%.4f)"),
+        OriginCamera.X,OriginCamera.Y,OriginCamera.Z,DirectionCamera.X,DirectionCamera.Y,DirectionCamera.Z,
+        PanelPos.X,PanelPos.Y,PanelPos.Z,PanelRot.Pitch,PanelRot.Yaw,PanelRot.Roll,PanelScale.X,PanelScale.Y,PanelScale.Z);
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_GEOM_VIS tick_ms=%.1f muzzle_delta_cm=%.2f muzzle_delta_deg=%.2f panel_delta_cm=%.2f panel_delta_deg=%.2f camera_delta_cm=%.2f camera_delta_deg=%.2f ray=%d ray_camera=(%.4f,%.4f,%.4f) ray_axis_dot=%.4f ray_offset_cm=%.2f gun=%d gun_camera=(%.4f,%.4f,%.4f) gun_forward_dot=%.4f"),
+        TickAge,MuzzleDelta,MuzzleAngle,PanelDelta,PanelAngle,CameraDelta,CameraAngle,
+        HasRay,RayCamera.X,RayCamera.Y,RayCamera.Z,FVector::DotProduct(RayAxis,Direction),RayPerpendicular,
+        HasGun,GunCamera.X,GunCamera.Y,GunCamera.Z,FVector::DotProduct(GunAxis,Direction));
+}
 void UMRFPSLoginMenu::TickXRPointerAfterPaint(UWidgetComponent* PaintedComponent,float DeltaTime)
 {
 #if !UE_SERVER
@@ -393,6 +444,7 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     auto QueuedTargets=MoveTemp(PendingPointerTargets);
     const bool ButtonMismatch=!MRFPSLoginPointer::ButtonTargetsMatch(Queued,CurrentTarget.Get());
     if (ButtonMismatch) {
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_BUTTON_DROP reason=target"));
         if (PointerInput.Sent && PointerInput.Selected==MRFPSLoginPointer::EInput::Button) {
             Interaction->CancelPointer(); PointerInput.CancelActive();
             if (Source!=MRFPSLoginPointer::ESource::None) Interaction->RefreshPointer();
@@ -486,10 +538,15 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     if (!bPointerHitReported || OnWidget!=bPointerHit) { bPointerHit=OnWidget; bPointerHitReported=true; UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_HIT value=%d"),OnWidget); }
     if (PointerRay) {
         PointerRay->SetVisibility(Source!=MRFPSLoginPointer::ESource::None);
-        const float Length=OnWidget?FMath::Clamp(static_cast<float>(FVector::Distance(Interaction->GetComponentLocation(),Hit.ImpactPoint)),1.f,400.f):400.f;
+        const float Length=RawWidget?FMath::Clamp(static_cast<float>(FVector::Distance(Interaction->GetComponentLocation(),Hit.ImpactPoint)),1.f,400.f):400.f;
         PointerRay->SetRelativeLocation(FVector(Length*.5f,0,0)); PointerRay->SetRelativeScale3D(FVector(.014,.014,Length/100.f));
     }
-    if (PointerDot) { PointerDot->SetVisibility(OnWidget); if (OnWidget) PointerDot->SetWorldLocation(Hit.ImpactPoint+Hit.ImpactNormal*.2f); }
+    if (PointerDot) { PointerDot->SetVisibility(RawWidget); if (RawWidget) PointerDot->SetWorldLocation(Hit.ImpactPoint+Hit.ImpactNormal*.2f); }
+    if (Source!=MRFPSLoginPointer::ESource::None && Pawn && Pawn->Camera && WorldWidget) {
+        LastGeometryMuzzle=MRFPSWeaponPose::Muzzle(Weapon.GripWorld);
+        LastGeometryPanel=WorldWidget->GetComponentTransform(); LastGeometryCamera=Pawn->Camera->GetComponentTransform();
+        LastGeometryTick=FPlatformTime::Seconds();
+    } else LastGeometryTick=-1;
 #endif
 }
 void UMRFPSLoginMenu::ApplyPointerAction(MRFPSLoginPointer::EAction Action)
@@ -497,6 +554,11 @@ void UMRFPSLoginMenu::ApplyPointerAction(MRFPSLoginPointer::EAction Action)
     if (!Interaction) return;
     if (Action==MRFPSLoginPointer::EAction::None) return;
     if (Action==MRFPSLoginPointer::EAction::Press) {
+        if (PointerInput.Selected==MRFPSLoginPointer::EInput::GloveController || PointerInput.Selected==MRFPSLoginPointer::EInput::GloveFlex) {
+            auto* PC=Controller.Get(); auto* Pawn=PC?PC->GetPawn<AMRFPSPawn>():nullptr; FMRFPSWeaponPose Weapon;
+            const bool HasWeapon=Pawn && ResolvePointerWeapon(Pawn,Weapon);
+            LogPointerGeometry(Pawn,Weapon,HasWeapon,TEXT("glove"));
+        }
         const FHitResult& Hit=Interaction->GetLastHitResult();
         const auto CurrentTarget=Interaction->HoveredTarget().Pin();
         const bool Blocking=Hit.bBlockingHit;
@@ -598,17 +660,21 @@ void UMRFPSLoginMenu::CloseLogin()
 void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
 {
     if (!Interaction || !bOpen) return;
-    if (!bPointerGridReady || LastPointerPaint<0 || FPlatformTime::Seconds()-LastPointerPaint>=.75) {
+    auto* PC=Controller.Get(); auto* Pawn=PC?PC->GetPawn<AMRFPSPawn>():nullptr;
+    const bool GridReady=bPointerGridReady && LastPointerPaint>=0 && FPlatformTime::Seconds()-LastPointerPaint<.75;
+    FMRFPSWeaponPose Weapon;
+    const bool HasWeapon=Pawn && (Pressed || GridReady) && ResolvePointerWeapon(Pawn,Weapon);
+    if (Pressed) LogPointerGeometry(Pawn,Weapon,HasWeapon,TEXT("controller"));
+    if (!GridReady) {
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_EDGE down=%d target=0 grid=0"),Pressed);
         PointerInput.SetButton(Pressed); PointerInput.ClearArm(MRFPSLoginPointer::EInput::Button); return;
     }
     // Sample the actual muzzle and widget at the physical edge. The next
     // frame must never replay an A tap onto B after the hand has moved.
     TSharedPtr<SWidget> Target;
-    auto* PC=Controller.Get(); auto* Pawn=PC?PC->GetPawn<AMRFPSPawn>():nullptr;
-    FMRFPSWeaponPose Weapon;
     bool UsesVRFocus=false,HasVRFocus=true;
     UHeadMountedDisplayFunctionLibrary::GetVRFocusState(UsesVRFocus,HasVRFocus);
-    if (PointerInput.Focused && (!UsesVRFocus || HasVRFocus) && Pawn && ResolvePointerWeapon(Pawn,Weapon) &&
+    if (PointerInput.Focused && (!UsesVRFocus || HasVRFocus) && Pawn && HasWeapon &&
         Weapon.Source==PointerInput.Source && Weapon.Source!=MRFPSLoginPointer::ESource::None) {
         const FTransform Muzzle=MRFPSWeaponPose::Muzzle(Weapon.GripWorld);
         Interaction->SetWorldLocationAndRotation(Muzzle.GetLocation(),Muzzle.GetRotation());
@@ -620,6 +686,7 @@ void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
     const std::size_t Before=PendingPointerEvents.Count;
     PendingPointerEvents.Push(MRFPSLoginPointer::EInput::Button,Pressed?1.f:0.f,FPlatformTime::Seconds(),true,false,
         reinterpret_cast<std::uintptr_t>(Target.Get()),true);
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_EDGE down=%d target=%d grid=1"),Pressed,Target.IsValid());
     if (PendingPointerEvents.Overflow) PendingPointerTargets.Reset();
     else if (Target && PendingPointerEvents.Count>Before) PendingPointerTargets.Add(Target);
 }

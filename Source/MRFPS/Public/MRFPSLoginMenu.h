@@ -83,6 +83,7 @@ private:
     void ProcessControlFile();
     void UpdateXRPointer(float DeltaTime);
     bool ResolvePointerWeapon(AMRFPSPawn* Pawn,FMRFPSWeaponPose& Weapon);
+    void LogPointerGeometry(AMRFPSPawn* Pawn,const FMRFPSWeaponPose& Weapon,bool HasWeapon,const TCHAR* Input);
     void ApplyPointerAction(MRFPSLoginPointer::EAction Action);
     void HandleFocusLost();
     void HandleFocusGained();
@@ -112,6 +113,8 @@ private:
     // Keep sampled target identities alive until their queued edges are consumed.
     TArray<TSharedPtr<SWidget>> PendingPointerTargets;
     TWeakPtr<SWidget> PreviousPointerHit;
+    FTransform LastGeometryMuzzle,LastGeometryPanel,LastGeometryCamera;
+    double LastGeometryTick=-1;
     std::uint64_t GloveCursor=0;
     bool bGloveCursorInitialized=false;
     MRFPSLoginPointer::EInput AnnouncedInput=MRFPSLoginPointer::EInput::None;
