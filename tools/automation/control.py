@@ -26,7 +26,7 @@ OPERATIONS = {
     'window.set', 'build-mode.set', 'admin.action', 'objects.list', 'roster.list',
     'object.ensure', 'object.remove', 'wall.set',
     'player.calibrate', 'player.round_ready', 'player.input.set', 'player.input.clear', 'player.reload', 'player.wall',
-    'haptics.set', 'capture.set',
+    'haptics.set', 'mobits.start', 'mobits.scan', 'mobits.pair', 'capture.set',
     'menu.set', 'connection.set', 'camera.set',
 }
 

@@ -562,6 +562,36 @@ void AMRFPSPlayerController::TickAutomation()
             else if(!Fighter->bCalibrated) { Ok=false; Code=TEXT("CALIBRATION_REQUIRED"); }
             else if(ReadyState->RoundReadyMask&(1u<<Fighter->GetSlot())) { Already=true; Code=TEXT("ROUND_READY_ALREADY_SET"); }
             else { Fighter->ServerRoundReady(ReadyState->RoundReadyWindow); Submitted=true; Code=TEXT("ROUND_READY_SUBMITTED"); }
+        } else if(Operation==TEXT("mobits.start") || Operation==TEXT("mobits.scan") || Operation==TEXT("mobits.pair")) {
+#if PLATFORM_ANDROID
+            auto* Fighter=GetPawn<AMRFPSPawn>();
+            auto* Runtime=Fighter?Fighter->QuestHaptics.Get():nullptr;
+            if(!Fighter || !Fighter->IsLocallyControlled() || Fighter->GetSlot()<0 || !Runtime) {
+                Ok=false; Code=TEXT("QUEST_PLAYER_REQUIRED");
+            } else {
+                const auto State=Runtime->GetStatus();
+                if(Operation==TEXT("mobits.start")) {
+                    if(State.bHasSession) { Already=true; Code=TEXT("MOBITS_SESSION_OPEN"); }
+                    else if(Runtime->Start()) { Submitted=true; Code=TEXT("MOBITS_START_SUBMITTED"); }
+                    else { Ok=false; Code=TEXT("MOBITS_START_FAILED"); }
+                } else if(State.bHasSession) { Ok=false; Code=TEXT("MOBITS_SESSION_OPEN"); }
+                else if(Operation==TEXT("mobits.scan")) {
+                    if(Runtime->ScanDevices()) { Submitted=true; Code=TEXT("MOBITS_SCAN_SUBMITTED"); }
+                    else { Ok=false; Code=TEXT("MOBITS_SCAN_FAILED"); }
+                } else {
+                    FString Id; const FMoBitsQuestDevice* Selected=nullptr;
+                    if(Params->TryGetStringField(TEXT("id"),Id) && !Id.IsEmpty() && Id.Len()<=128)
+                        for(const auto& Device:State.Devices) if(Device.Id.Equals(Id,ESearchCase::IgnoreCase)) { Selected=&Device; break; }
+                    if(!Selected || Selected->Model!=50) { Ok=false; Code=TEXT("MOBITS_DEVICE_NOT_FOUND"); }
+                    else if(Selected->bConnected) { Already=true; Code=TEXT("MOBITS_DEVICE_CONNECTED"); }
+                    else if(!Selected->bPairing) { Ok=false; Code=TEXT("MOBITS_PAIRING_MODE_REQUIRED"); }
+                    else if(Runtime->PairDevice(Selected->Id)) { Submitted=true; Code=TEXT("MOBITS_PAIR_SUBMITTED"); }
+                    else { Ok=false; Code=TEXT("MOBITS_PAIR_FAILED"); }
+                }
+            }
+#else
+            Ok=false; Code=TEXT("QUEST_PLAYER_REQUIRED");
+#endif
         } else if(Operation==TEXT("haptics.set")) {
             FString State; auto* Fighter=GetPawn<AMRFPSPawn>(); auto* Haptics=Fighter?Fighter->Haptics.Get():nullptr;
             if(IsInspector()||!Haptics||!Params->TryGetStringField(TEXT("state"),State)) { Ok=false; Code=TEXT("HAPTICS_UNAVAILABLE"); }

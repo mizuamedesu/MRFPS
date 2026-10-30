@@ -6,6 +6,8 @@ Quest 版は [MoBits UE5 SDK](https://github.com/MoBits-Project/UE5_SDK) の Que
 
 エラー 144 は操作時の状態が条件に合わないことを表します。188 は Bluetooth 登録の準備に失敗したことを表します。別アプリの接続を終了し、画面に表示される案内を確認して「機器を探す」から選び直します。Quest のペアリング確認が表示された場合は本人が許可してください。原因の特定には `tools/automation/control.py` の `status` が返す `quest_mobits_message` も参照できます。
 
+接続の操作は同じローカル操作窓口の `mobits.start`、`mobits.scan`、`mobits.pair`（`{"id":"候補のID"}`）でも要求できます。各操作は同じ操作 ID を再利用すると重複実行されず、結果が「submitted」のときは `status` で完了を確認します。Bluetooth の権限・ペアリングの承認と、電極の装着・校正・刺激の有効化は本人が行います。
+
 ## ゲーム内の準備
 
 サーバーにプレイヤーとして参加してから、右スティックを押し込んで「MoBits 設定」を開きます。右トリガーのポインターで操作し、停止する場合は右 B または画面の「停止」を押します。
