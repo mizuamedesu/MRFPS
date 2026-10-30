@@ -19,6 +19,14 @@ on:
         description: Approved MRFPSServer ELF SHA256
         required: true
         type: string
+      runner:
+        description: GitHub-hosted Linux image for the publication job
+        required: true
+        type: choice
+        default: ubuntu-24.04
+        options:
+          - ubuntu-24.04
+          - ubuntu-26.04
 permissions:
   contents: write  # needed to download draft release assets
   packages: write
@@ -27,7 +35,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   publish:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 40
     env:
       SOURCE_COMMIT: ${{ inputs.source_commit }}
