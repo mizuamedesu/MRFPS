@@ -149,6 +149,22 @@ bool FMRFPSGloveBacklogTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Slow rendering does not permanently discard live glove input"),Gloves->GetLatestHand(EMRFPSGloveHand::Left,Frame));
         TestTrue(TEXT("Slow rendering keeps the other glove live too"),Gloves->GetLatestHand(EMRFPSGloveHand::Right,Frame));
     }
+    TArray<uint8> RightOpen,RightClosed;
+    for (auto* Packet:{&RightOpen,&RightClosed}) {
+        String(*Packet,"/DS/HC/Hand");String(*Packet,",isiffffffffffffffffffff");
+        Int(*Packet,1);String(*Packet,"test-glove");Int(*Packet,0);
+        for (int32 I=0;I<20;++I) Float(*Packet,Packet==&RightClosed && I>=4 && I<=6?.8f:0.f);
+    }
+    TestTrue(TEXT("Send neutral right hand"),Send(Device) && Send(RightOpen));
+    FPlatformProcess::Sleep(.04f); Gloves->Tick(.04f);
+    auto Cursor=Gloves->GetRightTriggerJournal().Latest();
+    TestTrue(TEXT("Send a full right-hand tap between game frames"),Send(Device) && Send(RightClosed) && Send(RightOpen));
+    FPlatformProcess::Sleep(.04f); Gloves->Tick(.04f);
+    std::array<MRFPSGloveTrigger::FEvent,MRFPSGloveTrigger::FJournal::Capacity> Edges;
+    std::size_t Count=0;
+    TestTrue(TEXT("Journal cursor remains complete"),Gloves->GetRightTriggerJournal().Read(Cursor,Edges,Count));
+    TestTrue(TEXT("Both real OSC tap edges are retained"),Count==2 && Edges[0].Valid && Edges[0].Value>.55f && Edges[1].Valid && Edges[1].Value<.3f);
+    TestTrue(TEXT("Gameplay still sees latest right-hand frame"),Gloves->GetLatestHand(EMRFPSGloveHand::Right,Frame) && Frame.FingerCurls[1]<.3f);
     Gloves->StopReceiver();
     Gloves->Socket=nullptr;Receiver->Close();Sender->Close();
     ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(Receiver);

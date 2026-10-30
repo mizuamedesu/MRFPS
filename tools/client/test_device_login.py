@@ -369,7 +369,7 @@ class DeviceLoginControlTests(unittest.TestCase):
             root = Path(folder)
             args = argparse.Namespace(server=module.DEFAULT_SERVER, serial="fixture", role="player", adb="adb",
                                       replace=False, code_file=None, glove_sender="192.168.1.10",
-                                      glove_port=25788, glove_device="CG2-1")
+                                      glove_port=25788, glove_device="CG2-1", login_input="glove_controller")
             pid = {"value":""}
             calls = []
             def fake_adb(_adb, _serial, cmd, **_kwargs):
@@ -382,11 +382,17 @@ class DeviceLoginControlTests(unittest.TestCase):
                 self.assertEqual(module.quest(args)["status"],"launched")
                 launch = next(cmd for cmd in calls if cmd[:3] == ["shell", "am", "start"])
                 self.assertIn("-MRFPSGloveSender=192.168.1.10 -MRFPSGlovePort=25788 -MRFPSGloveDevice=CG2-1", launch[-1])
+                self.assertIn("-MRFPSLoginInput=glove_controller", launch[-1])
+                args.login_input = None
                 args.glove_sender = args.glove_port = args.glove_device = None
                 code = root / "code.txt"; code.write_text("000123", encoding="ascii")
                 args.code_file = code
                 self.assertEqual(module.quest(args)["status"],"login_queued")
                 self.assertEqual(control.call_count,2)
+                args.login_input = "quest_axis"
+                with self.assertRaisesRegex(RuntimeError,"launch setting"):
+                    module.quest(args)
+                args.login_input = None
                 args.glove_sender = "192.168.1.11"
                 before = list(calls)
                 with self.assertRaisesRegex(RuntimeError,"launch setting"):
@@ -395,6 +401,7 @@ class DeviceLoginControlTests(unittest.TestCase):
                 self.assertEqual(control.call_count,2)
             saved = module.load_quest_state(root / "Saved" / "DeviceAuth" / "quest-fixture.json")
             self.assertEqual(saved["config"]["glove"]["sender"],"192.168.1.10")
+            self.assertEqual(saved["config"]["login_input"],"glove_controller")
 
     def test_quest_show_settings_launches_once_and_can_configure_later(self):
         with tempfile.TemporaryDirectory() as folder:

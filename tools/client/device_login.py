@@ -328,6 +328,10 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     if show_settings and args.code_file is not None:
         raise ValueError("--show-settings cannot include a code")
     requested_glove = quest_glove_config(args)
+    requested_input = getattr(args, "login_input", None)
+    allowed_inputs = {"auto", "quest_axis", "quest_button", "glove_flex", "glove_controller"}
+    if requested_input is not None and requested_input not in allowed_inputs:
+        raise ValueError("invalid login input mode")
     marker, code = submission(args.code_file)
     current_pid = quest_pid(args.adb, serial)
     previous = load_quest_state(state_path)
@@ -340,13 +344,21 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
         raise RuntimeError("Quest configuration journal is invalid; no code was sent")
     assert_quest_share_clear(args.adb, serial)
     prior_glove = previous_config.get("glove")
+    prior_input = previous_config.get("login_input")
+    if prior_input is not None and prior_input not in allowed_inputs:
+        raise RuntimeError("Quest input configuration journal is invalid")
     if current_pid and known and not args.replace and requested_glove is not None and requested_glove != prior_glove:
         raise RuntimeError("Quest glove relay is a launch setting; use --replace to change it")
+    if current_pid and known and not args.replace and requested_input is not None and requested_input != prior_input:
+        raise RuntimeError("Quest login input is a launch setting; use --replace to change it")
     # A later code-only submission must not silently discard the launch pin.
     glove = prior_glove if requested_glove is None and current_pid and same_process and not args.replace else requested_glove
+    login_input = prior_input if requested_input is None and current_pid and same_process and not args.replace else requested_input
     wanted = {"server": address, "role": args.role}
     if glove is not None:
         wanted["glove"] = glove
+    if login_input is not None:
+        wanted["login_input"] = login_input
     if marker is not None and marker in history:
         submitted_pids = set(str(previous.get("submitted_pid") or "").split())
         launched_pending = bool(previous.get("pending") and not previous_pids and not submitted_pids)
@@ -419,6 +431,8 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     if quest_pid(args.adb, serial):
         raise RuntimeError("Quest app restarted before launch")
     cmdline = "/Game/Maps/MRFPSArena -vr -log"
+    if login_input is not None:
+        cmdline += f" -MRFPSLoginInput={login_input}"
     if glove is not None:
         cmdline += f" -MRFPSGloveSender={glove['sender']} -MRFPSGlovePort={glove['port']}"
         if glove["device"]:
@@ -796,6 +810,8 @@ def main() -> int:
             p.add_argument("--glove-sender", help="pin the PC glove relay's IPv4 address when launching")
             p.add_argument("--glove-port", type=int, help="Quest receive port; defaults to 25788")
             p.add_argument("--glove-device", help="optional DivingStation device ID")
+            p.add_argument("--login-input", choices=("auto", "quest_axis", "quest_button", "glove_flex", "glove_controller"),
+                           help="select a single Quest login pointer input")
     p = sub.add_parser("reset-trust")
     p.add_argument("platform", choices=("windows", "quest"))
     p.add_argument("--adb", default="adb")

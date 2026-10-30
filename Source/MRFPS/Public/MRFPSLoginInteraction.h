@@ -14,6 +14,7 @@ public:
     void EndPointer();
     void CancelPointer();
     void RefreshPointer();
+    TWeakPtr<SWidget> HoveredTarget() const;
 private:
     TWeakPtr<SWidget> CapturedByThisPointer;
 };

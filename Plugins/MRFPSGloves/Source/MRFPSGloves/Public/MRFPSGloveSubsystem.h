@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "MRFPSGloveTriggerJournal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "MRFPSGloveSubsystem.generated.h"
@@ -92,6 +93,8 @@ public:
     // True means fresh flex data, independently of whether a positional tracker is present.
     UFUNCTION(BlueprintCallable, Category="MRFPS|Gloves")
     bool GetLatestHand(EMRFPSGloveHand Hand, FMRFPSGloveHandFrame& Frame) const;
+    // Game-thread snapshots for non-destructive consumers such as login UI.
+    const MRFPSGloveTrigger::FJournal& GetRightTriggerJournal() const { return RightTriggerJournal; }
     UFUNCTION(BlueprintPure, Category="MRFPS|Gloves") bool IsReceiving() const;
 
     // For an OpenXR/SteamVR pose supplied by the local pawn; does not invent a pose.
@@ -119,6 +122,7 @@ private:
     double LastTickAt = -1.0;
     bool bDiscardBacklog = false;
     FMRFPSGloveHandFrame Hands[2];
+    MRFPSGloveTrigger::FJournal RightTriggerJournal;
     FTransform TrackerMounts[2] = { FTransform::Identity, FTransform::Identity };
     bool bMountValid[2] = { true, true };
 };

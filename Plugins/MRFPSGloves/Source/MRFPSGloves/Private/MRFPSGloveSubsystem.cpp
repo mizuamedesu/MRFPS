@@ -264,12 +264,20 @@ bool UMRFPSGloveSubsystem::ProcessMessage(const uint8* Data, int32 Size, double 
             Hand.BatteryPercent = SelectedOffset != INDEX_NONE ? Args[SelectedOffset + (I == 0 ? 7 : 10)].Integer : -1;
             if (Hand.bConnected && !bWasConnected)
             {
+                if (I==1) {
+                    RightTriggerJournal.Invalidate(MRFPSGloveTrigger::EStream::Controller,Now);
+                    RightTriggerJournal.Invalidate(MRFPSGloveTrigger::EStream::Flex,Now);
+                }
                 // Discard pre-connection default samples and wait for real subsequent streams.
                 Hand.FlexReceivedAt = Hand.ControllerReceivedAt = Hand.JointsReceivedAt = Hand.WristReceivedAt = -1.0;
                 Hand.bFlexValid = Hand.bControllerValid = Hand.bJointRotationsValid = Hand.bWristImuValid = false;
             }
             if (!Hand.bConnected)
             {
+                if (I==1) {
+                    RightTriggerJournal.Invalidate(MRFPSGloveTrigger::EStream::Controller,Now);
+                    RightTriggerJournal.Invalidate(MRFPSGloveTrigger::EStream::Flex,Now);
+                }
                 Hand.bFlexValid = Hand.bControllerValid = Hand.bJointRotationsValid = Hand.bWristImuValid = false;
                 Hand.Trigger = Hand.Grip = 0.0f;
                 Hand.bTriggerPressed = Hand.bAButtonPressed = Hand.bBButtonPressed = false;
@@ -302,6 +310,9 @@ bool UMRFPSGloveSubsystem::ProcessMessage(const uint8* Data, int32 Size, double 
         }
         Hand.FlexReceivedAt = Now;
         Hand.bFlexValid = true;
+        if (HandIndex==1) RightTriggerJournal.Sample(MRFPSGloveTrigger::EStream::Flex,Now,
+            Hand.bConnected && Hand.bDeviceStatusValid && MRFPSOSC::IsFresh(Hand.DeviceStatusReceivedAt,Now,StaleAfter),
+            Hand.FingerCurls[1],false,StaleAfter);
     }
     else if (Message.Address == TEXT("/DS/HC/HandQuat"))
     {
@@ -341,6 +352,9 @@ bool UMRFPSGloveSubsystem::ProcessMessage(const uint8* Data, int32 Size, double 
         Hand.Grip = FMath::Clamp(Args[10].Number, 0.0f, 1.0f);
         Hand.ControllerReceivedAt = Now;
         Hand.bControllerValid = true;
+        if (HandIndex==1) RightTriggerJournal.Sample(MRFPSGloveTrigger::EStream::Controller,Now,
+            Hand.bConnected && Hand.bDeviceStatusValid && MRFPSOSC::IsFresh(Hand.DeviceStatusReceivedAt,Now,StaleAfter),
+            Hand.Trigger,Hand.bTriggerPressed,StaleAfter);
     }
     else if (Message.Address == TEXT("/MRFPS/Tracker"))
     {

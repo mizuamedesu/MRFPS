@@ -5,6 +5,21 @@
 
 void UMRFPSLoginInteraction::RefreshPointer() { SimulatePointerMovement(); }
 
+TWeakPtr<SWidget> UMRFPSLoginInteraction::HoveredTarget() const
+{
+    const FWidgetPath Path=LastWidgetPath.ToWidgetPath();
+    if (!Path.IsValid()) return {};
+    // Use the owning control, not its text child, so movement between the
+    // label and padding of the same button does not cancel a valid click.
+    TWeakPtr<SWidget> Result=Path.Widgets.Last().Widget;
+    for (int32 I=Path.Widgets.Num()-1;I>=0;--I) {
+        const auto& Widget=Path.Widgets[I].Widget;
+        const FName Type=Widget->GetType();
+        if (Type==FName(TEXT("SButton")) || Type==FName(TEXT("SEditableTextBox")) || Type==FName(TEXT("SEditableText"))) Result=Widget;
+    }
+    return Result;
+}
+
 bool UMRFPSLoginInteraction::BeginPointer()
 {
     CapturedByThisPointer.Reset();

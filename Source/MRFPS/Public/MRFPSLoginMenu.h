@@ -66,7 +66,7 @@ private:
     void ConnectAfterLogin();
     void ProcessControlFile();
     void UpdateXRPointer(float DeltaTime);
-    void ApplyPointerInput();
+    void ApplyPointerAction(MRFPSLoginPointer::EAction Action);
     void HandleFocusLost();
     void HandleFocusGained();
     TWeakObjectPtr<AMRFPSPlayerController> Controller;
@@ -90,6 +90,11 @@ private:
     bool bPointerHit=false,bPointerPoseReported=false,bPointerHitReported=false;
     MRFPSLoginPointer::FPressState PointerInput;
     MRFPSLoginPointer::FEventQueue PendingPointerEvents;
+    TWeakPtr<SWidget> PreviousPointerHit;
+    std::uint64_t GloveCursor=0;
+    bool bGloveCursorInitialized=false;
+    MRFPSLoginPointer::EInput AnnouncedInput=MRFPSLoginPointer::EInput::None;
+    bool bInputAnnounced=false;
     FDelegateHandle FocusLostHandle,FocusGainedHandle,BackgroundHandle,ForegroundHandle;
     double NextControlCheck=0,LastPointerTick=-1;
 };
