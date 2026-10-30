@@ -17,6 +17,7 @@ const IMAGE = /^ghcr\.io\/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$/;
 const POD = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
 const SHELL_COMMAND = [
   'stty -echo 2>/dev/null || true',
+  'export PS1= PS2=',
   '/usr/local/bin/mrfps-flash-healthcheck >/dev/null 2>&1; rc=$?; printf "\\n__MRFPS_HEALTH__%s\\n" "$rc"',
   'p="$(pidof MRFPSServer MRFPSServer-Linux-Shipping 2>/dev/null | awk \'{print $1}\')"',
   'if [ -n "$p" ]; then awk -v n="$p" \'{printf "__MRFPS_START__%s:%s\\n",n,$22}\' "/proc/$p/stat"; fi',
@@ -67,14 +68,14 @@ export function oneReadyPod(collection) {
 
 export function parseTerminalOutput(output) {
   const clean = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
-  const lines = clean.split(/\r?\n/).map(line => line.trim());
+  const lines = clean.split(/\r?\n/).map(line => line.trim().replace(/^(?:[#\$]\s*)+/, ''));
   const find = expression => lines.map(line => line.match(expression)).filter(Boolean);
-  const health = find(/^__MRFPS_HEALTH__(\d+)$/);
+  const health = find(/^__MRFPS_HEALTH__(\d{1,3})$/);
   const start = find(/^__MRFPS_START__(\d+):(\d+)$/);
   const fingerprint = find(/^__MRFPS_FP__([a-f0-9]{64})$/);
-  if (health.length !== 1 || health[0][1] !== '0' || start.length !== 1 || fingerprint.length !== 1 ||
+  if (health.length !== 1 || Number(health[0][1]) > 255 || start.length !== 1 || fingerprint.length !== 1 ||
       !lines.includes('__MRFPS_DONE__')) throw Error('GAME_RUNTIME_EVIDENCE_INCOMPLETE');
-  return { fingerprint: fingerprint[0][1], pid: start[0][1], start_ticks: start[0][2] };
+  return { fingerprint: fingerprint[0][1], pid: start[0][1], start_ticks: start[0][2], health_exit_code: Number(health[0][1]) };
 }
 
 export async function shellProbe(url, headers) {
@@ -93,7 +94,7 @@ export async function shellProbe(url, headers) {
     socket.on('message', chunk => {
       data += chunk.toString('utf8');
       if (Buffer.byteLength(data) > 65536) return finish(Error('EXEC_OUTPUT_TOO_LARGE'));
-      if (/(?:^|\n)__MRFPS_DONE__\r?\n/.test(data)) {
+      if (/(?:^|\n)(?:[#\$]\s*)*__MRFPS_DONE__\r?\n/.test(data)) {
         try { finish(null, parseTerminalOutput(data)); } catch { finish(Error('GAME_RUNTIME_EVIDENCE_INCOMPLETE')); }
       }
     });
@@ -148,11 +149,13 @@ async function main() {
   const after = await snapshot();
   if (before.generation !== middle.generation || before.generation !== after.generation ||
       before.pod !== middle.pod || before.pod !== after.pod ||
-      first.fingerprint !== second.fingerprint || first.pid !== second.pid || first.start_ticks !== second.start_ticks) {
+      first.fingerprint !== second.fingerprint || first.pid !== second.pid || first.start_ticks !== second.start_ticks ||
+      first.health_exit_code !== second.health_exit_code) {
     throw Error('RUNTIME_CHANGED_DURING_VERIFICATION');
   }
   process.stdout.write(JSON.stringify({ service_id: state.service_id, generation: after.generation, pod: after.pod,
-    image: options['--expected-image'], fingerprint: second.fingerprint, udp_socket_health_verified: true,
+    image: options['--expected-image'], fingerprint: second.fingerprint,
+    udp_socket_health_verified: second.health_exit_code === 0, health_exit_code: second.health_exit_code,
     endpoints: after.endpoints, internet_udp_verified: false }) + '\n');
 }
 

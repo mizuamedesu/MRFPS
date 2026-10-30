@@ -40,10 +40,10 @@ test('requires exactly one running, ready pod', () => {
   assert.throws(() => oneReadyPod({items:[{...pod,ready:false}]}));
 });
 
-test('parses only complete runtime markers and rejects unhealthy or ambiguous output', () => {
-  const evidence = `__MRFPS_HEALTH__0\r\n__MRFPS_START__32:678\r\n__MRFPS_FP__${fingerprint}\r\n__MRFPS_DONE__\r\n`;
-  assert.deepEqual(parseTerminalOutput('shell command echo\r\n' + evidence), {fingerprint,pid:'32',start_ticks:'678'});
-  assert.throws(() => parseTerminalOutput(evidence.replace('__MRFPS_HEALTH__0', '__MRFPS_HEALTH__1')));
+test('parses complete runtime markers, exposes failed health and rejects ambiguity', () => {
+  const evidence = `__MRFPS_HEALTH__0\r\n# __MRFPS_START__32:678\r\n# __MRFPS_FP__${fingerprint}\r\n# __MRFPS_DONE__\r\n`;
+  assert.deepEqual(parseTerminalOutput('shell command echo\r\n' + evidence), {fingerprint,pid:'32',start_ticks:'678',health_exit_code:0});
+  assert.equal(parseTerminalOutput(evidence.replace('__MRFPS_HEALTH__0', '__MRFPS_HEALTH__1')).health_exit_code, 1);
   assert.throws(() => parseTerminalOutput(evidence.replace('__MRFPS_DONE__', 'missing')));
   assert.throws(() => parseTerminalOutput(evidence + `__MRFPS_FP__${fingerprint}\r\n`));
 });
@@ -57,10 +57,10 @@ test('websocket probe sends a binary command and handles fragmented terminal out
         assert.equal(isBinary, true);
         assert.match(message.toString(), /mrfps-flash-healthcheck/);
         socket.send('__MRFPS_HEALTH__0\r\n__MRFPS_START__32:678\r\n__MRFPS_');
-        socket.send(`FP__${fingerprint}\r\n__MRFPS_DONE__\r\n`);
+        socket.send(`FP__${fingerprint}\r\n# __MRFPS_DONE__\r\n`);
       });
     });
     const result = await shellProbe(`ws://127.0.0.1:${server.address().port}`, {});
-    assert.deepEqual(result, {fingerprint,pid:'32',start_ticks:'678'});
+    assert.deepEqual(result, {fingerprint,pid:'32',start_ticks:'678',health_exit_code:0});
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
