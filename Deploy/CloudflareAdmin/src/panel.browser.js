@@ -1,4 +1,4 @@
-import { generateBackup, restoreBackup, newCode } from '/crypto.js';
+import { generateBackup, restoreBackup, newCode, CODE_LIFETIME_SECONDS } from '/crypto.js';
 
 const $ = id => document.getElementById(id);
 const roles = ['player', 'inspector', 'admin'];
@@ -137,7 +137,7 @@ async function publish(role, takeover = false) {
   if (!accepted || accepted.ok !== true || accepted.id !== entry.body.id || accepted.consumed === true ||
       !Number.isSafeInteger(accepted.expires_at) || !Number.isSafeInteger(accepted.server_now) ||
       accepted.expires_at <= accepted.server_now || accepted.expires_at > entry.body.expires_at ||
-      accepted.expires_at > accepted.server_now + 30) throw Error('invalid issuance response');
+      accepted.expires_at > accepted.server_now + CODE_LIFETIME_SECONDS) throw Error('invalid issuance response');
   // Start from the authoritative server lifetime and subtract the full request
   // time. This is conservative even if this browser's wall clock is wrong.
   const now=performance.now();

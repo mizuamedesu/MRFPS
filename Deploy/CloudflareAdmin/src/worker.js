@@ -5,6 +5,7 @@ import style from './panel.css';
 import cryptoScript from './crypto.browser.js';
 
 const roles = new Set(['player', 'inspector', 'admin']);
+const CODE_LIFETIME_SECONDS = 300;
 // Roster-only category; never accepted by device-code authentication.
 const rosterRoles = new Set([...roles, 'bot']);
 const encoder = new TextEncoder();
@@ -125,8 +126,8 @@ async function validatePublish(input) {
       !Number.isSafeInteger(input.expires_at)) throw Error('invalid');
   const now = Math.floor(Date.now() / 1000);
   // Permit the same five-second clock tolerance as the signed iat check.
-  // The DO independently caps the actual code lifetime to 30 seconds.
-  if (input.expires_at <= now || input.expires_at > now + 35) throw Error('expired');
+  // The DO independently caps the actual code lifetime to 300 seconds.
+  if (input.expires_at <= now || input.expires_at > now + CODE_LIFETIME_SECONDS + 5) throw Error('expired');
   const match = /^-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/]{59}=)\n-----END PUBLIC KEY-----\n$/.exec(input.public_key || '');
   if (!match) throw Error('key');
   const keyBytes = Uint8Array.from(atob(match[1]), c => c.charCodeAt(0));
@@ -144,7 +145,7 @@ async function validatePublish(input) {
       !Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.nbf) || !Number.isSafeInteger(claims.exp) ||
       claims.iat < 0 || claims.iat > now + 5 || claims.nbf > now + 5 || claims.iat > claims.nbf ||
       claims.nbf >= claims.exp || claims.exp - claims.iat > 3600 || claims.exp <= input.expires_at ||
-      input.expires_at <= claims.iat || input.expires_at > claims.iat + 30) throw Error('claims');
+      input.expires_at <= claims.iat || input.expires_at > claims.iat + CODE_LIFETIME_SECONDS) throw Error('claims');
   const sig = b64decode(parts[2]);
   if (sig.length !== 64 || !await crypto.subtle.verify('Ed25519', key, sig, encoder.encode(parts[0] + '.' + parts[1]))) throw Error('signature');
   return { ...input, token_expires_at: claims.exp };
@@ -292,7 +293,7 @@ export class DeviceCodes extends DurableObject {
     }
     if (previous) sql.exec("UPDATE issuance_receipts SET state='retired' WHERE id=? AND state IN ('active','legacy')",previous.id);
     // Keep the request hash over the original expiration for idempotent retries.
-    const effectiveExpiry = Math.min(data.expires_at, now + 30);
+    const effectiveExpiry = Math.min(data.expires_at, now + CODE_LIFETIME_SECONDS);
     sql.exec("INSERT INTO issuance_receipts (id,role,owner,expires_at,request_hash,state) VALUES (?,?,?,?,?,'active')",
       data.id,data.role,data.owner,effectiveExpiry,requestHash);
     sql.exec(`INSERT INTO codes (role,id,owner,expires_at,code_hash,token,public_key,token_expires_at,consumed)

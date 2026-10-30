@@ -21,7 +21,7 @@ test('one-time code and signed token match the strict server profile for each ro
     const before = Math.floor(Date.now() / 1000);
     const entry = await newCode(role, crypto.randomUUID(), 'ab'.repeat(32), key);
     assert.match(entry.code, /^\d{6}$/);
-    assert(entry.body.expires_at >= before + 29 && entry.body.expires_at <= before + 31);
+    assert(entry.body.expires_at >= before + 299 && entry.body.expires_at <= before + 301);
     const [header, payload, sig] = entry.body.token.split('.');
     assert(verify(null, Buffer.from(header + '.' + payload), createPublicKey(key.publicKey), Buffer.from(sig, 'base64url')));
     assert.deepEqual(JSON.parse(Buffer.from(header, 'base64url')), { alg:'EdDSA', typ:'JWT' });

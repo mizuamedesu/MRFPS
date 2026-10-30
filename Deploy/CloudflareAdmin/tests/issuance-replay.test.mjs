@@ -119,7 +119,7 @@ test('concurrent exchange and repeated publish cannot return a second token',asy
 test('expired issuance cannot be republished or exchanged',async t=>{
   const h=harness(); t.after(h.close); const owner=crypto.randomUUID(), key=await keyPair();
   h.object.start(owner); const item=await entry('player',owner,key); await h.object.publish(item.data);
-  const prior=clock; t.after(()=>{clock=prior;}); clock+=31000;
+  const prior=clock; t.after(()=>{clock=prior;}); clock+=301000;
   assert.equal((await h.object.publish(item.data)).error,'issuance_expired');
   assert.equal(h.object.exchange('player',item.data.code_hash,'fixture-expired').error,'invalid_code');
 });
@@ -140,7 +140,7 @@ test('a failed alarm schedule is repaired on the same ID without restoring a con
   assert.equal(h.object.exchange('player',item.data.code_hash,'fixture-alarm-2').error,'invalid_code');
 });
 
-test('clock-ahead issuer is accepted but server expiry stays within thirty seconds and retries retain identity',async t=>{
+test('clock-ahead issuer is accepted but server expiry stays within 300 seconds and retries retain identity',async t=>{
   const h=harness(); t.after(h.close); const owner=crypto.randomUUID(), key=await keyPair();
   const originalClock=clock; t.after(()=>{clock=originalClock;}); h.object.start(owner);
   const item=await newCode('inspector',owner,'a'.repeat(64),key);
@@ -149,7 +149,7 @@ test('clock-ahead issuer is accepted but server expiry stays within thirty secon
   const validated=await validatePublish(item.body);
   const first=await h.object.publish(validated);
   assert.equal(first.ok,true);
-  assert.equal(first.expires_at,first.server_now+30);
+  assert.equal(first.expires_at,first.server_now+300);
   assert.equal(first.expires_at,item.body.expires_at-1);
   clock+=1000;
   const retry=await h.object.publish(await validatePublish(item.body));
@@ -158,7 +158,7 @@ test('clock-ahead issuer is accepted but server expiry stays within thirty secon
   assert.equal(h.object.exchange('inspector',item.body.code_hash,'fixture-clock').error,'invalid_code');
 });
 
-test('clock tolerance never permits a code longer than the signed thirty-second window',async t=>{
+test('clock tolerance never permits a code longer than the signed 300-second window',async t=>{
   const h=harness(); t.after(h.close); const owner=crypto.randomUUID(), key=await keyPair();
   const originalClock=clock; t.after(()=>{clock=originalClock;}); h.object.start(owner);
   const item=await newCode('inspector',owner,'a'.repeat(64),key);

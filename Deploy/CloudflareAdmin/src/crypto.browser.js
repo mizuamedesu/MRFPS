@@ -1,4 +1,5 @@
 // Shared by the browser and the local Node CLI. Private keys never leave this module.
+export const CODE_LIFETIME_SECONDS = 300;
 const enc = new TextEncoder();
 const backupTag = 'MRFPS-ISSUER-1';
 const iterations = 310000;
@@ -59,5 +60,5 @@ export async function newCode(role, owner, fingerprint, key) {
   do { random = crypto.getRandomValues(new Uint32Array(1))[0]; } while (random >= 4294000000);
   const code = String(random % 1000000).padStart(6, '0');
   const code_hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(role + ':' + code))), b => b.toString(16).padStart(2, '0')).join('');
-  return { code, body: { role, owner, id: crypto.randomUUID(), code_hash, expires_at: now + 30, token: data + '.' + b64url(sig), public_key: key.publicKey } };
+  return { code, body: { role, owner, id: crypto.randomUUID(), code_hash, expires_at: now + CODE_LIFETIME_SECONDS, token: data + '.' + b64url(sig), public_key: key.publicKey } };
 }

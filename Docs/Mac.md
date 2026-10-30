@@ -38,7 +38,7 @@ python3 tools/client/mac_login.py queue --name MRFPS-Inspector-1 \
 python3 tools/client/mac_login.py status --name MRFPS-Inspector-1 --operation-id "$operation_id"
 ```
 
-画面が開いていることを確認してから投入します。`queued` はローカル投入完了であり、認証やサーバー参加の成功を意味しません。`already_queued` は同じ操作の再実行です。別の操作が投入待ちなら上書きせず失敗し、同じ UUID に別の内容を指定すると拒否します。処理途中に停止して結果が特定できないと `unknown` を返し、同じコードを勝手に再送しません。コードの有効期限は最大30秒で、交換後は一回限りです。
+画面が開いていることを確認してから投入します。`queued` はローカル投入完了であり、認証やサーバー参加の成功を意味しません。`already_queued` は同じ操作の再実行です。別の操作が投入待ちなら上書きせず失敗し、同じ UUID に別の内容を指定すると拒否します。処理途中に停止して結果が特定できないと `unknown` を返し、同じコードを勝手に再送しません。コードの有効期限は最大300秒で、交換後は一回限りです。
 
 未処理の投入を取り消すには `python3 tools/client/mac_login.py cancel --name MRFPS-Inspector-1 --operation-id "$operation_id"` を使います。画面側が既にファイルを受け取っていた場合は `unknown` であり、認証を取り消せたとは扱いません。起動中断でプロセス状態が `unknown` なら、該当するクライアントが停止していることを確認したうえで `python3 tools/client/mac_login.py recover --name MRFPS-Inspector-1` を実行できます。保護された操作ファイルと結果は `~/Library/Application Support/MRFPS/DeviceLogin` に保存します。
 

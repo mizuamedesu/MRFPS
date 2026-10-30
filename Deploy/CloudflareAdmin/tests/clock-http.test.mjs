@@ -28,21 +28,41 @@ function harness() {
   return {object,env,close:()=>db.close()};
 }
 
-test('complete publish and exchange route honors thirty seconds with an ahead issuer clock',async t=>{
-  const original=clock;t.after(()=>{clock=original;}); const h=harness();t.after(h.close);
-  const owner=crypto.randomUUID();h.object.start(owner);
+async function fixture(t, requestedLifetime=300) {
+  const original=clock; t.after(()=>{clock=original;}); const h=harness(); t.after(h.close);
+  const owner=crypto.randomUUID(); h.object.start(owner);
   const pair=await crypto.subtle.generateKey('Ed25519',true,['sign','verify']);
   const spki=Buffer.from(await crypto.subtle.exportKey('spki',pair.publicKey)).toString('base64');
   const key={privateKey:pair.privateKey,publicKey:`-----BEGIN PUBLIC KEY-----\n${spki}\n-----END PUBLIC KEY-----\n`};
   const entry=await newCode('inspector',owner,'a'.repeat(64),key);
   const claims=JSON.parse(Buffer.from(entry.body.token.split('.')[1],'base64url'));
+  if (requestedLifetime!==300) entry.body.expires_at=claims.iat+requestedLifetime;
   clock=(claims.iat-1)*1000;
   const headers={'content-type':'application/json',authorization:'Basic '+Buffer.from('fixture:fixture-password').toString('base64')};
   const call=(path,body,auth=true)=>handler.fetch(new Request('https://fixture.invalid'+path,{method:'POST',headers:auth?headers:{'content-type':'application/json'},body:JSON.stringify(body)}),h.env);
   const accepted=await call('/api/admin/publish',entry.body);
   assert.equal(accepted.status,200);
   const result=await accepted.json();
-  assert.equal(result.expires_at,result.server_now+30);
+  assert.equal(result.expires_at,requestedLifetime===300 ? result.server_now+300 : entry.body.expires_at);
+  return {call,entry,result};
+}
+
+test('the complete HTTP exchange still accepts the code just before 300 seconds, once only',async t=>{
+  const {call,entry,result}=await fixture(t);
+  clock=(result.expires_at-1)*1000;
+  assert.equal((await call('/api/device/exchange',{role:'inspector',code:entry.code},false)).status,200);
+  assert.equal((await call('/api/device/exchange',{role:'inspector',code:entry.code},false)).status,401);
+});
+
+test('the complete HTTP exchange rejects the code at the 300-second expiry',async t=>{
+  const {call,entry,result}=await fixture(t);
+  clock=result.expires_at*1000;
+  assert.equal((await call('/api/device/exchange',{role:'inspector',code:entry.code},false)).status,401);
+});
+
+test('an old shorter-lived issuer keeps its original expiry',async t=>{
+  const {call,entry,result}=await fixture(t,30);
+  assert.equal(result.expires_at-result.server_now,31);
   clock=result.expires_at*1000;
   assert.equal((await call('/api/device/exchange',{role:'inspector',code:entry.code},false)).status,401);
 });
