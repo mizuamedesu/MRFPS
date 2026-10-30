@@ -11,6 +11,7 @@
 #include "GameFramework/HUD.h"
 #include "Engine/GameInstance.h"
 #include "MRFPSAuthVerifier.h"
+#include "MRFPSHealthResponder.h"
 #include "MRFPSVideoProtocol.h"
 #include "MRFPSVideoControlPolicy.h"
 #include "MRFPSGeometryProtocol.h"
@@ -558,6 +559,7 @@ public:
     AMRFPSGameMode();
     virtual ~AMRFPSGameMode() override;
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type Reason) override;
     virtual void Tick(float DeltaSeconds) override;
     virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& ID, FString& Error) override;
     virtual APlayerController* Login(UPlayer* NewPlayer, ENetRole InRemoteRole, const FString& Portal, const FString& Options, const FUniqueNetIdRepl& ID, FString& Error) override;
@@ -605,6 +607,7 @@ private:
     void FinishRound();
     void TickRounds();
     TUniquePtr<FMRFPSAuthVerifier> AuthVerifier;
+    TUniquePtr<FMRFPSHealthResponder> HealthResponder;
     TMap<FString,FMRFPSAuthClaims> PendingAuthentication;
     TMap<FString,double> PendingAuthenticationDeadlines;
     bool bNetworkAdmissionReady = false;

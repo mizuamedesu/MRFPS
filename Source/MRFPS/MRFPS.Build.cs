@@ -12,7 +12,7 @@ public class MRFPS : ModuleRules
             "HeadMountedDisplay", "XRBase", "UMG", "Slate", "SlateCore",
             "MRFPSGloves", "MRFPSHaptics", "MoBitsSDK", "MRFPSAuth", "MRFPSTransport", "PacketHandler", "OnlineSubsystemUtils"
         });
-        PrivateDependencyModuleNames.AddRange(new[] { "HTTP", "Json", "AIModule", "NavigationSystem", "GameplayTasks" });
+        PrivateDependencyModuleNames.AddRange(new[] { "HTTP", "Json", "AIModule", "NavigationSystem", "GameplayTasks", "Sockets" });
         if (Target.Type != TargetType.Server) {
             PrivateDependencyModuleNames.AddRange(new[] { "ImageCore", "ImageWrapper", "RenderCore", "RHI" });
             PrivateDependencyModuleNames.Add("MRFPSXR");

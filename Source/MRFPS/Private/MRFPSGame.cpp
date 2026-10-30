@@ -1,5 +1,6 @@
 #include "MRFPSGame.h"
 #include "MRFPSInspectorHudLayout.h"
+#include "MRFPSHealthResponder.h"
 #include "MRFPSAvatar.h"
 #include "MRFPSHandPose.h"
 #include "MRFPSGloveInput.h"
@@ -23,6 +24,10 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/NetConnection.h"
 #include "Engine/NetDriver.h"
+#include "IpNetDriver.h"
+#include "IPAddress.h"
+#include "Sockets.h"
+#include "SocketSubsystem.h"
 #include "Engine/PendingNetGame.h"
 #include "EngineUtils.h"
 #include "GameFramework/FloatingPawnMovement.h"
@@ -1273,6 +1278,17 @@ void AMRFPSGameMode::BeginPlay()
     GetWorld()->SpawnActor<AMRFPSArena>();
     SpawnDefaultStage();
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SERVER_READY engine=5.8 widthcm=%.0f lengthcm=%.0f players=2 admins=1 inspectors=uncapped desktop=%d adminstart=%d"),ArenaWidthCm,ArenaLengthCm,bAllowDesktop,bRequireAdminStart);
+#if PLATFORM_LINUX && UE_SERVER
+    if (GetNetMode()==NM_DedicatedServer) {
+        HealthResponder=MakeUnique<FMRFPSHealthResponder>();
+        if (!HealthResponder->Start()) UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_HEALTH_LISTENER_UNAVAILABLE"));
+    }
+#endif
+}
+void AMRFPSGameMode::EndPlay(const EEndPlayReason::Type Reason)
+{
+    HealthResponder.Reset();
+    Super::EndPlay(Reason);
 }
 int32 AMRFPSGameMode::CountFighters(const AMRFPSPlayerState* Exclude) const
 {
@@ -1408,6 +1424,20 @@ void AMRFPSGameMode::ResetMatch()
 void AMRFPSGameMode::Tick(float Dt)
 {
     Super::Tick(Dt);
+    if (HealthResponder) {
+        UIpNetDriver* Driver=GetWorld()?Cast<UIpNetDriver>(GetWorld()->GetNetDriver()):nullptr;
+        FSocket* GameSocket=Driver && Driver->IsNetResourceValid()?Driver->GetSocket():nullptr;
+        ISocketSubsystem* Sockets=Driver?Driver->GetSocketSubsystem():nullptr;
+        int32 Port=0;
+        if (GameSocket && Sockets) {
+            auto ActualAddress=Sockets->CreateInternetAddr();
+            ActualAddress->SetPort(0);
+            GameSocket->GetAddress(*ActualAddress);
+            Port=ActualAddress->GetPort();
+        }
+        HealthResponder->Tick(bNetworkAdmissionReady && AuthVerifier.Get()!=nullptr && GameSocket!=nullptr,
+                              Port,static_cast<std::uint64_t>(FPlatformTime::Seconds()*1000.0));
+    }
     for (FConstPlayerControllerIterator It=GetWorld()->GetPlayerControllerIterator();It;++It)
         if (auto* PC=Cast<AMRFPSPlayerController>(It->Get())) { PC->ServiceVideoRelay(); PC->ServiceGeometryRelay(); }
     const double Now=GetWorld()->GetTimeSeconds();
