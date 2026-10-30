@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Submit retry-safe local UE control requests without keyboard/mouse automation.
 
-The matching protocol-16 client reads its user-local control directory while
+The matching protocol-17 client reads its user-local control directory while
 running. A request ID identifies immutable intent; reuse it after a timeout.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ OPERATIONS = {
     'status', 'view.set', 'multiview.set', 'reconstructed.set', 'focus.set',
     'window.set', 'build-mode.set', 'admin.action', 'objects.list', 'roster.list',
     'object.ensure', 'object.remove', 'wall.set',
-    'player.calibrate', 'player.input.set', 'player.input.clear', 'player.reload', 'player.wall',
+    'player.calibrate', 'player.round_ready', 'player.input.set', 'player.input.clear', 'player.reload', 'player.wall',
     'haptics.set', 'capture.set',
     'menu.set', 'connection.set', 'camera.set',
 }

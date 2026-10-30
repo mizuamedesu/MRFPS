@@ -99,11 +99,19 @@ private:
         for (int32 I=0;I<4;++I) Fighter->ApplyShot(25,Human,false);
         if (!Test->TestTrue(TEXT("Bot death ends the round and scores for the human"),Fighter->Health<=0 && HumanState->Kills==BeforeKills+1 && BotState && BotState->Deaths>0 &&
             GS->Phase==EMRFPSMatchPhase::BetweenRounds && GS->RoundWinsSlot0==1 && GS->CompletedRounds==1)) return true;
-        StageStarted=Now; Stage=1; return false;
+        StageStarted=Now; bRoundAckSent=false; Stage=1; return false;
     }
     bool AwaitRespawn(double Now)
     {
         if (!IsValid(Bot) || !IsValid(Fighter)) { Test->AddError(TEXT("Bot disappeared during respawn")); return true; }
+        if (Now-StageStarted<1.) {
+            if (!Test->TestTrue(TEXT("Solo result waits without a player acknowledgement"),GS->IsAwaitingRoundReady() && GS->RestartAt==0)) return true;
+            return false;
+        }
+        if (!bRoundAckSent) {
+            if (!Test->TestTrue(TEXT("The solo player's acknowledgement is sufficient"),Mode->RequestRoundReady(Human,GS->RoundReadyWindow))) return true;
+            bRoundAckSent=true;
+        }
         if (Fighter->Health<=0 && Now-StageStarted<6) return false;
         if (!Test->TestTrue(TEXT("Bot respawns for the second round with the first win retained"),Fighter->Health==100.f &&
             GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundNumber==2 && GS->RoundWinsSlot0==1)) return true;
@@ -111,11 +119,19 @@ private:
         for (int32 I=0;I<4;++I) Human->ApplyShot(25,Fighter,false);
         if (!Test->TestTrue(TEXT("A Bot kill ends the second round and scores for the Bot"),Human->Health<=0 &&
             GS->Phase==EMRFPSMatchPhase::BetweenRounds && GS->RoundWinsSlot1==1 && GS->CompletedRounds==2)) return true;
-        StageStarted=Now; Stage=5; return false;
+        StageStarted=Now; bRoundAckSent=false; Stage=5; return false;
     }
     bool AwaitHumanRespawn(double Now)
     {
         if (!IsValid(Bot) || !IsValid(Fighter)) { Test->AddError(TEXT("Bot disappeared before the third round")); return true; }
+        if (Now-StageStarted<1.) {
+            if (!Test->TestTrue(TEXT("Solo defeat also waits for the player"),GS->IsAwaitingRoundReady() && GS->RestartAt==0)) return true;
+            return false;
+        }
+        if (!bRoundAckSent) {
+            if (!Test->TestTrue(TEXT("The player can acknowledge a solo defeat"),Mode->RequestRoundReady(Human,GS->RoundReadyWindow))) return true;
+            bRoundAckSent=true;
+        }
         if (Human->Health<=0 && Now-StageStarted<6) return false;
         // The behavior tree can fire on the same tick the countdown ends.
         if (!Test->TestTrue(TEXT("The player respawns for the third round with both scores retained"),Human->Health>0.f &&
@@ -270,7 +286,7 @@ private:
     AMRFPSPawn* Fighter=nullptr;
     UMRFPSGeometryWorld* Geometry=nullptr;
     FVector FirstHead=FVector::ZeroVector;
-    bool HaveFirstHead=false;
+    bool HaveFirstHead=false,bRoundAckSent=false;
     int32 Stage=0,BeforeBlockedShot=0,BeforeHumanBlockedShot=0;
     float BeforeHumanBlockedHealth=0;
     double StageStarted=0;

@@ -198,7 +198,6 @@ public:
     static constexpr int32 MaximumRounds=3;
     static constexpr int32 RoundsToWin=2;
     static constexpr double CountdownSeconds=3.;
-    static constexpr double ResultSeconds=2.;
     UPROPERTY(Replicated,BlueprintReadOnly) int32 RoundNumber=0;
     UPROPERTY(Replicated,BlueprintReadOnly) int32 CompletedRounds=0;
     UPROPERTY(Replicated,BlueprintReadOnly) int32 RoundWinsSlot0=0;
@@ -206,6 +205,12 @@ public:
     UPROPERTY(Replicated,BlueprintReadOnly) int32 LastRoundWinnerSlot=-1;
     UPROPERTY(Replicated,BlueprintReadOnly) double RoundEndsAt=0;
     UPROPERTY(Replicated,BlueprintReadOnly) double RoundPausedAt=0;
+    // Each finished round opens a distinct ready window. Old button/RPCs must
+    // never count toward a later round, even after a match or roster reset.
+    UPROPERTY(Replicated) uint32 RoundReadyWindow=0;
+    UPROPERTY(Replicated,BlueprintReadOnly) uint8 RoundReadyMask=0;
+    bool IsAwaitingRoundReady() const;
+    uint8 RequiredRoundReadyMask() const;
     int32 RoundSecondsRemaining() const;
     FString RoundHeaderText() const;
     FString RoundScoreText(int32 Slot) const;
@@ -304,6 +309,7 @@ public:
     void SetLoginWeaponPose(const FMRFPSWeaponPose* Weapon);
     UFUNCTION(Server, Unreliable) void ServerPose(const FMRFPSPose& NewPose);
     UFUNCTION(Server, Reliable) void ServerCalibrate(bool bReady,bool bHasStageFloor=false);
+    UFUNCTION(Server, Reliable) void ServerRoundReady(uint32 ReadyWindow);
     UFUNCTION(Client,Reliable) void ClientCombatStopped();
     UFUNCTION(Client,Reliable) void ClientNominalDesktopStart(FVector_NetQuantize10 Head,FRotator Rotation);
     UFUNCTION(Server, Reliable) void ServerFire();
@@ -442,6 +448,7 @@ public:
     void ToggleMultiView();
     void MenuPointerTrigger(float Value);
     void Calibrate();
+    void RoundContinuePressed();
     void ArmHaptics();
     void StopHaptics();
     void ToggleMenu();
@@ -671,6 +678,7 @@ public:
     virtual void RestartPlayer(AController* NewPlayer) override;
     virtual void Logout(AController* Exiting) override;
     void OnElimination(AMRFPSPawn* Victim, AMRFPSPawn* Killer);
+    bool RequestRoundReady(AMRFPSPawn* Player,uint32 ReadyWindow);
     void ResetForFighterChange();
     bool StartPreparedSoloMatch();
     void ApplyBotLayoutChange();
@@ -695,6 +703,7 @@ public:
 private:
     bool AdminAuthorized(const AMRFPSPlayerController* Admin) const;
     bool RegisteredAnchorsValid() const;
+    bool RoundParticipantsPrepared() const;
     bool CaptureSharedFloorRegistration(FString& SafeError);
     void ApplyLayoutChange();
     void SetCombatPaused(bool Paused);

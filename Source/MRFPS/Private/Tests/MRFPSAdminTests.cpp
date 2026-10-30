@@ -425,14 +425,32 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("The admin can resume a ready match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Resume,FVector2D::ZeroVector,Error));
     TestTrue(TEXT("The server deadline is extended by paused time"),F.State->RoundEndsAt>FirstDeadline);
     const auto Expire=[&]() { F.State->RoundEndsAt=F.World->GetTimeSeconds(); F.Mode->Tick(0); };
-    const auto Next=[&]() { F.State->RestartAt=F.World->GetTimeSeconds(); F.Mode->Tick(0); };
+    const auto Next=[&]() {
+        const uint32 Window=F.State->RoundReadyWindow;
+        TestTrue(TEXT("First player can acknowledge the current result"),F.Mode->RequestRoundReady(F.Players[0],Window));
+        TestTrue(TEXT("Acknowledging the same result twice is harmless"),F.Mode->RequestRoundReady(F.Players[0],Window));
+        TestEqual(TEXT("Repeated acknowledgement cannot satisfy the other player's slot"),F.State->RoundReadyMask,uint8(1));
+        F.Mode->Tick(0);
+        TestTrue(TEXT("One player alone cannot start the next round"),F.State->IsAwaitingRoundReady() && F.State->RestartAt==0);
+        TestTrue(TEXT("The second player acknowledges the same result"),F.Mode->RequestRoundReady(F.Players[1],Window));
+        F.Mode->Tick(0);
+        TestTrue(TEXT("Both acknowledgements start a new three-second countdown"),
+            F.State->Phase==EMRFPSMatchPhase::BetweenRounds && F.State->RestartAt>F.World->GetTimeSeconds());
+        F.FinishCountdown();
+    };
     F.Mode->OnElimination(F.Players[1],F.Players[0]);
     TestTrue(TEXT("The first kill immediately awards player zero the round"),F.State->RoundWinsSlot0==1 && F.State->RoundWinsSlot1==0 && F.State->CompletedRounds==1 && F.State->LastRoundWinnerSlot==0);
     TestEqual(TEXT("A nonfinal round enters a break"),int32(F.State->Phase),int32(EMRFPSMatchPhase::BetweenRounds));
     const double Restart=F.State->RestartAt,NoticeNow=F.State->GetServerWorldTimeSeconds();
     TestTrue(TEXT("The winner and loser see opposite round results before the countdown"),
         F.State->RoundNotice(0).Main==TEXT("勝利") && F.State->RoundNotice(1).Main==TEXT("敗北") && F.State->RoundNotice(1).bDefeat &&
-        Restart-NoticeNow>AMRFPSGameState::CountdownSeconds);
+        F.State->IsAwaitingRoundReady() && Restart==0 && F.State->RoundNotice(0).Detail.Contains(TEXT("Y")));
+    F.Mode->Tick(0);
+    TestTrue(TEXT("The result does not advance without either player"),F.State->IsAwaitingRoundReady() && F.State->RestartAt==0);
+    TestFalse(TEXT("A stale result window cannot acknowledge this round"),F.Mode->RequestRoundReady(F.Players[0],F.State->RoundReadyWindow-1));
+    auto* FirstState=F.Players[0]->GetPlayerState<AMRFPSPlayerState>(); FirstState->bAuthenticated=false;
+    TestFalse(TEXT("An unauthenticated player cannot acknowledge a round"),F.Mode->RequestRoundReady(F.Players[0],F.State->RoundReadyWindow));
+    FirstState->bAuthenticated=true;
     F.State->RestartAt=NoticeNow+2.25;
     TestTrue(TEXT("The countdown gauge decreases while three is shown"),F.State->RoundNotice(0).Countdown==3 &&
         FMath::IsNearlyEqual(F.State->RoundNotice(0).Progress,.75f,.01f));
@@ -462,13 +480,21 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     F.Mode->OnElimination(F.Players[1],F.Players[0]);
     TestTrue(TEXT("Two round wins finish the match without a third round"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundNumber==2 && F.State->RoundWinsSlot0==2 && F.State->WinnerSlot==0);
     TestTrue(TEXT("Final result remains visible with the correct player outcome"),F.State->RoundNotice(0).Main==TEXT("勝利") &&
-        F.State->RoundNotice(1).Main==TEXT("敗北") && F.State->RoundNotice(1).Detail==TEXT("試合終了"));
+        F.State->RoundNotice(1).Main==TEXT("敗北") && F.State->RoundNotice(1).Detail.Contains(TEXT("試合終了")));
     TestTrue(TEXT("The losing player's HUD uses their own result"),F.State->RoundScoreText(1).Contains(TEXT("敗北")));
     F.Mode->bRequireAdminStart=false;
     F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
     F.Mode->Tick(0);
     TestTrue(TEXT("A finished match never auto-restarts when admin start is optional"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundNumber==2 && F.State->RoundWinsSlot0==2);
-    TestTrue(TEXT("An explicit admin start begins a new match after completion"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    TestFalse(TEXT("Admin start cannot bypass final-result acknowledgements"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
+    const uint32 FinalWindow=F.State->RoundReadyWindow;
+    TestTrue(TEXT("One player can acknowledge the final result"),F.Mode->RequestRoundReady(F.Players[0],FinalWindow));
+    F.Mode->Tick(0);
+    TestTrue(TEXT("A new match waits for both players"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundWinsSlot0==2);
+    TestTrue(TEXT("The other player can acknowledge the final result"),F.Mode->RequestRoundReady(F.Players[1],FinalWindow));
+    F.Mode->Tick(0);
+    TestTrue(TEXT("Both players start the next match with a countdown"),F.State->Phase==EMRFPSMatchPhase::BetweenRounds &&
+        F.State->RoundNumber==0 && F.State->RoundWinsSlot0==0 && F.State->RestartAt>F.World->GetTimeSeconds());
     F.FinishCountdown();
     TestTrue(TEXT("The new match has one fresh round and no old wins"),F.State->Phase==EMRFPSMatchPhase::Playing && F.State->RoundNumber==1 && F.State->RoundWinsSlot0==0 && F.State->RoundWinsSlot1==0);
     return true;

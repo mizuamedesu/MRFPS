@@ -362,6 +362,10 @@ void AMRFPSPlayerController::TickAutomation()
                 Data->SetNumberField(TEXT("round_wins_0"),GS->RoundWinsSlot0); Data->SetNumberField(TEXT("round_wins_1"),GS->RoundWinsSlot1);
                 Data->SetNumberField(TEXT("last_round_winner_slot"),GS->LastRoundWinnerSlot); Data->SetBoolField(TEXT("last_round_draw"),GS->CompletedRounds>0 && GS->LastRoundWinnerSlot<0);
                 Data->SetNumberField(TEXT("match_winner_slot"),GS->WinnerSlot); Data->SetBoolField(TEXT("match_draw"),GS->Phase==EMRFPSMatchPhase::Finished && GS->WinnerSlot<0);
+                Data->SetBoolField(TEXT("round_ready_waiting"),GS->IsAwaitingRoundReady());
+                Data->SetNumberField(TEXT("round_ready_window"),GS->RoundReadyWindow);
+                Data->SetNumberField(TEXT("round_ready_mask"),GS->RoundReadyMask);
+                Data->SetNumberField(TEXT("round_ready_required_mask"),GS->RequiredRoundReadyMask());
                 const auto* NoticePawn=GetPawn<AMRFPSPawn>(); const auto Notice=GS->RoundNotice(NoticePawn?NoticePawn->GetSlot():-1);
                 auto RoundNotice=MakeShared<FJsonObject>(); RoundNotice->SetBoolField(TEXT("visible"),Notice.bVisible);
                 RoundNotice->SetNumberField(TEXT("countdown"),Notice.Countdown); RoundNotice->SetNumberField(TEXT("progress"),Notice.Progress);
@@ -521,6 +525,13 @@ void AMRFPSPlayerController::TickAutomation()
         } else if(Operation==TEXT("player.calibrate")) {
             if(IsInspector()||!GetPawn<AMRFPSPawn>()) { Ok=false; Code=TEXT("PLAYER_REQUIRED"); }
             else { Calibrate(); Submitted=true; Code=TEXT("CALIBRATION_SUBMITTED"); }
+        } else if(Operation==TEXT("player.round_ready")) {
+            auto* Fighter=GetPawn<AMRFPSPawn>(); const auto* ReadyState=GetWorld()->GetGameState<AMRFPSGameState>();
+            if(IsInspector()||!Fighter||Fighter->GetSlot()<0||Fighter->GetSlot()>1) { Ok=false; Code=TEXT("PLAYER_REQUIRED"); }
+            else if(!ReadyState || !ReadyState->IsAwaitingRoundReady()) { Ok=false; Code=TEXT("ROUND_READY_NOT_WAITING"); }
+            else if(!Fighter->bCalibrated) { Ok=false; Code=TEXT("CALIBRATION_REQUIRED"); }
+            else if(ReadyState->RoundReadyMask&(1u<<Fighter->GetSlot())) { Already=true; Code=TEXT("ROUND_READY_ALREADY_SET"); }
+            else { Fighter->ServerRoundReady(ReadyState->RoundReadyWindow); Submitted=true; Code=TEXT("ROUND_READY_SUBMITTED"); }
         } else if(Operation==TEXT("haptics.set")) {
             FString State; auto* Fighter=GetPawn<AMRFPSPawn>(); auto* Haptics=Fighter?Fighter->Haptics.Get():nullptr;
             if(IsInspector()||!Haptics||!Params->TryGetStringField(TEXT("state"),State)) { Ok=false; Code=TEXT("HAPTICS_UNAVAILABLE"); }

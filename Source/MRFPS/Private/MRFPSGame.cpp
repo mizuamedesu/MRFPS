@@ -229,6 +229,7 @@ void AMRFPSGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
     DOREPLIFETIME(AMRFPSGameState,RoundNumber); DOREPLIFETIME(AMRFPSGameState,CompletedRounds);
     DOREPLIFETIME(AMRFPSGameState,RoundWinsSlot0); DOREPLIFETIME(AMRFPSGameState,RoundWinsSlot1);
     DOREPLIFETIME(AMRFPSGameState,LastRoundWinnerSlot); DOREPLIFETIME(AMRFPSGameState,RoundEndsAt); DOREPLIFETIME(AMRFPSGameState,RoundPausedAt);
+    DOREPLIFETIME(AMRFPSGameState,RoundReadyWindow); DOREPLIFETIME(AMRFPSGameState,RoundReadyMask);
     DOREPLIFETIME(AMRFPSGameState,Layout); DOREPLIFETIME(AMRFPSGameState,bSharedFloorConfirmed);
     DOREPLIFETIME(AMRFPSGameState,bCombatPaused); DOREPLIFETIME(AMRFPSGameState,bNominalDesktopSession);
     DOREPLIFETIME(AMRFPSGameState,ControlRevision); DOREPLIFETIME(AMRFPSGameState,SharedFloorRevision);
@@ -538,6 +539,11 @@ void AMRFPSPawn::ServerCalibrate_Implementation(bool bReady,bool FloorReferenced
     LastPoseReceived=-100; Pose.bHeadTracked=false; ServerRise.Reset(); ServerLower.Reset(); ForceNetUpdate();
     if (auto* GM=GetWorld()->GetAuthGameMode<AMRFPSGameMode>()) GM->InvalidateSharedFloor();
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_CALIBRATED server slot=%d ready=%d"),GetSlot(),bReady);
+}
+void AMRFPSPawn::ServerRoundReady_Implementation(uint32 ReadyWindow)
+{
+    if (auto* Mode=GetWorld()?GetWorld()->GetAuthGameMode<AMRFPSGameMode>():nullptr)
+        Mode->RequestRoundReady(this,ReadyWindow);
 }
 void AMRFPSPawn::DesktopMove(const FVector& Input, float Dt)
 {
@@ -876,6 +882,7 @@ void AMRFPSPlayerController::SetupInputComponent()
     InputComponent->BindAction(TEXT("Fire"),IE_Released,this,&AMRFPSPlayerController::FireReleased);
     InputComponent->BindKey(EKeys::R,IE_Pressed,this,&AMRFPSPlayerController::ReloadPressed);
     InputComponent->BindAction(TEXT("Calibrate"),IE_Pressed,this,&AMRFPSPlayerController::Calibrate);
+    InputComponent->BindAction(TEXT("RoundContinue"),IE_Pressed,this,&AMRFPSPlayerController::RoundContinuePressed);
     InputComponent->BindAction(TEXT("Wall"),IE_Pressed,this,&AMRFPSPlayerController::WallPressed);
     InputComponent->BindAction(TEXT("Shield"),IE_Pressed,this,&AMRFPSPlayerController::ShieldPressed);
     InputComponent->BindAction(TEXT("Shield"),IE_Released,this,&AMRFPSPlayerController::ShieldReleased);
@@ -1091,6 +1098,18 @@ void AMRFPSPlayerController::WallPressed() { if (auto* P=GetPawn<AMRFPSPawn>()) 
 void AMRFPSPlayerController::ShieldPressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetDesktopShield(true); }
 void AMRFPSPlayerController::ShieldReleased() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetDesktopShield(false); }
 void AMRFPSPlayerController::Calibrate() { if (auto* P=GetPawn<AMRFPSPawn>()) P->Calibrate(); }
+void AMRFPSPlayerController::RoundContinuePressed()
+{
+    auto* P=GetPawn<AMRFPSPawn>(); if (!P || !IsLocalController() || (DeviceLogin && DeviceLogin->IsOpen())) return;
+    const auto* GS=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+    if (GS && (GS->Phase==EMRFPSMatchPhase::Finished || GS->Phase==EMRFPSMatchPhase::BetweenRounds)) {
+        if (GS->IsAwaitingRoundReady()) {
+            if (!P->bCalibrated) P->Calibrate(); else P->ServerRoundReady(GS->RoundReadyWindow);
+        }
+        return;
+    }
+    P->Calibrate();
+}
 void AMRFPSPlayerController::MRFPSReady() { Calibrate(); }
 void AMRFPSPlayerController::ArmHaptics()
 {
@@ -1755,6 +1774,7 @@ void AMRFPSGameMode::ResetMatch()
     auto* GS=GetGameState<AMRFPSGameState>(); if (!GS) return;
     GS->RoundNumber=GS->CompletedRounds=GS->RoundWinsSlot0=GS->RoundWinsSlot1=0;
     GS->LastRoundWinnerSlot=GS->WinnerSlot=-1; GS->RoundEndsAt=GS->RoundPausedAt=GS->RestartAt=0;
+    GS->RoundReadyMask=0;
     GS->Phase=EMRFPSMatchPhase::BetweenRounds;
     GS->RestartAt=GetWorld()->GetTimeSeconds()+AMRFPSGameState::CountdownSeconds; GS->ForceNetUpdate();
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH countdown"));
@@ -1812,7 +1832,7 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(16);
+    FNetworkVersion::SetGameNetworkProtocolVersion(17);
     Super::Init();
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
     // This CVar is marked Cheat in UE 5.8, so setting it in Engine.ini causes

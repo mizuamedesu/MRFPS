@@ -1,6 +1,6 @@
 # UE local control
 
-`control.py` submits a JSON operation to a named, running protocol-16 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
+`control.py` submits a JSON operation to a named, running protocol-17 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
 
 Each request requires an immutable UUIDv4. Repeating the same UUID and payload returns or waits for the original result, and the same UUID with different parameters is rejected. If a client restarts after dispatch but before its reply is recorded, the result is `unknown`: it does not silently run the operation again. A server keeps up to 8192 operation receipts for its lifetime; this is not a durable transaction across a server restart or a machine power failure. A repeated UUID returns the original receipt; use a new UUID to apply the desired state again after other changes.
 
@@ -12,7 +12,7 @@ Each operation takes an explicit JSON parameters object. `status` returns view s
 
 `status` also reports `solo_bot`, `solo_geometry_ready`, `solo_measured_geometry_received`, `solo_obstacle_data`, `round`, `completed_rounds`, `max_rounds`, `round_seconds_remaining`, `round_wins_0`, `round_wins_1`, `last_round_winner_slot`, `last_round_draw`, `match_winner_slot`, and `match_draw`. In solo mode `solo_obstacle_data` is `not_received` until an actual measured mesh has arrived; it is `received` afterward and `not_solo` outside solo mode. A desktop session with no measured mesh remains `not_received`. Winner slots are 0 or 1; -1 means no winner. A draw is only reported after a round or match has actually ended. The same replicated state drives the player HUD.
 The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared physical-floor registration; solo Bot calibration must not set them as if two people had registered a common floor.
-`round_notice` reports the same large result/countdown and progress shown to the local viewer. `geometry_capture` reports the actual native capture state, calibration acknowledgement, tracking epochs and local/published sequence numbers; the server's `solo_measured_geometry_received` remains the authoritative indication that measured surfaces arrived.
+`round_notice` reports the same large result/countdown and progress shown to the local viewer. `round_ready_waiting`, `round_ready_window`, `round_ready_mask`, and `round_ready_required_mask` report the current server-replicated acknowledgement window. `geometry_capture` reports the actual native capture state, calibration acknowledgement, tracking epochs and local/published sequence numbers; the server's `solo_measured_geometry_received` remains the authoritative indication that measured surfaces arrived.
 
 | Operation | Parameters | Effect |
 |---|---|---|
@@ -30,6 +30,7 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `wall.set` | `{"target":"<id>","expected":{"height":4,"mask":16777215},"desired":{"height":4,"mask":16777199},"layout_revision":1,"control_revision":1}` | Atomically set the whole wall shape if its expected shape still matches |
 | `object.remove` | `{"target":"<id>","expected":{"height":4,"mask":16777215},"layout_revision":1,"control_revision":1}` | Remove precisely the referenced object when its expected shape still matches |
 | `player.calibrate` | `{}` | Submit the player's existing calibration action |
+| `player.round_ready` | `{}` | Acknowledge the currently displayed round or match result for this player; Bot matches require the human, 1v1 requires both players. `submitted` does not prove the server accepted it; inspect a fresh status. |
 | `player.input.set` | `{"fire":false,"shield":false,"move":[1,0],"look_degrees_per_second":[0,0],"duration_seconds":0.5}` | Hold the specified desktop inputs for 0.05–1 second |
 | `player.input.clear` | `{}` | Immediately clear the automation input lease |
 | `player.reload`, `player.wall` | `{}` | Submit one desktop reload or deploy-wall input through the existing server RPC |

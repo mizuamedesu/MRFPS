@@ -46,6 +46,29 @@ bool BothReady(UWorld* World,bool& Nominal)
 }
 }
 
+bool AMRFPSGameMode::RoundParticipantsPrepared() const
+{
+    if (!GetWorld()) return false;
+    const auto* GS=GetGameState<AMRFPSGameState>(); bool Nominal=false;
+    return GS && BothReady(GetWorld(),Nominal) && (Nominal || GS->bSoloBotSession || RegisteredAnchorsValid());
+}
+
+bool AMRFPSGameMode::RequestRoundReady(AMRFPSPawn* Player,uint32 ReadyWindow)
+{
+    auto* GS=GetGameState<AMRFPSGameState>();
+    const auto* PS=Player?Player->GetPlayerState<AMRFPSPlayerState>():nullptr;
+    if (!HasAuthority() || !GS || !GS->IsAwaitingRoundReady() || ReadyWindow==MAX_uint32 || ReadyWindow!=GS->RoundReadyWindow ||
+        !PS || PS->IsABot() || !PS->bAuthenticated || PS->AuthExpiresAt<=FDateTime::UtcNow().ToUnixTimestamp() ||
+        PS->bInspector || PS->bAdmin || PS->Slot<0 || PS->Slot>=2 || FighterAt(GetWorld(),PS->Slot)!=Player) return false;
+    const uint8 Bit=uint8(1u<<PS->Slot);
+    if (!(GS->RequiredRoundReadyMask()&Bit)) return false;
+    if (!(GS->RoundReadyMask&Bit)) {
+        GS->RoundReadyMask|=Bit; GS->ForceNetUpdate();
+        UE_LOG(LogTemp,Display,TEXT("MRFPS_ROUND_ACK slot=%d window=%u"),PS->Slot,ReadyWindow);
+    }
+    return true;
+}
+
 void AMRFPSGameState::OnRepLayout()
 {
     if (!GetWorld() || !Layout.IsSane()) return;
@@ -266,7 +289,7 @@ void AMRFPSGameMode::ResetToWaiting()
     if (auto* GS=GetGameState<AMRFPSGameState>()) {
         GS->Phase=EMRFPSMatchPhase::Waiting; GS->WinnerSlot=GS->LastRoundWinnerSlot=-1;
         GS->RoundNumber=GS->CompletedRounds=GS->RoundWinsSlot0=GS->RoundWinsSlot1=0;
-        GS->RoundEndsAt=GS->RoundPausedAt=GS->RestartAt=0; GS->bNominalDesktopSession=false; GS->ForceNetUpdate();
+        GS->RoundEndsAt=GS->RoundPausedAt=GS->RestartAt=0; GS->RoundReadyMask=0; GS->bNominalDesktopSession=false; GS->ForceNetUpdate();
     }
 }
 bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdminAction Action,FVector2D Dimensions,FString& SafeError)
@@ -280,7 +303,9 @@ bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdmin
     switch (Action) {
     case EMRFPSAdminAction::Start: {
         bool Nominal=false;
-        if (GS->Phase!=EMRFPSMatchPhase::Waiting && GS->Phase!=EMRFPSMatchPhase::Finished) return false;
+        // A displayed result is continued by the players' acknowledgements.
+        // Reset remains an explicit admin operation for abandoning that match.
+        if (GS->Phase!=EMRFPSMatchPhase::Waiting) return false;
         SafeError=TEXT("ADMIN_PLAYERS_NOT_READY");
         if (!BothReady(GetWorld(),Nominal) || (!Nominal && !GS->bSoloBotSession && !RegisteredAnchorsValid())) return false;
         GS->bNominalDesktopSession=Nominal; MRFPSBot::CancelAutoStart(this); ResetMatch(); break;
