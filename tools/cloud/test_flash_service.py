@@ -121,6 +121,15 @@ class FlashTests(unittest.TestCase):
         self.assertEqual(self.apply()["operation"], "unchanged")
         self.assertEqual(self.client.mutations, [("flash", "create"), ("flash", "update")])
 
+    def test_existing_owned_forwarded_service_changes_to_direct_once(self):
+        self.manifest["spec"]["exposure"]["traffic_mode"] = "forwarded"
+        self.apply()
+        self.manifest["spec"]["exposure"]["traffic_mode"] = "direct"
+        self.assertEqual(self.apply()["operation"], "update-accepted")
+        self.assertEqual(self.apply()["operation"], "unchanged")
+        self.assertEqual(self.client.items[0]["spec"]["exposure"]["traffic_mode"], "direct")
+        self.assertEqual(self.client.mutations, [("flash", "create"), ("flash", "update")])
+
     def test_server_side_spec_drift_or_owner_marker_change_stops_updates(self):
         self.apply()
         self.client.items[0]["spec"]["memory_mib"] = 4096

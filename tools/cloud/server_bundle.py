@@ -204,7 +204,7 @@ def flash_manifest(image: str, public_key: bytes, project: str, name: str, regio
         "region": region, "image": image, "replicas": 1, "cpu_millis": 2000,
         "memory_mib": 1024, "ephemeral_storage_gib": 8, "rootfs_storage_gib": 2,
         "ports": [{"name": "game-udp", "protocol": "udp", "container_port": 7777}],
-        "exposure": {"type": "public", "traffic_mode": "forwarded", "endpoint_mode": "ip", "allowed_source_cidrs": [], "denied_source_cidrs": []},
+        "exposure": {"type": "public", "traffic_mode": "direct", "endpoint_mode": "ip", "allowed_source_cidrs": [], "denied_source_cidrs": []},
         "egress": {"mode": "disabled"},
         "env": {"MRFPS_PORT": "7777", "MRFPS_AUTH_PUBLIC_KEY_B64": base64.b64encode(public_key).decode("ascii"), "MRFPS_AUTH_AUDIENCE": "mrfps"},
         "command": [], "args": ["/Game/Maps/MRFPSArena"],

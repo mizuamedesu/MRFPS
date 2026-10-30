@@ -197,6 +197,8 @@ Write-Output 'BOUNDED_DRAFT_RETRY_PASS'
         self.assertEqual(base64.b64decode(spec["env"]["MRFPS_AUTH_PUBLIC_KEY_B64"]), self.public_fixture())
         self.assertEqual((spec["replicas"], spec["cpu_millis"], spec["memory_mib"]), (1, 2000, 1024))
         self.assertEqual(spec["ports"][0]["container_port"], 7777)
+        self.assertEqual(spec["exposure"]["traffic_mode"], "direct")
+        self.assertEqual(spec["exposure"]["endpoint_mode"], "ip")
         self.assertNotIn("service_port", spec["ports"][0])
         self.assertNotIn("PRIVATE", json.dumps(manifest))
 

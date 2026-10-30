@@ -142,6 +142,11 @@ memory 1024 MiB, and one replica is required for the current game state and
 ephemeral DTLS identity. Flash's 8 GiB total disk budget includes the image;
 the proposed writable rootfs budget is 2 GiB.
 
+The public IP endpoint uses Flash `traffic_mode: direct`. The provider applies
+`externalTrafficPolicy: Local`; its `load_balancer` and `web` endpoint modes
+require forwarded traffic and are not used here. Direct mode still uses the
+tenant API's assigned public service port and does not itself allocate UDP7777.
+
 Flash currently forces container UID0. The separate Flash image drops to
 UID10001, removes every capability and enables no-new-privileges before
 executing the existing entrypoint. Its healthcheck also drops to UID10001 so
