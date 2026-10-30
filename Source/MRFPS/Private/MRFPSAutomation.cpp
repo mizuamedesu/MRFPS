@@ -11,6 +11,7 @@
 #include "EngineUtils.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
+#include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
@@ -21,6 +22,7 @@
 #include "Serialization/JsonWriter.h"
 #include "MRFPSAuthClientSubsystem.h"
 #include "MRFPSHapticsComponent.h"
+#include "MRFPSIpConnection.h"
 #if !UE_SERVER
 #include "MRFPSGloveSubsystem.h"
 #include "MRFPSViewCaptureSubsystem.h"
@@ -220,6 +222,22 @@ void AMRFPSPlayerController::TickAutomation()
         if(Operation==TEXT("status")) {
             Data->SetBoolField(TEXT("inspector"),IsInspector()); Data->SetBoolField(TEXT("admin"),IsAdmin());
             Data->SetBoolField(TEXT("connected"),GetNetMode()!=NM_Standalone); Data->SetNumberField(TEXT("view_slot"),ViewSlot);
+            // Nonsecret local identity for correlating repeated status snapshots.
+            // The pin is captured for this connection during EncryptionAck, not
+            // fetched from a potentially replaced credential after it connects.
+            auto Identity=MakeShared<FJsonObject>();
+            Identity->SetNumberField(TEXT("process_id"),FPlatformProcess::GetCurrentProcessId());
+            const bool InspectorSession=IsVideoSessionValid(false);
+            Identity->SetBoolField(TEXT("inspector_session_valid"),InspectorSession);
+            if (InspectorSession) if (const auto* Connection=Cast<UMRFPSIpConnection>(GetNetConnection())) {
+                const FGuid ConnectionId=Connection->GetDiagnosticConnectionId();
+                const FString Pin=Connection->GetDiagnosticServerPin();
+                if (ConnectionId.IsValid() && !Pin.IsEmpty()) {
+                    Identity->SetStringField(TEXT("connection_id"),ConnectionId.ToString(EGuidFormats::Digits).ToLower());
+                    Identity->SetStringField(TEXT("server_certificate_sha256"),Pin);
+                }
+            }
+            Data->SetObjectField(TEXT("video_measurement_identity"),Identity);
             Data->SetBoolField(TEXT("multiview"),bMultiView); Data->SetBoolField(TEXT("reconstructed"),bReconstructedViews);
             Data->SetBoolField(TEXT("mouse_released"),bInspectorMouseReleased); Data->SetBoolField(TEXT("build_mode"),bAdminWallPlacement);
             Data->SetNumberField(TEXT("player_window_mask"),PlayerVideoWindowMask()); Data->SetBoolField(TEXT("inspector_window"),InspectorWindowCamera!=nullptr);

@@ -2,6 +2,17 @@
 #include "Engine/NetDriver.h"
 #include "HAL/PlatformTime.h"
 
+void UMRFPSIpConnection::RecordDiagnosticServerPin(const FString& Pin)
+{
+    const FString Normalized=Pin.ToLower();
+    bool Valid=Normalized.Len()==64;
+    for (TCHAR C:Normalized) Valid &= (C>='0' && C<='9') || (C>='a' && C<='f');
+    if (!Valid || bDiagnosticPinAmbiguous || (!DiagnosticServerPin.IsEmpty() && DiagnosticServerPin!=Normalized)) {
+        DiagnosticServerPin.Reset(); bDiagnosticPinAmbiguous=true; return;
+    }
+    DiagnosticServerPin=Normalized;
+}
+
 float UMRFPSIpConnection::GetTimeoutValue()
 {
     const float Ordinary=Super::GetTimeoutValue();

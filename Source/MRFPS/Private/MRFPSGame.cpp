@@ -23,6 +23,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/NetConnection.h"
 #include "Engine/NetDriver.h"
+#include "Engine/PendingNetGame.h"
 #include "EngineUtils.h"
 #include "GameFramework/FloatingPawnMovement.h"
 #include "GameFramework/PlayerInput.h"
@@ -42,6 +43,7 @@
 #include "MRFPSLoginMenu.h"
 #include "MRFPSBot.h"
 #include "MRFPSTransportModule.h"
+#include "MRFPSIpConnection.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Kismet/GameplayStatics.h"
@@ -1507,7 +1509,19 @@ void UMRFPSGameInstance::ReceivedNetworkEncryptionAck(const FOnEncryptionKeyResp
 {
     FString Error;
     auto* Credentials=GetSubsystem<UMRFPSAuthClientSubsystem>();
-    if (Credentials && Credentials->HasAccessToken()) FMRFPSTransportModule::SetClientServerFingerprint(Credentials->GetServerFingerprint(),Error);
+    if (Credentials && Credentials->HasAccessToken()) {
+        const FString Pin=Credentials->GetServerFingerprint();
+        if (FMRFPSTransportModule::SetClientServerFingerprint(Pin,Error)) {
+            // Record only the nonsecret pin selected for this exact pending
+            // connection. The existing delegate still performs the handshake.
+            // UE binds this delegate to the specific UPendingNetGame that
+            // received the ACK. Do not infer it from a global world context.
+            auto* Pending=Cast<UPendingNetGame>(Delegate.GetUObject());
+            auto* Driver=Pending?Pending->NetDriver.Get():nullptr;
+            if (auto* Connection=Driver?Cast<UMRFPSIpConnection>(Driver->ServerConnection.Get()):nullptr)
+                Connection->RecordDiagnosticServerPin(Pin);
+        }
+    }
     else FMRFPSTransportModule::ClearClientServerFingerprint();
     FMRFPSTransportModule::HandleClientEncryptionAck(Delegate);
 }
