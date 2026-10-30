@@ -1,0 +1,152 @@
+name: Publish approved public Linux server
+run-name: Public server ${{ inputs.bundle_sha256 }} ${{ inputs.source_commit }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Reviewed Linux server source commit, full SHA
+        required: true
+        type: string
+      release_tag:
+        description: Draft release containing linux-server.tar.gz
+        required: true
+        type: string
+      bundle_sha256:
+        description: Approved compressed bundle SHA256
+        required: true
+        type: string
+      server_sha256:
+        description: Approved MRFPSServer ELF SHA256
+        required: true
+        type: string
+permissions:
+  contents: write  # needed to download draft release assets
+  packages: write
+concurrency:
+  group: public-mrfps-server-${{ inputs.bundle_sha256 }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
+      SERVER_SHA256: ${{ inputs.server_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Validate repository, inputs and approved draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == 'mizuamedesu/MRFPS' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ && "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ && "$SERVER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RELEASE_TAG" == "server-artifacts-${BUNDLE_SHA256:0:12}-${SOURCE_COMMIT:0:12}" ]]
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" == false ]]
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_COMMIT...$GITHUB_SHA" --jq .status)
+          [[ "$status" == ahead || "$status" == identical ]]
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName,assets >"$RUNNER_TEMP/release.json"
+          jq -e --arg tag "$RELEASE_TAG" --arg digest "sha256:$BUNDLE_SHA256" \
+            '.isDraft == true and .tagName == $tag and ([.assets[] | select(.name == "linux-server.tar.gz")] | length == 1 and .[0].digest == $digest)' \
+            "$RUNNER_TEMP/release.json" >/dev/null
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          path: publisher
+          persist-credentials: false
+      - name: Inspect isolated registry package
+        id: registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 publisher/tools/cloud/public_ghcr.py preflight \
+            --bundle-sha256 "$BUNDLE_SHA256" --server-sha256 "$SERVER_SHA256" --source-commit "$SOURCE_COMMIT" >"$RUNNER_TEMP/preflight.json"
+          mode=$(jq -r .status "$RUNNER_TEMP/preflight.json")
+          [[ "$mode" == absent || "$mode" == public ]]
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.registry.outputs.mode == 'absent'
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: server-source
+          persist-credentials: false
+      - name: Verify reviewed bundle and prepare image context
+        if: steps.registry.outputs.mode == 'absent'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mrfps-package"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern linux-server.tar.gz --dir "$RUNNER_TEMP/mrfps-package"
+          python3 publisher/tools/cloud/audit_public_bundle.py \
+            --archive "$RUNNER_TEMP/mrfps-package/linux-server.tar.gz" \
+            --bundle-sha256 "$BUNDLE_SHA256" --server-sha256 "$SERVER_SHA256"
+          python3 publisher/tools/cloud/server_bundle.py verify \
+            --archive "$RUNNER_TEMP/mrfps-package/linux-server.tar.gz" \
+            --bundle-sha256 "$BUNDLE_SHA256" --server-sha256 "$SERVER_SHA256" \
+            --destination "$GITHUB_WORKSPACE/server-source"
+      - name: Publish once, then prove anonymous access and actual ELF
+        shell: bash
+        env:
+          PUBLISH_MODE: ${{ steps.registry.outputs.mode }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/mizuamedesu/mrfps-server-public-${BUNDLE_SHA256:0:16}"
+          TAG="linux-${SOURCE_COMMIT:0:12}"
+          ANON_CONFIG="$RUNNER_TEMP/mrfps-docker-anonymous"
+          AUTH_CONFIG="$RUNNER_TEMP/mrfps-docker-auth"
+          mkdir -p "$ANON_CONFIG" "$AUTH_CONFIG"
+          check_image_elf() {
+            local ref="$1" container
+            container=$(docker create "$ref")
+            if ! docker cp "$container:/opt/mrfps/MRFPS/Binaries/Linux/MRFPSServer" "$RUNNER_TEMP/mrfps-server"; then
+              docker rm "$container" >/dev/null; return 1
+            fi
+            docker rm "$container" >/dev/null
+            [[ "$(sha256sum "$RUNNER_TEMP/mrfps-server" | cut -d' ' -f1)" == "$SERVER_SHA256" ]]
+          }
+          if [[ "$PUBLISH_MODE" == absent ]]; then
+            docker build --platform linux/amd64 -f server-source/Deploy/Linux/Dockerfile \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
+              --label "app.mrfps.server.sha256=$SERVER_SHA256" \
+              --label "app.mrfps.bundle.sha256=$BUNDLE_SHA256" \
+              -t mrfps-public-base:approved server-source
+            docker build --platform linux/amd64 -f server-source/Deploy/Cloud/Flash.Dockerfile \
+              --build-arg MRFPS_BASE_IMAGE=mrfps-public-base:approved \
+              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
+              --label "app.mrfps.server.sha256=$SERVER_SHA256" \
+              --label "app.mrfps.bundle.sha256=$BUNDLE_SHA256" \
+              -t "$IMAGE:$TAG" server-source/Deploy/Cloud
+            check_image_elf "$IMAGE:$TAG"
+            # Fail closed before publishing; both Flash root and image user must
+            # drop to UID 10001 and require the configured public key.
+            for uid in 10001 0; do
+              set +e
+              docker run --rm --user "$uid" --memory 128m --cpus 1 --security-opt no-new-privileges:true "$IMAGE:$TAG" >"$RUNNER_TEMP/negative-$uid.log" 2>&1
+              result=$?
+              set -e
+              [[ "$result" -ne 0 ]]
+              grep -q '^MRFPS_FLASH_RUNTIME uid=10001 ' "$RUNNER_TEMP/negative-$uid.log"
+              grep -q '^AUTH_CONFIG:' "$RUNNER_TEMP/negative-$uid.log"
+            done
+            export DOCKER_CONFIG="$AUTH_CONFIG"
+            trap 'DOCKER_CONFIG="$AUTH_CONFIG" docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+            printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+            docker push "$IMAGE:$TAG"
+          fi
+          # Retry propagation without ever falling back to authenticated pull.
+          verified=0
+          for attempt in $(seq 1 12); do
+            if python3 publisher/tools/cloud/public_ghcr.py verify \
+              --bundle-sha256 "$BUNDLE_SHA256" --server-sha256 "$SERVER_SHA256" --source-commit "$SOURCE_COMMIT" \
+              >"$RUNNER_TEMP/publication.json" 2>"$RUNNER_TEMP/publication-error.txt"; then verified=1; break; fi
+            sleep 5
+          done
+          if [[ "$verified" != 1 ]]; then cat "$RUNNER_TEMP/publication-error.txt" >&2; exit 1; fi
+          immutable=$(jq -er .image "$RUNNER_TEMP/publication.json")
+          export DOCKER_CONFIG="$ANON_CONFIG"
+          docker pull --platform linux/amd64 "$immutable"
+          check_image_elf "$immutable"
+          cat "$RUNNER_TEMP/publication.json" >> "$GITHUB_STEP_SUMMARY"
