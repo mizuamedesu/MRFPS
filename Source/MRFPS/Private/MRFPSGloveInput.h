@@ -15,8 +15,9 @@ inline void CopyFingers(const FMRFPSGloveHandFrame& Glove,FMRFPSFingerPose& Fing
     for (int32 J=0;J<5;++J) Fingers.Splay[J]=uint8(FMath::RoundToInt((FMath::Clamp(Glove.Splay[J],-1.f,1.f)+1)*127.5f));
 }
 
-inline float LeftOpenness(const FMRFPSGloveHandFrame& Glove)
+inline float LeftOpenness(const FMRFPSGloveHandFrame& Glove,MRFPSOpenPalm::FState& Palm,bool HeadTracked,bool HandTracked)
 {
-    return Glove.IsOpenPalm()?1.f:0.f;
+    return Palm.Update(Glove.FingerCurls.GetData(),static_cast<std::size_t>(Glove.FingerCurls.Num()),
+        Glove.bFlexValid && HeadTracked && HandTracked)?1.f:0.f;
 }
 }

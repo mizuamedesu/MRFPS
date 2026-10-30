@@ -116,12 +116,14 @@ private:
     FString PinnedDeviceId;
     FString SelectedDeviceId;
     float StaleAfter = 0.15f;
+    float DeviceStatusStaleAfter = 1.0f;
     bool bStationConnection = false;
     int32 ReceiverPort = 25788;
     double NextConnectAt = 0.0;
     double LastTickAt = -1.0;
     bool bDiscardBacklog = false;
     FMRFPSGloveHandFrame Hands[2];
+    mutable uint8 LastFreshnessDiagnostic[2] = { 255, 255 };
     MRFPSGloveTrigger::FJournal RightTriggerJournal;
     FTransform TrackerMounts[2] = { FTransform::Identity, FTransform::Identity };
     bool bMountValid[2] = { true, true };

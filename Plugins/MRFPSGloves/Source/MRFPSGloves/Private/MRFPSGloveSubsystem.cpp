@@ -65,6 +65,7 @@ void UMRFPSGloveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
     FParse::Value(FCommandLine::Get(), TEXT("MRFPSGlovePort="), ReceiverPort);
 #endif
     StaleAfter = FMath::Clamp(Settings->StaleAfterSeconds, 0.02f, 1.0f);
+    DeviceStatusStaleAfter = FMath::Clamp(Settings->DeviceStatusStaleAfterSeconds, FMath::Max(0.2f, StaleAfter), 5.0f);
     TrackerMounts[0] = Settings->LeftTrackerToHand;
     TrackerMounts[1] = Settings->RightTrackerToHand;
     for (int32 I = 0; I < 2; ++I)
@@ -311,7 +312,7 @@ bool UMRFPSGloveSubsystem::ProcessMessage(const uint8* Data, int32 Size, double 
         Hand.FlexReceivedAt = Now;
         Hand.bFlexValid = true;
         if (HandIndex==1) RightTriggerJournal.Sample(MRFPSGloveTrigger::EStream::Flex,Now,
-            Hand.bConnected && Hand.bDeviceStatusValid && MRFPSOSC::IsFresh(Hand.DeviceStatusReceivedAt,Now,StaleAfter),
+            Hand.bConnected && Hand.bDeviceStatusValid && MRFPSOSC::IsFresh(Hand.DeviceStatusReceivedAt,Now,DeviceStatusStaleAfter),
             Hand.FingerCurls[1],false,StaleAfter);
     }
     else if (Message.Address == TEXT("/DS/HC/HandQuat"))
@@ -353,7 +354,7 @@ bool UMRFPSGloveSubsystem::ProcessMessage(const uint8* Data, int32 Size, double 
         Hand.ControllerReceivedAt = Now;
         Hand.bControllerValid = true;
         if (HandIndex==1) RightTriggerJournal.Sample(MRFPSGloveTrigger::EStream::Controller,Now,
-            Hand.bConnected && Hand.bDeviceStatusValid && MRFPSOSC::IsFresh(Hand.DeviceStatusReceivedAt,Now,StaleAfter),
+            Hand.bConnected && Hand.bDeviceStatusValid && MRFPSOSC::IsFresh(Hand.DeviceStatusReceivedAt,Now,DeviceStatusStaleAfter),
             Hand.Trigger,Hand.bTriggerPressed,StaleAfter);
     }
     else if (Message.Address == TEXT("/MRFPS/Tracker"))
@@ -379,14 +380,16 @@ bool UMRFPSGloveSubsystem::ProcessMessage(const uint8* Data, int32 Size, double 
 
 bool UMRFPSGloveSubsystem::GetLatestHand(EMRFPSGloveHand Hand, FMRFPSGloveHandFrame& Frame) const
 {
-    Frame = Hands[Hand == EMRFPSGloveHand::Left ? 0 : 1];
+    const int32 HandIndex = Hand == EMRFPSGloveHand::Left ? 0 : 1;
+    Frame = Hands[HandIndex];
     const double Now = FPlatformTime::Seconds();
-    Frame.bDeviceStatusValid &= MRFPSOSC::IsFresh(Frame.DeviceStatusReceivedAt, Now, StaleAfter);
+    const bool bReportedConnected = Frame.bConnected;
+    Frame.bDeviceStatusValid &= MRFPSOSC::IsFresh(Frame.DeviceStatusReceivedAt, Now, DeviceStatusStaleAfter);
     Frame.bConnected &= Frame.bDeviceStatusValid;
     Frame.bFlexStreamFresh = MRFPSOSC::IsFresh(Frame.FlexReceivedAt, Now, StaleAfter);
     const auto IsValidSample = [&](double ReceivedAt)
     {
-        return MRFPSOSC::IsConnectedSample(Frame.bConnected && Frame.bDeviceStatusValid, Frame.DeviceStatusReceivedAt, ReceivedAt, Now, StaleAfter);
+        return MRFPSOSC::IsConnectedSample(Frame.bConnected && Frame.bDeviceStatusValid, Frame.DeviceStatusReceivedAt, ReceivedAt, Now, DeviceStatusStaleAfter, StaleAfter);
     };
     Frame.bFlexValid &= IsValidSample(Frame.FlexReceivedAt);
     Frame.bPoseValid &= MRFPSOSC::IsFresh(Frame.PoseReceivedAt, Now, StaleAfter);
@@ -394,6 +397,19 @@ bool UMRFPSGloveSubsystem::GetLatestHand(EMRFPSGloveHand Hand, FMRFPSGloveHandFr
     Frame.bJointRotationsValid &= IsValidSample(Frame.JointsReceivedAt);
     Frame.bWristImuValid &= IsValidSample(Frame.WristReceivedAt);
     Frame.FlexAgeSeconds = Frame.FlexReceivedAt >= 0.0 ? float(Now - Frame.FlexReceivedAt) : TNumericLimits<float>::Max();
+    const bool bControllerStreamFresh = MRFPSOSC::IsFresh(Frame.ControllerReceivedAt, Now, StaleAfter);
+    const uint8 Diagnostic = (Frame.bDeviceStatusValid ? 1 : 0) | (bReportedConnected ? 2 : 0)
+        | (Frame.bFlexStreamFresh ? 4 : 0) | (Frame.bFlexValid ? 8 : 0)
+        | (bControllerStreamFresh ? 16 : 0) | (Frame.bControllerValid ? 32 : 0);
+    if (LastFreshnessDiagnostic[HandIndex] != Diagnostic)
+    {
+        LastFreshnessDiagnostic[HandIndex] = Diagnostic;
+        const auto AgeMs = [Now](double ReceivedAt) { return ReceivedAt >= 0.0 ? (Now - ReceivedAt) * 1000.0 : -1.0; };
+        UE_LOG(LogMRFPSGloves, Display, TEXT("MRFPS_GLOVE_FRESH hand=%s status_fresh=%d reported_connected=%d flex_stream_fresh=%d flex_valid=%d controller_stream_fresh=%d controller_valid=%d status_age_ms=%.1f flex_age_ms=%.1f controller_age_ms=%.1f"),
+            HandIndex == 0 ? TEXT("left") : TEXT("right"), int32(Frame.bDeviceStatusValid), int32(bReportedConnected),
+            int32(Frame.bFlexStreamFresh), int32(Frame.bFlexValid), int32(bControllerStreamFresh), int32(Frame.bControllerValid),
+            AgeMs(Frame.DeviceStatusReceivedAt), AgeMs(Frame.FlexReceivedAt), AgeMs(Frame.ControllerReceivedAt));
+    }
     if (!Frame.bControllerValid)
     {
         Frame.Trigger = Frame.Grip = 0.0f;

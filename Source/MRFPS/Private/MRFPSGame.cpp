@@ -554,7 +554,6 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             bPreviousGloveA[I]=G.bAButtonPressed; bPreviousGloveB[I]=G.bBButtonPressed;
             FMRFPSFingerPose& Fingers=I==0?Next.LeftFingers:Next.RightFingers;
             MRFPSGloveInput::CopyFingers(G,Fingers);
-            if (I==0) Next.LeftOpenness=MRFPSGloveInput::LeftOpenness(G);
             if (I==1) { IndexCurl=G.bFlexValid && G.FingerCurls.IsValidIndex(1) ? G.FingerCurls[1] : 0; bGloveTrigger=G.bControllerValid && G.bTriggerPressed; TriggerAnalog=G.bControllerValid ? G.Trigger : 0; }
             // The controller or optical hand takes precedence. Retain an
             // explicitly calibrated external tracker as another fallback.
@@ -566,6 +565,10 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             if (G.bFlexValid) TrackingDescription=TEXT("ContactGlove 2 + XR tracking");
         }
     }
+    // A shield requires live hand and head tracking as well as fresh glove
+    // data. Reset the hysteresis on loss rather than retaining an open hand.
+    if (IsXR()) Next.LeftOpenness=MRFPSGloveInput::LeftOpenness(GloveFrames[0],LocalShieldPalm,Next.bHeadTracked,Next.bLeftTracked);
+    else LocalShieldPalm.Reset();
     if (Next.bRightTracked) {
         Next.RightHandRotation=Next.RightRotation;
         if (IsXR()) {

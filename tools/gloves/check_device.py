@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from contactglove_bridge import MAX_PACKET, decode_packet, encode_message, is_glove_message, parse_device_status
+from contactglove_bridge import DEVICE_STATUS_STALE_SECONDS, MAX_PACKET, decode_packet, encode_message, is_glove_message, parse_device_status
 
 
 class HandObservation:
@@ -44,14 +44,14 @@ class HandObservation:
     def is_connected(self, now: float, stale_after: float) -> bool:
         return self.connected and "Device" in self.last_received and now - self.last_received["Device"] <= stale_after
 
-    def observe(self, address: str, args: list[Any], now: float, stale_after: float = 0.15) -> None:
+    def observe(self, address: str, args: list[Any], now: float, device_stale_after: float = DEVICE_STATUS_STALE_SECONDS) -> None:
         stream = address.rsplit("/", 1)[-1]
         self.counts[stream] = self.counts.get(stream, 0) + 1
         self.last_received[stream] = now
         if stream == "Hand":
             curls = [sum(max(0.0, min(1.0, args[3 + finger * 4 + joint])) for joint in range(3)) / 3 for finger in range(5)]
             self.last_curls = curls
-            if self.is_connected(now, stale_after):
+            if self.is_connected(now, device_stale_after):
                 self.valid_samples += 1
                 self.minimum = [min(a, b) for a, b in zip(self.minimum, curls)] if self.minimum is not None else list(curls)
                 self.maximum = [max(a, b) for a, b in zip(self.maximum, curls)] if self.maximum is not None else list(curls)
@@ -60,12 +60,12 @@ class HandObservation:
         spans = [high - low for low, high in zip(self.minimum, self.maximum)] if self.minimum is not None else None
         ages = {name: max(0.0, now - received) for name, received in self.last_received.items()}
         raw_fresh = "Hand" in ages and ages["Hand"] <= stale_after
-        connected = self.is_connected(now, stale_after)
+        connected = self.is_connected(now, DEVICE_STATUS_STALE_SECONDS)
         return {
             "packet_counts": self.counts,
             "stream_age_seconds": ages,
             "flex_stream_fresh": raw_fresh,
-            "device_status_fresh": "Device" in ages and ages["Device"] <= stale_after,
+            "device_status_fresh": "Device" in ages and ages["Device"] <= DEVICE_STATUS_STALE_SECONDS,
             "device_reports_connected": self.connected,
             "connected": connected,
             "battery_percent": self.battery,
@@ -141,7 +141,7 @@ def collect(station_host: str, station_port: int, listen_port: int, duration: fl
                         continue
                     if not selected_id:
                         selected_id = values[1]
-                    observations[0 if values[2] == 1 else 1].observe(address, values, time.monotonic(), stale_after)
+                    observations[0 if values[2] == 1 else 1].observe(address, values, time.monotonic())
             except (ValueError, UnicodeError):
                 rejected += 1
         now = time.monotonic()
@@ -158,6 +158,7 @@ def collect(station_host: str, station_port: int, listen_port: int, duration: fl
             "listen_port": listen_port,
             "duration_seconds": now - sample_start,
             "stale_after_seconds": stale_after,
+            "device_status_stale_after_seconds": DEVICE_STATUS_STALE_SECONDS,
             "selected_device_id": selected_id or None,
             "ignored_device_ids": sorted(ignored_devices),
             "udp_datagrams_received": received,

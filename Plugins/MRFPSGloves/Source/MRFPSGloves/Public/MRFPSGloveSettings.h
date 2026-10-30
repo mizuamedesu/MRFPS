@@ -20,6 +20,8 @@ public:
     // Enable on a PC with DivingStation. Disable for a Quest receiving the PC relay.
     UPROPERTY(Config, EditAnywhere, Category="Connection") bool bConnectToStation = PLATFORM_WINDOWS != 0;
     UPROPERTY(Config, EditAnywhere, Category="Tracking", meta=(ClampMin="0.02", ClampMax="1.0")) float StaleAfterSeconds = 0.15f;
+    // Device connection snapshots are independent of rapidly-changing finger/button samples.
+    UPROPERTY(Config, EditAnywhere, Category="Tracking", meta=(ClampMin="0.2", ClampMax="5.0")) float DeviceStatusStaleAfterSeconds = 1.0f;
     // Hand relative to the physical tracker, after converting tracker axes to UE basis.
     // Resulting hand frame: +X towards fingertips, +Z out of the back of the hand.
     UPROPERTY(Config, EditAnywhere, Category="Tracking|Mount Calibration") FTransform LeftTrackerToHand = FTransform::Identity;

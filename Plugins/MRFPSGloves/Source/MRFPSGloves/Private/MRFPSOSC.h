@@ -79,8 +79,8 @@ inline bool IsFresh(double ReceivedAt, double Now, double MaximumAge)
 {
     return ReceivedAt >= 0.0 && Now >= ReceivedAt && Now - ReceivedAt <= MaximumAge;
 }
-inline bool IsConnectedSample(bool Connected, double StatusReceivedAt, double SampleReceivedAt, double Now, double MaximumAge)
+inline bool IsConnectedSample(bool Connected, double StatusReceivedAt, double SampleReceivedAt, double Now, double StatusMaximumAge, double SampleMaximumAge)
 {
-    return Connected && IsFresh(StatusReceivedAt, Now, MaximumAge) && IsFresh(SampleReceivedAt, Now, MaximumAge);
+    return Connected && IsFresh(StatusReceivedAt, Now, StatusMaximumAge) && IsFresh(SampleReceivedAt, Now, SampleMaximumAge);
 }
 }

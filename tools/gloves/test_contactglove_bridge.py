@@ -1,5 +1,6 @@
 import importlib.util
 import math
+import os
 import socket
 import struct
 import subprocess
@@ -74,6 +75,76 @@ class OSCProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(bridge.decode_packet(batch[0])[0][2][3], 0.5)
         self.assertEqual(relay.drain(), [])
 
+    def test_status_and_sample_have_independent_timeouts(self):
+        status = ({"right_connected": True}, 10.0)
+        self.assertTrue(bridge.connected_status(status, "right_connected", 10.25))
+        self.assertFalse(bridge.connected_status(status, "right_connected", 11.01))
+        self.assertFalse(bridge.connected_status(({"right_connected": False}, 10.2), "right_connected", 10.21))
+        self.assertFalse(bridge.connected_status(status, "right_connected", 9.9))
+        relay = bridge.PendingRelay()
+        sample = [1, "fixture", 0] + [0.5] * 20
+        relay.add("/DS/HC/Hand", sample, received_at=10.0)
+        self.assertEqual(relay.drain(10.16), [])
+        self.assertEqual(relay.expired, 1)
+        relay.add("/DS/HC/Hand", sample, received_at=10.20)
+        self.assertEqual(len(relay.drain(10.25)), 1)
+
+    def test_explicit_disconnect_discards_pending_samples(self):
+        relay = bridge.PendingRelay()
+        relay.add("/DS/HC/Hand", [1, "fixture", 0] + [0.5] * 20, received_at=10.0)
+        relay.discard_hand(0)
+        self.assertEqual(relay.drain(10.01), [])
+
+    @unittest.skipUnless(os.name == "nt", "process suspension fixture uses Windows NT APIs")
+    def test_process_resume_drops_old_held_input_and_requires_new_status(self):
+        import ctypes
+        ntdll = ctypes.WinDLL("ntdll")
+        for function in (ntdll.NtSuspendProcess, ntdll.NtResumeProcess):
+            function.argtypes = [ctypes.c_void_p]
+            function.restype = ctypes.c_long
+        station = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        target = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        reserve = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for sock in (station, target, reserve):
+            sock.bind(("127.0.0.1", 0))
+        listen_port = reserve.getsockname()[1]
+        reserve.close()
+        station.settimeout(5)
+        target.settimeout(.2)
+        process = subprocess.Popen([sys._base_executable, str(MODULE_PATH), "--target", "127.0.0.1",
+            "--target-port", str(target.getsockname()[1]), "--station-port", str(station.getsockname()[1]),
+            "--listen-port", str(listen_port)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        suspended = False
+        try:
+            _, source = station.recvfrom(8192)
+            status = bridge.encode_message("/DS/HC/Device", 1, "fixture", 1, 2, "ContactGlove2", 6, 0.0, 1, 80, 0.0, 1, 80, 0.0)
+            held = bridge.encode_message("/DS/HC/Hand", 1, "fixture", 0, *([.8] * 20))
+            station.sendto(status, source)
+            self.assertEqual(target.recvfrom(8192)[0], status)
+            self.assertEqual(ntdll.NtSuspendProcess(int(process._handle)), 0)
+            suspended = True
+            station.sendto(held, source)
+            time.sleep(.25)
+            self.assertEqual(ntdll.NtResumeProcess(int(process._handle)), 0)
+            suspended = False
+            try:
+                unexpected = bridge.decode_packet(target.recvfrom(8192)[0])[0][0]
+            except socket.timeout:
+                unexpected = None
+            self.assertIsNone(unexpected, f"unexpected packet after resume: {unexpected}")
+            # A new status, followed by live input, re-enables forwarding.
+            station.sendto(status, source)
+            self.assertEqual(target.recvfrom(8192)[0], status)
+            station.sendto(held, source)
+            self.assertEqual(target.recvfrom(8192)[0], held)
+        finally:
+            if suspended:
+                ntdll.NtResumeProcess(int(process._handle))
+            process.terminate()
+            process.wait(timeout=5)
+            station.close()
+            target.close()
+
     def test_openvr_basis_and_alignment(self):
         matrix = [[1, 0, 0, 1], [0, 1, 0, 2], [0, 0, 1, -3]]
         position, rotation = bridge.convert_pose(matrix, 0, [0, 0, 0])
@@ -130,11 +201,21 @@ class OSCProtocolTests(unittest.TestCase):
             station.sendto(packet, source)
             forwarded, _ = target.recvfrom(8192)
             self.assertEqual(forwarded, packet)
+            # A fresh sample remains usable after the old 150 ms status limit.
+            time.sleep(.25)
+            station.sendto(packet, source)
+            self.assertEqual(target.recvfrom(8192)[0], packet)
             # Device selection is pinned after the first valid device; other IDs cannot replace it.
             station.sendto(bridge.encode_message("/DS/HC/Hand", 1, "another-device", 1, *([0.6] * 20)), source)
             target.settimeout(0.1)
             with self.assertRaises(socket.timeout):
                 target.recvfrom(8192)
+            time.sleep(.8)
+            station.sendto(packet, source)
+            with self.assertRaises(socket.timeout):
+                target.recvfrom(8192)
+            station.sendto(status, source)
+            self.assertEqual(target.recvfrom(8192)[0], status)
             # A real Station sends these default Hand packets even when disconnected.
             disconnected = bridge.encode_message("/DS/HC/Device", 1, "cg2-fixture", 1, 2, "ContactGlove2", 6, 0.0, 0, 0, 0.0, 0, 0, 0.0)
             station.sendto(disconnected, source)

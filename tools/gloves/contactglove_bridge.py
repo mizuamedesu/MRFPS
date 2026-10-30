@@ -20,6 +20,8 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 MAX_PACKET = 8192
+DEVICE_STATUS_STALE_SECONDS = 1.0
+SAMPLE_STALE_SECONDS = 0.15
 LOG = logging.getLogger("contactglove")
 
 
@@ -136,20 +138,28 @@ def parse_device_status(types: str, args: list[Any]) -> list[dict[str, Any]]:
 class PendingRelay:
     """Coalesce only newly received packets, never refresh old input by retransmission."""
     def __init__(self) -> None:
-        self.pending: dict[tuple[str, int], bytes] = {}
+        self.pending: dict[tuple[str, int], tuple[bytes, float]] = {}
+        self.expired = 0
 
-    def add(self, address: str, args: list[Any]) -> None:
+    def add(self, address: str, args: list[Any], received_at: float | None = None) -> None:
         side = args[2] if address != "/DS/HC/Device" else -1
-        self.pending[(address, side)] = encode_message(address, *args)
+        self.pending[(address, side)] = (encode_message(address, *args), time.monotonic() if received_at is None else received_at)
 
-    def drain(self) -> list[bytes]:
+    def drain(self, now: float | None = None) -> list[bytes]:
         # The connection snapshot must precede the hand samples it validates.
+        now = time.monotonic() if now is None else now
         ordered = sorted(self.pending.items(), key=lambda item: item[0][0] != "/DS/HC/Device")
         self.pending.clear()
-        return [packet for _, packet in ordered]
+        fresh = [packet for _, (packet, received_at) in ordered if 0 <= now - received_at <= SAMPLE_STALE_SECONDS]
+        self.expired += len(ordered) - len(fresh)
+        return fresh
 
     def discard_hand(self, side: int) -> None:
         self.pending = {key: packet for key, packet in self.pending.items() if key[1] != side}
+
+
+def connected_status(status: tuple[dict[str, Any], float] | None, field: str, now: float) -> bool:
+    return bool(status and 0 <= now - status[1] <= DEVICE_STATUS_STALE_SECONDS and status[0][field])
 
 
 def quaternion(matrix: list[list[float]]) -> tuple[float, float, float, float]:
@@ -282,9 +292,35 @@ def run(args: argparse.Namespace) -> None:
     received = rejected = 0
     last_report = time.monotonic()
     last_station_packet = -1000.0
+    last_loop = last_device_received = last_device_forwarded = None
+    discard_backlog = False
+    metrics = {"device_in": 0, "device_out": 0, "status_expired": 0, "disconnected": 0,
+               "left_disconnected": 0, "right_disconnected": 0, "backlog_resets": 0,
+               "device_in_max_gap_ms": 0.0, "device_out_max_gap_ms": 0.0}
+    last_sample_event: dict[str, float] = {}
+    for stream in ("right_hand_in", "right_hand_out", "right_controller_in", "right_controller_out"):
+        metrics[stream] = 0
+        metrics[stream + "_max_gap_ms"] = 0.0
+
+    def note_sample(stream: str, now: float) -> None:
+        metrics[stream] += 1
+        previous = last_sample_event.get(stream)
+        if previous is not None:
+            key = stream + "_max_gap_ms"
+            metrics[key] = max(metrics[key], (now - previous) * 1000)
+        last_sample_event[stream] = now
     try:
         while True:
             now = time.monotonic()
+            if last_loop is not None and (now < last_loop or now - last_loop > SAMPLE_STALE_SECONDS):
+                # Kernel queues do not have trustworthy receive timestamps. After
+                # suspension discard queued datagrams and require a new status.
+                discard_backlog = True
+                pending.expired += len(pending.pending)
+                pending.pending.clear()
+                device_status.clear()
+                metrics["backlog_resets"] += 1
+            last_loop = now
             if now >= next_connect and now - last_station_packet > 0.5:
                 receiver.sendto(encode_message("/DS/HC/Connect", args.listen_port), station)
                 next_connect = now + 2
@@ -294,11 +330,33 @@ def run(args: argparse.Namespace) -> None:
                         sender.sendto(packet, target)
                 next_tracker = now + 1 / 90
             if now >= next_forward:
-                for packet in pending.drain():
+                for packet in pending.drain(now):
                     for target in targets:
                         sender.sendto(packet, target)
+                    if packet.startswith(b"/DS/HC/Device\0"):
+                        metrics["device_out"] += 1
+                        if last_device_forwarded is not None:
+                            metrics["device_out_max_gap_ms"] = max(metrics["device_out_max_gap_ms"], (now - last_device_forwarded) * 1000)
+                        last_device_forwarded = now
+                    elif packet.startswith((b"/DS/HC/Hand\0", b"/DS/HC/Controller\0")):
+                        address, _, values = decode_packet(packet)[0]
+                        if values[2] == 0:
+                            note_sample("right_hand_out" if address == "/DS/HC/Hand" else "right_controller_out", now)
                 next_forward = now + 1 / args.rate_hz
             ready, _, _ = select.select([receiver], [], [], 0.005)
+            if discard_backlog:
+                # Drain without parsing; accepting any queued held trigger would
+                # make it appear new when the process resumes.
+                for _ in range(512):
+                    if not ready:
+                        break
+                    try:
+                        receiver.recvfrom(65535)
+                    except (BlockingIOError, ConnectionResetError):
+                        break
+                    ready, _, _ = select.select([receiver], [], [], 0)
+                discard_backlog = bool(ready)
+                continue
             if ready:
                 try:
                     data, source = receiver.recvfrom(65535)
@@ -307,6 +365,7 @@ def run(args: argparse.Namespace) -> None:
                 # Bound the work spent parsing a flooded local OSC stream,
                 # while leaving room for both hands and the device heartbeat.
                 time.sleep(0.00025)
+                now = time.monotonic()
                 if source[0] != station[0] or len(data) > MAX_PACKET:
                     rejected += 1
                     continue
@@ -316,17 +375,37 @@ def run(args: argparse.Namespace) -> None:
                     for address, tags, values in messages:
                         if address == "/DS/HC/Device":
                             devices = parse_device_status(tags, values)
+                            metrics["device_in"] += 1
+                            if last_device_received is not None:
+                                metrics["device_in_max_gap_ms"] = max(metrics["device_in_max_gap_ms"], (now - last_device_received) * 1000)
+                            last_device_received = now
                             last_station_packet = now
+                            previous_status = device_status.get(selected_id)
                             device_status = {device["id"]: (device, now) for device in devices}
                             if not selected_id:
                                 selected = next((d for d in devices if d["main"]), devices[0] if devices else None)
                                 if selected:
                                     selected_id = selected["id"]
                             selected_status = device_status.get(selected_id)
+                            disconnect_transition = False
                             for side, field in ((1, "left_connected"), (0, "right_connected")):
                                 if not selected_status or not selected_status[0][field]:
                                     pending.discard_hand(side)
-                            pending.add(address, values)
+                                    metrics["left_disconnected" if side == 1 else "right_disconnected"] += 1
+                                    disconnect_transition |= previous_status is None or bool(previous_status[0][field])
+                            if disconnect_transition:
+                                # Propagate an explicit disconnect without waiting
+                                # for the next coalescing interval.
+                                packet = encode_message(address, *values)
+                                for target in targets:
+                                    sender.sendto(packet, target)
+                                metrics["device_out"] += 1
+                                if last_device_forwarded is not None:
+                                    metrics["device_out_max_gap_ms"] = max(metrics["device_out_max_gap_ms"], (now - last_device_forwarded) * 1000)
+                                last_device_forwarded = now
+                                pending.pending.pop((address, -1), None)
+                            else:
+                                pending.add(address, values, now)
                             continue
                         if not is_glove_message(address, tags, values):
                             continue
@@ -336,16 +415,26 @@ def run(args: argparse.Namespace) -> None:
                         if not selected_id:
                             selected_id = values[1]
                             LOG.info("Locked to ContactGlove device %s", selected_id)
+                        if values[2] == 0 and address in ("/DS/HC/Hand", "/DS/HC/Controller"):
+                            note_sample("right_hand_in" if address == "/DS/HC/Hand" else "right_controller_in", now)
                         status = device_status.get(selected_id)
                         connected_field = "left_connected" if values[2] == 1 else "right_connected"
-                        if not status or now - status[1] > 0.15 or not status[0][connected_field]:
+                        if not connected_status(status, connected_field, now):
+                            if status and not status[0][connected_field]:
+                                metrics["disconnected"] += 1
+                            else:
+                                metrics["status_expired"] += 1
                             continue
-                        pending.add(address, values)
+                        pending.add(address, values, now)
                         received += 1
                 except (ValueError, UnicodeError, struct.error):
                     rejected += 1
             if now - last_report >= 10:
                 LOG.info("glove packets=%d rejected=%d device=%s", received, rejected, selected_id or "not connected")
+                LOG.info("MRFPS_GLOVE_RELAY_METRICS %s pending_expired=%d", json.dumps(metrics, sort_keys=True), pending.expired)
+                for key in metrics:
+                    metrics[key] = 0.0 if key.endswith("_ms") else 0
+                pending.expired = 0
                 last_report = now
     finally:
         receiver.sendto(encode_message("/DS/HC/Disconnect", args.listen_port), station)

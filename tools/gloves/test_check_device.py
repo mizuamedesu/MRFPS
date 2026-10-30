@@ -42,11 +42,19 @@ class ActualStreamObservationTests(unittest.TestCase):
     def test_fresh_hand_packets_cannot_keep_connection_status_alive(self):
         observation = HandObservation()
         observation.observe_connection(True, 80, 2.0)
-        observation.observe("/DS/HC/Hand", [1, "fixture", 1] + [0.3] * 20, 2.4)
-        report = observation.report(2.45, 0.15)
+        observation.observe("/DS/HC/Hand", [1, "fixture", 1] + [0.3] * 20, 3.04)
+        report = observation.report(3.05, 0.15)
         self.assertTrue(report["flex_stream_fresh"])
         self.assertFalse(report["connected"])
         self.assertFalse(report["flex_fresh"])
+
+    def test_recent_samples_survive_a_slower_connected_status(self):
+        observation = HandObservation()
+        observation.observe_connection(True, 80, 2.0)
+        observation.observe("/DS/HC/Hand", [1, "fixture", 1] + [0.3] * 20, 2.4)
+        report = observation.report(2.45, 0.15)
+        self.assertTrue(report["device_status_fresh"])
+        self.assertTrue(report["flex_fresh"])
 
 
 if __name__ == "__main__":

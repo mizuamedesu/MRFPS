@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "MRFPSLocalInputLease.h"
+#include "MRFPSOpenPalm.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
@@ -302,6 +303,7 @@ private:
     uint64 GeometryCalibratedEpoch = 0;
     bool bFiring = false;
     bool bDesktopShield = false;
+    MRFPSOpenPalm::FState LocalShieldPalm;
     bool bShieldExhausted = false;
     bool bFingerTriggerDown = false;
     bool bRequireFireRelease=false;

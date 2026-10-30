@@ -32,10 +32,25 @@ bool FMRFPSGloveFingerSourceTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Right glove flex is independently quantized"),int32(RightPose.Joint[1]),191);
     TestEqual(TEXT("Left glove spread is preserved"),int32(LeftPose.Splay[0]),64);
     TestEqual(TEXT("Right glove spread is preserved"),int32(RightPose.Splay[1]),191);
-    TestEqual(TEXT("Fresh open glove activates the palm gesture"),MRFPSGloveInput::LeftOpenness(Left),1.f);
+    MRFPSOpenPalm::FState Palm;
+    TestEqual(TEXT("Fresh open glove activates the palm gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
+    Left.FingerCurls={.30f,.32f,.48f,.39f,.56f};
+    TestEqual(TEXT("A naturally bent little finger does not prevent the shield"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
+    Left.FingerCurls={.30f,.54f,.49f,.53f,.61f};
+    TestEqual(TEXT("Small movements near the open threshold keep the shield active"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
+    Left.FingerCurls={.70f,.83f,.88f,.84f,.75f};
+    TestEqual(TEXT("A closed glove releases the shield"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),0.f);
+    Left.FingerCurls={.30f,.54f,.49f,.53f,.61f};
+    TestEqual(TEXT("The hysteresis hold range does not activate a shield from closed"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),0.f);
+    Left.FingerCurls={.18f,.12f,.07f,.10f,.37f};
+    TestEqual(TEXT("Open hand reactivates after closing"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
+    TestEqual(TEXT("Losing head tracking clears the open gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,false,true),0.f);
+    TestEqual(TEXT("Fresh open hand can reactivate"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
+    TestEqual(TEXT("Losing left hand tracking clears the open gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,false),0.f);
+    TestEqual(TEXT("Fresh open hand can reactivate again"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),1.f);
     Left.bFlexValid=false;MRFPSGloveInput::CopyFingers(Left,LeftPose);
     TestFalse(TEXT("Stale glove data cannot be presented as fresh finger tracking"),LeftPose.bValid);
-    TestEqual(TEXT("A missing glove cannot fall back to an optical open-palm gesture"),MRFPSGloveInput::LeftOpenness(Left),0.f);
+    TestEqual(TEXT("A missing glove cannot fall back to an optical open-palm gesture"),MRFPSGloveInput::LeftOpenness(Left,Palm,true,true),0.f);
     TestTrue(TEXT("Loss of the left glove does not invalidate the right"),RightPose.bValid);
     return true;
 }
