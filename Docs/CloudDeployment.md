@@ -219,6 +219,17 @@ the actual value is obtained, the existing panel CLI can perform the normal GUI
 update using `panel-control.mjs fingerprint --profile ... --credentials-file ...
 --fingerprint ...`. It does not require reading the issuer private-key backup.
 
+For the owned service, `node Deploy/CloudflareAdmin/flash-runtime.mjs --state
+<service.json> --expected-image <exact-image@sha256:digest>` verifies the saved
+ownership marker, immutable image, observed generation, unchanged specification
+and single ready Pod before using the authenticated API's container shell. It
+reads only the healthcheck result, process identity and fingerprint startup
+marker; the CLI login token stays in memory. It repeats the probe and checks the
+Pod, process and generation again before reporting the fingerprint. The command
+requires the admin dependencies (`npm ci` in `Deploy/CloudflareAdmin`). Socket
+health is not proof of public UDP reachability or successful client admission.
+Cloud WebSocket execution must still be validated on a running service.
+
 Primary platform specifications:
 
 - [Flash port allocation contract](https://github.com/IPA-CyberLab/IPA-RS-HeteroCloud/blob/b6b038a577d133df6dd41ec7c05475232ae6e531/contracts/api/v1/flash.openapi.json#L1495)
