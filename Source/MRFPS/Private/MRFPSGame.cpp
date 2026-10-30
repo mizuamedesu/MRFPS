@@ -790,12 +790,12 @@ void AMRFPSPlayerController::BeginPlay()
         !(StartupInstance && StartupInstance->IsAutoReconnectPending()) &&
         !FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),StartupServer) &&
         !FParse::Value(FCommandLine::Get(),TEXT("MRFPSDeviceCodeFile="),DeviceCodeFile)) {
-        FTimerHandle Handle;
-        GetWorldTimerManager().SetTimer(Handle,FTimerDelegate::CreateWeakLambda(this,[this]() { OpenDeviceLogin(); }),1.f,false);
+        GetWorldTimerManager().SetTimer(StartupLoginTimer,FTimerDelegate::CreateWeakLambda(this,[this]() { OpenDeviceLogin(); }),1.f,false);
     }
 }
 void AMRFPSPlayerController::EndPlay(const EEndPlayReason::Type Reason)
 {
+    if (GetWorld()) GetWorldTimerManager().ClearTimer(StartupLoginTimer);
     if (IsLocalController()) { if (DeviceLogin) DeviceLogin->CloseLogin(); ClosePlayerVideoWindows(); CloseInspectorViewWindow(); StopGeometryPublisher(); }
     Super::EndPlay(Reason);
 }
@@ -829,6 +829,9 @@ void AMRFPSPlayerController::SetupInputComponent()
 }
 bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
 {
+    // A is also the existing ArmHaptics action. On Quest consume it before
+    // PlayerInput sees it, so opening the panel does not arm haptics as well.
+    if (HandleQuestLoginButton(Params,PLATFORM_ANDROID)) return true;
     if (IsLocalController() && !Params.IsSimulatedInput() && Params.Key.GetFName()==FName(TEXT("OculusTouch_Right_Trigger_Click")) &&
         (Params.Event==IE_Pressed || Params.Event==IE_Released)) {
         if (auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance())) GI->FireTransition.SetPhysical(Params.Event==IE_Pressed);
@@ -904,6 +907,12 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
     }
     // Players retain the existing Escape -> StopHaptics action binding.
     return Super::InputKey(Params);
+}
+bool AMRFPSPlayerController::HandleQuestLoginButton(const FInputKeyEventArgs& Params,bool bAndroid)
+{
+    if (!bAndroid || !IsLocalController() || Params.Key!=EKeys::OculusTouch_Right_A_Click) return false;
+    if (Params.Event==IE_Pressed) SetQuestDeviceLoginVisible(!(DeviceLogin && DeviceLogin->IsOpen()));
+    return true;
 }
 void AMRFPSPlayerController::ApplyInspectorMouseMode()
 {
@@ -1070,6 +1079,34 @@ void AMRFPSPlayerController::OpenDeviceLogin()
         ClientTravel(TEXT("/Game/Maps/MRFPSArena"),TRAVEL_Absolute); return;
     }
     DeviceLogin=UMRFPSLoginMenu::CreateFor(this);
+}
+void AMRFPSPlayerController::SetQuestDeviceLoginVisible(bool bVisible)
+{
+    if (!IsLocalController()) return;
+    UWorld* World=GetWorld();
+    if (!World || World->bIsTearingDown) return;
+    if (!bVisible) {
+        // An explicit close also cancels the startup timer, including when a
+        // CLI close arrives before the automatic first open.
+        GetWorldTimerManager().ClearTimer(StartupLoginTimer);
+        if (DeviceLogin && DeviceLogin->IsOpen()) DeviceLogin->CloseLogin();
+        if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->ClearLoginScreenRequest();
+        return;
+    }
+    if (DeviceLogin && DeviceLogin->IsOpen()) {
+        GetWorldTimerManager().ClearTimer(StartupLoginTimer);
+        return;
+    }
+    // Do not create UI in a world already being replaced. Unlike
+    // OpenDeviceLogin(), opening this overlay never requests ClientTravel.
+    const FWorldContext* Context=GEngine?GEngine->GetWorldContextFromWorld(World):nullptr;
+    if (!Context || !Context->TravelURL.IsEmpty() || Context->PendingNetGame || World->IsInSeamlessTravel()) return;
+    if (SessionMenu && SessionMenu->IsInViewport()) SessionMenu->Close();
+    DeviceLogin=UMRFPSLoginMenu::CreateFor(this);
+    if (DeviceLogin && DeviceLogin->IsOpen()) {
+        GetWorldTimerManager().ClearTimer(StartupLoginTimer);
+        if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->ClearLoginScreenRequest();
+    }
 }
 void AMRFPSPlayerController::MRFPSConfigureServer(const FString& Address)
 {

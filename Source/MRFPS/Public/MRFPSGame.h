@@ -421,6 +421,8 @@ public:
     UFUNCTION(Exec) void MRFPSLoginFile(const FString& File,const FString& RequestedRole);
     UFUNCTION(Exec) void MRFPSResetIssuerTrust();
     void OpenDeviceLogin();
+    /** Set the Quest panel explicitly without leaving an existing session. */
+    void SetQuestDeviceLoginVisible(bool bVisible);
     void HandleSessionDisconnected();
     UFUNCTION(Exec) void MRFPSView(int32 Slot);
     UFUNCTION(Exec) void MRFPSReady();
@@ -446,6 +448,9 @@ public:
     UPROPERTY() TArray<TObjectPtr<UTextureRenderTarget2D>> ViewTextures;
     UPROPERTY() TObjectPtr<UMRFPSMenu> SessionMenu;
     UPROPERTY(Transient) TObjectPtr<UMRFPSLoginMenu> DeviceLogin;
+#if WITH_DEV_AUTOMATION_TESTS
+    bool bTestQuestVR=false;
+#endif
     bool bMultiView = true;
     int32 ViewSlot = -1;
     FString ConnectionError;
@@ -453,6 +458,7 @@ private:
     friend class AMRFPSPawn;
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMRFPSSoloBotScenario;
+    friend class FMRFPSQuestLoginToggleTest;
 #endif
 #if !UE_SERVER
     FString RequestedWindowTitle;
@@ -478,6 +484,7 @@ private:
     UPROPERTY(Transient) TObjectPtr<USceneCaptureComponent2D> InspectorWindowCamera;
     UPROPERTY(Transient) TObjectPtr<UTextureRenderTarget2D> InspectorWindowTarget;
     bool bConsumePlayerVideoClick=false;
+    bool HandleQuestLoginButton(const FInputKeyEventArgs& Params,bool bAndroid);
     void ConnectWithRole(const FString& Address,const FString& RequestedRole);
     UFUNCTION(Server,Reliable) void ServerAdminAction(EMRFPSAdminAction Action,FVector2D Dimensions,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminPlaceWall(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
@@ -568,6 +575,7 @@ private:
     void LookY(float V);
     FVector MoveAxes = FVector::ZeroVector;
     FTimerHandle PendingConnectionTimer;
+    FTimerHandle StartupLoginTimer;
     double LastCaptureRefresh = -100;
     double NextSmokeAction = 0;
     int32 SmokeStage = 0;

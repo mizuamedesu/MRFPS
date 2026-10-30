@@ -426,10 +426,16 @@ void AMRFPSPlayerController::TickAutomation()
                     if((AdminPanel&&AdminPanel->IsInViewport())!=Open) { Ok=false; Code=TEXT("MENU_UNAVAILABLE"); } }
             } else if(Menu==TEXT("login")) {
                 const bool Exists=DeviceLogin&&DeviceLogin->IsOpen(); Already=Exists==Open;
+#if PLATFORM_ANDROID
+                // Quest can show the login overlay without leaving a session.
+                // Call even for an already-closed panel to cancel startup open.
+                SetQuestDeviceLoginVisible(Open);
+#else
                 if(!Already && Open && GetNetMode()!=NM_Standalone) {
                     WriteAutomationResult(Folder,Id,TEXT("submitted"),TEXT("LOGIN_SCREEN_REQUESTED"),Data); OpenDeviceLogin(); return;
                 }
                 if(!Already) { if(Open) OpenDeviceLogin(); else if(DeviceLogin) DeviceLogin->CloseLogin(); }
+#endif
                 if((DeviceLogin&&DeviceLogin->IsOpen())!=Open) { Ok=false; Code=TEXT("MENU_UNAVAILABLE"); }
             } else { Ok=false; Code=TEXT("INVALID_MENU"); }
         } else if(Operation==TEXT("connection.set")) {

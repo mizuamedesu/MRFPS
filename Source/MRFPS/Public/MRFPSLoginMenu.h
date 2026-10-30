@@ -68,8 +68,10 @@ protected:
 private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMRFPSLoginControlTickTest;
+    friend class FMRFPSQuestLoginToggleTest;
     friend class FMRFPSLoginWidgetPaintScenario;
     FString TestControlPath;
+    bool bTestAndroidControl=false;
     bool bUseTestWeapon=false;
     FMRFPSWeaponPose TestWeapon;
     TFunction<void()> TestDuringPaint;

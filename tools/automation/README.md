@@ -19,7 +19,7 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `view.set` | `{"view":"free|player1|player2"}` | Select a spectator view |
 | `multiview.set`, `reconstructed.set`, `focus.set`, `build-mode.set` | `{"enabled":true}` | Set tiles, reconstructed view, released mouse, or building mode |
 | `window.set` | `{"window":"player1|player2|inspector","open":true}` | Open or close one separate window |
-| `menu.set` | `{"menu":"session|admin|login","open":true}` | Open or close a UI panel; opening login while connected requests a disconnect |
+| `menu.set` | `{"menu":"session|admin|login","open":true}` | Open or close a UI panel; Quest keeps its connection, while desktop opening login requests a disconnect |
 | `menu.set` | `{"menu":"session","open":true,"tab":"participants|settings"}` | Select the session-menu tab; participants requires an authenticated inspector/admin |
 | `roster.list` | `{}` | Read the authenticated inspector/admin roster; unknown, stale and bot ping is `null` |
 | `connection.set` | `{"connected":false}` | Request disconnection and the login screen; connect with `tools/client/device_login.py` and a new code |
@@ -36,6 +36,13 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `capture.set` | `{"enabled":true}` | Request Quest view sharing or retire the current sharing session; the Quest OS consent still requires user approval |
 
 In the Windows session menu, click `参加者` or press Ctrl+2 to show the roster; click `設定` or press Ctrl+1 to return. The participants tab and `roster.list` require a connected, authenticated inspector or admin. Reported ping is the server's measured connection RTT and becomes unknown if the sample is unavailable or over five seconds old.
+
+On Quest, the right controller A button toggles the login panel. The `menu.set`
+operation for `login` explicitly sets open or closed without leaving the current
+session, and can be repeated with a new UUID without toggling. Submitting a new
+device login starts a new connection; `connection.set` with `connected:false`
+explicitly disconnects. The right A button no longer arms haptics on Android;
+the existing ContactGlove A and `haptics.set` control remain available.
 
 `status` is a snapshot, so use a new operation UUID for a fresh snapshot. The layout/control revisions and expected wall shape must come from a recent result; a stale request is rejected rather than overwriting a concurrent change. For `object.ensure`, `surface` is the expected placement surface, while `origin` and the unit `direction` are the authoritative placement ray. World distances are centimetres. A matching existing object is reused; a new one uses the same placement limits as the GUI.
 

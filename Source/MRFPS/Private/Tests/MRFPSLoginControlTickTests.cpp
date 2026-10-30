@@ -1,6 +1,8 @@
 #if WITH_DEV_AUTOMATION_TESTS && !UE_SERVER
 #include "MRFPSGame.h"
 #include "MRFPSLoginMenu.h"
+#include "Engine/DemoNetConnection.h"
+#include "Engine/DemoNetDriver.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -64,6 +66,21 @@ bool FMRFPSLoginControlTickTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("A detached old menu does not consume instructions"),Exists());
     PC->DeviceLogin=Menu; Menu->TickControlFile();
     TestFalse(TEXT("The active menu consumes the deferred instruction"),Exists());
+
+    // An Android Quest overlay can be used while the existing client session
+    // remains connected. Desktop clients retain the original restriction.
+    auto* Driver=NewObject<UDemoNetDriver>(); Driver->ServerConnection=NewObject<UDemoNetConnection>();
+    World->SetNetDriver(Driver); Menu->bVR=true; Menu->NextControlCheck=0;
+    TestTrue(TEXT("The fixture represents a client session"),PC->GetNetMode()==NM_Client);
+    TestTrue(TEXT("Connected instruction created"),Write());
+    Menu->TickControlFile();
+    TestTrue(TEXT("A non-Android client still defers control files"),Exists());
+    Menu->bTestAndroidControl=true;
+    Context.TravelURL=TEXT("/FixturePendingTravel"); Menu->TickControlFile();
+    TestTrue(TEXT("Connected Quest also defers control during travel"),Exists());
+    Context.TravelURL.Empty(); Menu->TickControlFile();
+    TestFalse(TEXT("The stable connected Quest panel consumes the instruction"),Exists());
+    World->SetNetDriver(nullptr);
 
     PC->DeviceLogin=nullptr; Menu->bOpen=false;
     IFileManager::Get().Delete(*File,false,true);

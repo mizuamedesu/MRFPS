@@ -109,6 +109,9 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
 #else
     Menu->bVR=UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled();
 #endif
+#if WITH_DEV_AUTOMATION_TESTS
+    if (Owner->bTestQuestVR) Menu->bVR=true;
+#endif
     if (Menu->bVR) {
         auto* Pawn=Owner->GetPawn<AMRFPSPawn>();
         if (!Pawn || !Pawn->Camera || !Pawn->XROrigin) { Menu->bOpen=false; return nullptr; }
@@ -359,7 +362,13 @@ void UMRFPSLoginMenu::TickControlFile()
     auto* PC=Controller.Get();
     if (!IsValid(PC) || PC->IsActorBeingDestroyed() || PC->DeviceLogin!=this || !PC->IsLocalController()) return;
     UWorld* World=PC->GetWorld();
-    if (!World || World!=GetWorld() || World->bIsTearingDown || PC->GetNetMode()!=NM_Standalone) return;
+    if (!World || World!=GetWorld() || World->bIsTearingDown) return;
+    bool bAndroid=PLATFORM_ANDROID;
+#if WITH_DEV_AUTOMATION_TESTS
+    bAndroid=bAndroid || bTestAndroidControl;
+#endif
+    const bool bAllowedMode=PC->GetNetMode()==NM_Standalone || (bAndroid && bVR && PC->GetNetMode()==NM_Client);
+    if (!bAllowedMode) return;
     const FWorldContext* Context=GEngine?GEngine->GetWorldContextFromWorld(World):nullptr;
     if (!Context || !Context->TravelURL.IsEmpty() || Context->PendingNetGame || World->IsInSeamlessTravel()) return;
     const double Now=FPlatformTime::Seconds();
