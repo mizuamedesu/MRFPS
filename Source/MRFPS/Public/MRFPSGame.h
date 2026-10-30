@@ -459,6 +459,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMRFPSSoloBotScenario;
     friend class FMRFPSQuestLoginToggleTest;
+    TFunction<void()> TestQuestArmRequest;
 #endif
 #if !UE_SERVER
     FString RequestedWindowTitle;
@@ -485,6 +486,8 @@ private:
     UPROPERTY(Transient) TObjectPtr<UTextureRenderTarget2D> InspectorWindowTarget;
     bool bConsumePlayerVideoClick=false;
     bool HandleQuestLoginButton(const FInputKeyEventArgs& Params,bool bAndroid);
+    bool HandleQuestHapticsButton(const FInputKeyEventArgs& Params,bool bAndroid);
+    void QuestArmHaptics();
     void ConnectWithRole(const FString& Address,const FString& RequestedRole);
     UFUNCTION(Server,Reliable) void ServerAdminAction(EMRFPSAdminAction Action,FVector2D Dimensions,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);
     UFUNCTION(Server,Reliable) void ServerAdminPlaceWall(FVector_NetQuantize10 Origin,FVector_NetQuantizeNormal Direction,float Yaw,uint32 ExpectedLayoutRevision,uint32 ExpectedControlRevision);

@@ -832,6 +832,7 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
     // A is also the existing ArmHaptics action. On Quest consume it before
     // PlayerInput sees it, so opening the panel does not arm haptics as well.
     if (HandleQuestLoginButton(Params,PLATFORM_ANDROID)) return true;
+    if (HandleQuestHapticsButton(Params,PLATFORM_ANDROID)) return true;
     if (IsLocalController() && !Params.IsSimulatedInput() && Params.Key.GetFName()==FName(TEXT("OculusTouch_Right_Trigger_Click")) &&
         (Params.Event==IE_Pressed || Params.Event==IE_Released)) {
         if (auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance())) GI->FireTransition.SetPhysical(Params.Event==IE_Pressed);
@@ -916,6 +917,14 @@ bool AMRFPSPlayerController::HandleQuestLoginButton(const FInputKeyEventArgs& Pa
         UE_LOG(LogMRFPS,Display,TEXT("MRFPS_QUEST_LOGIN_TOGGLE open=%d connected=%d"),
             DeviceLogin && DeviceLogin->IsOpen(),GetNetMode()==NM_Client);
     }
+    return true;
+}
+bool AMRFPSPlayerController::HandleQuestHapticsButton(const FInputKeyEventArgs& Params,bool bAndroid)
+{
+    if (!bAndroid || !IsLocalController() || Params.Key!=EKeys::OculusTouch_Right_Thumbstick_Click) return false;
+    // Handle the physical edge immediately. A click made while the menu is
+    // open cannot be queued by PlayerInput and applied after the menu closes.
+    if (Params.Event==IE_Pressed && !Params.IsSimulatedInput()) QuestArmHaptics();
     return true;
 }
 void AMRFPSPlayerController::ApplyInspectorMouseMode()
@@ -1017,6 +1026,22 @@ void AMRFPSPlayerController::ArmHaptics()
         FString Error; if (P->Haptics->GetConnectionState()!=EMoBitsConnectionState::Connected) P->Haptics->Connect(Error);
         P->Haptics->ArmHaptics();
     }
+}
+void AMRFPSPlayerController::QuestArmHaptics()
+{
+    // Closing the overlay never arms automatically. Require a fresh, explicit
+    // right-stick click, and keep haptics stopped while login is displayed.
+    if (!IsLocalController() || (DeviceLogin && DeviceLogin->IsOpen())) return;
+    const auto* Fighter=GetPawn<AMRFPSPawn>();
+    if (!Fighter || !Fighter->Haptics) return;
+#if WITH_DEV_AUTOMATION_TESTS
+    if (TestQuestArmRequest) { TestQuestArmRequest(); return; }
+#endif
+    const bool Connected=Fighter->Haptics->GetConnectionState()==EMoBitsConnectionState::Connected;
+    ArmHaptics();
+    // This records an attempt only. The SDK's asynchronous receipt confirms
+    // an actual arm; an unavailable connection may require a second click.
+    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_QUEST_HAPTICS_ARM attempted=1 connected=%d"),Connected);
 }
 void AMRFPSPlayerController::StopHaptics() { if (auto* P=GetPawn<AMRFPSPawn>(); P && P->Haptics) P->Haptics->StopHaptics(); }
 void AMRFPSPlayerController::ToggleMenu()

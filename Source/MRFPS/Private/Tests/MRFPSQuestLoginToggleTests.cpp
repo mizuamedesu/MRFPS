@@ -8,6 +8,7 @@
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "GameFramework/InputSettings.h"
 #include "HAL/FileManager.h"
 #include "InputKeyEventArgs.h"
 #include "Misc/AutomationTest.h"
@@ -42,6 +43,18 @@ bool FMRFPSQuestLoginToggleTest::RunTest(const FString& Parameters)
     World->SetNetDriver(Driver);
     TestTrue(TEXT("The overlay test uses client network mode"),PC->GetNetMode()==NM_Client);
 
+    const auto* Inputs=GetDefault<UInputSettings>();
+    TArray<FInputActionKeyMapping> ArmMappings;
+    Inputs->GetActionMappingByName(FName(TEXT("QuestArmHaptics")),ArmMappings);
+    TestTrue(TEXT("The unused right stick click is mapped to the Quest arm action"),ArmMappings.ContainsByPredicate([](const FInputActionKeyMapping& Mapping) {
+        return Mapping.Key==EKeys::OculusTouch_Right_Thumbstick_Click;
+    }));
+    for (const auto& Mapping:Inputs->GetActionMappings()) {
+        if (Mapping.Key==EKeys::OculusTouch_Right_Thumbstick_Click)
+            TestTrue(TEXT("The Quest arm input does not overlap another action"),Mapping.ActionName==FName(TEXT("QuestArmHaptics")));
+    }
+    int32 ArmRequests=0; PC->TestQuestArmRequest=[&ArmRequests]() { ++ArmRequests; };
+
     FInputKeyEventArgs A; A.Key=EKeys::OculusTouch_Right_A_Click; A.Event=IE_Pressed;
     TestFalse(TEXT("Non-Android A stays available to its existing action"),PC->HandleQuestLoginButton(A,false));
     TestTrue(TEXT("Android A is consumed"),PC->HandleQuestLoginButton(A,true));
@@ -54,6 +67,10 @@ bool FMRFPSQuestLoginToggleTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Open leaves the connected driver and pawn intact"),World->GetNetDriver()==Driver && PC->GetPawn()==Pawn);
     TestTrue(TEXT("Open did not request travel"),Context.TravelURL.IsEmpty());
     TestFalse(TEXT("Fire is blocked while the overlay is open"),GI->FireTransition.CanPhysical());
+    FInputKeyEventArgs Stick; Stick.Key=EKeys::OculusTouch_Right_Thumbstick_Click; Stick.Event=IE_Pressed;
+    TestFalse(TEXT("Non-Android stick input retains its existing handling"),PC->HandleQuestHapticsButton(Stick,false));
+    TestTrue(TEXT("Android stick input is consumed"),PC->HandleQuestHapticsButton(Stick,true));
+    TestEqual(TEXT("The right stick cannot arm while login is open"),ArmRequests,0);
 
     // Feed a settings-only command through the real control-file path while
     // connected. Keep its persisted endpoint in a disposable settings file.
@@ -82,6 +99,14 @@ bool FMRFPSQuestLoginToggleTest::RunTest(const FString& Parameters)
     GI->FireTransition.SetPhysical(true);
     A.Event=IE_Pressed; PC->HandleQuestLoginButton(A,true);
     TestFalse(TEXT("The next A closes the panel"),First->IsOpen());
+    TestEqual(TEXT("Closing login does not arm haptics"),ArmRequests,0);
+    Stick.Event=IE_Released; PC->HandleQuestHapticsButton(Stick,true);
+    TestEqual(TEXT("Releasing an ignored click does not arm"),ArmRequests,0);
+    const auto Synthetic=FInputKeyEventArgs::CreateSimulated(EKeys::OculusTouch_Right_Thumbstick_Click,IE_Pressed,1.f);
+    PC->HandleQuestHapticsButton(Synthetic,true);
+    TestEqual(TEXT("A simulated press cannot arm haptics"),ArmRequests,0);
+    Stick.Event=IE_Pressed; PC->HandleQuestHapticsButton(Stick,true);
+    TestEqual(TEXT("A deliberate right stick click after close requests arm once"),ArmRequests,1);
     TestTrue(TEXT("Close leaves the connected driver intact"),World->GetNetDriver()==Driver && Context.TravelURL.IsEmpty());
     TestFalse(TEXT("A held trigger stays locked after closing"),GI->FireTransition.CanPhysical());
     GI->FireTransition.SetPhysical(false);

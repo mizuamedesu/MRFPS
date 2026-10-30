@@ -42,7 +42,11 @@ operation for `login` explicitly sets open or closed without leaving the current
 session, and can be repeated with a new UUID without toggling. Submitting a new
 device login starts a new connection; `connection.set` with `connected:false`
 explicitly disconnects. The right A button no longer arms haptics on Android;
-the existing ContactGlove A and `haptics.set` control remain available.
+after closing the panel, explicitly press the right thumbstick to request
+MoBits haptics. The request is ignored while login is open and never issued
+automatically on close. If tracking is not connected yet, the first press can
+start connection; press again once connected. The existing ContactGlove A,
+right B stop, and `haptics.set` control remain available.
 
 `status` is a snapshot, so use a new operation UUID for a fresh snapshot. The layout/control revisions and expected wall shape must come from a recent result; a stale request is rejected rather than overwriting a concurrent change. For `object.ensure`, `surface` is the expected placement surface, while `origin` and the unit `direction` are the authoritative placement ray. World distances are centimetres. A matching existing object is reused; a new one uses the same placement limits as the GUI.
 
