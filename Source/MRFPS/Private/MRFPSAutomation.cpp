@@ -357,6 +357,7 @@ void AMRFPSPlayerController::TickAutomation()
                     Data->SetBoolField(TEXT("haptics_armed"),State.Phase==TEXT("armed"));
                     Data->SetStringField(TEXT("quest_mobits_phase"),State.Phase);
                     Data->SetNumberField(TEXT("quest_mobits_code"),State.Code);
+                    Data->SetStringField(TEXT("quest_mobits_message"),State.Message);
                     Data->SetBoolField(TEXT("quest_mobits_has_session"),State.bHasSession);
                     Data->SetNumberField(TEXT("quest_mobits_stop_unconfirmed"),State.StopUnconfirmedMask);
                     TArray<TSharedPtr<FJsonValue>> Devices;

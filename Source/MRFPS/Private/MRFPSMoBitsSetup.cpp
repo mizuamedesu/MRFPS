@@ -11,6 +11,8 @@
 #include "Components/VerticalBox.h"
 #include "Misc/Paths.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogMRFPSMoBitsSetup,Log,All);
+
 namespace
 {
 const FLinearColor White(.91f,.95f,1.f,1.f), Muted(.65f,.76f,.86f,1.f), Blue(.035f,.265f,.79f,1.f);
@@ -62,10 +64,19 @@ FString ErrorText(const FMoBitsQuestStatus& Status)
     if (Status.Code==0) return FString();
     const FString& M=Status.Message;
     const TCHAR* Text=TEXT("処理できませんでした。状態を確認して再操作してください。");
-    if (M.Contains(TEXT("permission"),ESearchCase::IgnoreCase) || M.Contains(TEXT("Nearby"))) Text=TEXT("付近のデバイスを許可し、もう一度「開始」を押してください。");
+    if (M.Contains(TEXT("Stopped: make a new explicit request"),ESearchCase::IgnoreCase)) Text=TEXT("停止後です。「開始・権限」を押し、もう一度操作してください。");
+    else if (M.Contains(TEXT("Game is not advancing"),ESearchCase::IgnoreCase)) Text=TEXT("Questを装着してゲームに戻り、もう一度操作してください。");
+    else if (M.Contains(TEXT("Select a fresh EVT5 pairing advertisement"),ESearchCase::IgnoreCase)) Text=TEXT("機器をペアリングモードにし、「機器を探す」から選び直してください。");
+    else if (M.Contains(TEXT("Scan before selecting"),ESearchCase::IgnoreCase)) Text=TEXT("先に「機器を探す」を押し、接続する機器を選んでください。");
+    else if (M.Contains(TEXT("Initialize the standalone runtime first"),ESearchCase::IgnoreCase) || M.Contains(TEXT("Start first"),ESearchCase::IgnoreCase)) Text=TEXT("先に「開始・権限」を押してから操作してください。");
+    else if (M.Contains(TEXT("Close the session before pairing"),ESearchCase::IgnoreCase) || M.Contains(TEXT("Close the previous session first"),ESearchCase::IgnoreCase)) Text=TEXT("セッションを停止・終了してから機器を接続してください。");
+    else if (M.Contains(TEXT("Disconnect other EMS devices"),ESearchCase::IgnoreCase)) Text=TEXT("選択した２台以外のMoBitsを切断してから開始してください。");
+    else if (M.Contains(TEXT("Wait for fresh safety status"),ESearchCase::IgnoreCase)) Text=TEXT("接続直後です。機器の状態を受信するまで待ってから開始してください。");
+    else if (M.Contains(TEXT("not queued"),ESearchCase::IgnoreCase) || M.Contains(TEXT("queue full"),ESearchCase::IgnoreCase)) Text=TEXT("前の接続操作の完了を待ってから、もう一度押してください。");
+    else if (M.Contains(TEXT("permission"),ESearchCase::IgnoreCase) || M.Contains(TEXT("Nearby"))) Text=TEXT("付近のデバイスを許可し、もう一度「開始」を押してください。");
     else if (M.Contains(TEXT("battery"),ESearchCase::IgnoreCase) || M.Contains(TEXT("USB"))) Text=TEXT("機器を充電し、USBを外してから再開してください。");
     else if (M.Contains(TEXT("firmware"),ESearchCase::IgnoreCase) || M.Contains(TEXT("direct-BLE"))) Text=TEXT("機器のファームウェアとBluetooth対応を確認してください。");
-    else if (M.Contains(TEXT("STOP"),ESearchCase::IgnoreCase)) Text=TEXT("停止の確認待ちです。機器の停止を確認し、終了を再操作してください。");
+    else if (M.Contains(TEXT("STOP is unconfirmed"),ESearchCase::IgnoreCase)) Text=TEXT("停止の確認待ちです。機器の停止を確認し、終了を再操作してください。");
     else if (M.Contains(TEXT("threshold"),ESearchCase::IgnoreCase)) Text=TEXT("確認した感覚の範囲では波形を準備できません。校正を確認してください。");
     else if (M.Contains(TEXT("rate"),ESearchCase::IgnoreCase) || M.Contains(TEXT("budget"))) Text=TEXT("間隔が短いため出力を見送りました。少し待ってください。");
     else if (M.Contains(TEXT("pairing"),ESearchCase::IgnoreCase)) Text=TEXT("機器をペアリングモードにして探し直してください。");
@@ -168,6 +179,12 @@ void UMRFPSMoBitsSetup::Refresh()
         Show(PresetsPage,false); Show(ArmedPage,false); Show(StoppedPage,false); return;
     }
     const auto Status=R->GetStatus();
+    static int32 LastLoggedCode=0;
+    static FString LastLoggedMessage;
+    if (Status.Code!=LastLoggedCode || Status.Message!=LastLoggedMessage) {
+        if (Status.Code!=0) UE_LOG(LogMRFPSMoBitsSetup,Warning,TEXT("MRFPS_MOBITS_ERROR code=%d phase=%s message=%s"),Status.Code,*Status.Phase,*Status.Message);
+        LastLoggedCode=Status.Code; LastLoggedMessage=Status.Message;
+    }
     if (bPulsePending && (Status.Phase!=TEXT("calibration") ||
         (Status.Arms.IsValidIndex(PulseSide) && Status.Arms[PulseSide].LastCalibrationUa!=PulsePreviousUa) ||
         (Status.Code!=0 && (Status.Code!=PulsePreviousCode || Status.Message!=PulsePreviousMessage)))) bPulsePending=false;
