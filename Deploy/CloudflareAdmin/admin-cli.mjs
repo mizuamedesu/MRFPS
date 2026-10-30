@@ -334,7 +334,8 @@ async function main() {
     const key = await loadKey(); output({public_key:key.publicKey,MRFPS_AUTH_PUBLIC_KEY_B64:Buffer.from(key.publicKey).toString('base64')});
   } else if (command === 'status') {
     const remote = await call('/api/admin/status');
-    output({codes:remote.codes});
+    const lifetime=remote.code_lifetime_seconds;
+    output({codes:remote.codes,code_lifetime_seconds:Number.isSafeInteger(lifetime) && lifetime>0 ? lifetime : null});
   } else if (command === 'local-status') {
     output(await withState(async state => ({owner:state.owner,stopped:!!state.stopped,stop_pending:state.stop_pending || null,watch:state.watch || {status:'idle',consecutive_errors:0}})));
   } else if (command === 'stop') {

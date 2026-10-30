@@ -44,7 +44,7 @@ async function fixture(t, requestedLifetime=300) {
   assert.equal(accepted.status,200);
   const result=await accepted.json();
   assert.equal(result.expires_at,requestedLifetime===300 ? result.server_now+300 : entry.body.expires_at);
-  return {call,entry,result};
+  return {call,entry,result,env:h.env};
 }
 
 test('the complete HTTP exchange still accepts the code just before 300 seconds, once only',async t=>{
@@ -65,4 +65,28 @@ test('an old shorter-lived issuer keeps its original expiry',async t=>{
   assert.equal(result.expires_at-result.server_now,31);
   clock=result.expires_at*1000;
   assert.equal((await call('/api/device/exchange',{role:'inspector',code:entry.code},false)).status,401);
+});
+
+test('authenticated HTTP status reports the executing DO lifetime without bearer material',async t=>{
+  const {entry,env}=await fixture(t);
+  const auth='Basic '+Buffer.from('fixture:fixture-password').toString('base64');
+  const response=await handler.fetch(new Request('https://fixture.invalid/api/admin/status',{headers:{authorization:auth}}),env);
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.equal(body.code_lifetime_seconds,300);
+  assert.equal(body.codes.length,1);
+  assert.deepEqual(Object.keys(body.codes[0]).sort(),['consumed','expires_at','id','owner','role']);
+  assert.equal(body.codes[0].id,entry.body.id);
+  assert.equal((await handler.fetch(new Request('https://fixture.invalid/api/admin/status'),env)).status,401);
+});
+
+test('status from an older DO is forwarded without inventing a lifetime',async()=>{
+  const old={authorize:()=>true,status:()=>({codes:[]})};
+  const env={DEVICE_CODES:{getByName:()=>old},MRFPS_ADMIN_USERNAME:'fixture',MRFPS_ADMIN_PASSWORD:'fixture-password'};
+  const auth='Basic '+Buffer.from('fixture:fixture-password').toString('base64');
+  const response=await handler.fetch(new Request('https://fixture.invalid/api/admin/status',{headers:{authorization:auth}}),env);
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.deepEqual(body.codes,[]);
+  assert.equal(Object.hasOwn(body,'code_lifetime_seconds'),false);
 });

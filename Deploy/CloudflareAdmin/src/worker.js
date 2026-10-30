@@ -318,7 +318,8 @@ export class DeviceCodes extends DurableObject {
     const sql=this.ctx.storage.sql;
     sql.exec('UPDATE codes SET token=NULL, public_key=NULL WHERE expires_at <= ?', now);
     sql.exec('DELETE FROM issuance_receipts WHERE expires_at <= ?',now);
-    const result={codes:sql.exec('SELECT role,id,owner,expires_at,consumed FROM codes').toArray()};
+    const result={codes:sql.exec('SELECT role,id,owner,expires_at,consumed FROM codes').toArray(),
+      code_lifetime_seconds:CODE_LIFETIME_SECONDS};
     if(owner) {
       const row=sql.exec('SELECT stopped FROM issuers WHERE owner=?',owner).toArray()[0];
       result.owner_state=!row?'unknown':row.stopped?'stopped':'active';

@@ -283,6 +283,8 @@ try {
   await ready(start());
   const signer=await generateBackup('local-receipt-migration-fixture'), fingerprint='a'.repeat(64), owner=crypto.randomUUID();
   assert.equal((await request('/api/admin/owner/start',{owner})).status,200);
+  const legacyStatus=await (await request('/api/admin/status?owner='+owner)).json();
+  assert.equal(Object.hasOwn(legacyStatus,'code_lifetime_seconds'),false);
   const legacyCode=async role=>{
     const value=await newCode(role,owner,fingerprint,signer);
     const claims=JSON.parse(Buffer.from(value.body.token.split('.')[1],'base64url'));
@@ -299,6 +301,7 @@ try {
   await ready(start());
   const status=await (await request('/api/admin/status?owner='+owner)).json();
   assert.equal(status.owner_state,'active');
+  assert.equal(status.code_lifetime_seconds,300);
   assert.equal(status.codes.find(row=>row.id===unused.body.id)?.consumed,0);
   assert.equal(status.codes.find(row=>row.id===consumed.body.id)?.consumed,1);
   for(const old of [unused,consumed]) {

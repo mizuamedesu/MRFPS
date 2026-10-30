@@ -71,7 +71,7 @@ CLI のプロセスがロック回収中に強制終了すると `lock.recovery`
 
 旧画面や旧 CLI が開いている場合は引き続き短いコードを発行することがある。新しいコード寿命を使うには、画面を再読み込みして発行を開始するか、新 CLI で再開する。発行済みのコードは発行時の期限まで有効で、更新によって延長されない。異なる発行者の有効コードが残っている間は、その期限を待つか意図的に「他端末から切替」または `--takeover true` を使う。
 
-`exchange-test --role player --code-file <player.code>` は交換・署名検証を行うが、そのコードを消費するため実クライアントに入力する前には実行しない。`exchange-export` は `--operation-id <UUIDv4> --code-file ... --role ... --public-key-file ... --fingerprint ... --state-dir ...` を受け、署名・公開鍵・役割・指紋を検証して同ディレクトリにJWTを保護保存する。出力にはパスだけを出す。同じ操作IDの再実行は保存済みトークンを再利用し、途中で結果が不明になれば安全に停止する。使用後は `exchange-clean --operation-id <UUIDv4> --state-dir ...` で削除する。`status --credentials-file ...` は Worker の発行状態を返す。Mac では状態を `~/Library/Application Support/MRFPS/admin-cli` など端末内の専用ディレクトリに置き、バックアップとパスフレーズは安全な方法でローカルへ移す。
+`exchange-test --role player --code-file <player.code>` は交換・署名検証を行うが、そのコードを消費するため実クライアントに入力する前には実行しない。`exchange-export` は `--operation-id <UUIDv4> --code-file ... --role ... --public-key-file ... --fingerprint ... --state-dir ...` を受け、署名・公開鍵・役割・指紋を検証して同ディレクトリにJWTを保護保存する。出力にはパスだけを出す。同じ操作IDの再実行は保存済みトークンを再利用し、途中で結果が不明になれば安全に停止する。使用後は `exchange-clean --operation-id <UUIDv4> --state-dir ...` で削除する。`status --credentials-file ...` は発行状態と実行中 Durable Object の `code_lifetime_seconds` を返す。旧版が稼働中で値を返さない場合、CLI は `null` と表示する。Mac では状態を `~/Library/Application Support/MRFPS/admin-cli` など端末内の専用ディレクトリに置き、バックアップとパスフレーズは安全な方法でローカルへ移す。
 
 ## API とデプロイ
 
