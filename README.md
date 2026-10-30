@@ -120,29 +120,9 @@ $playerToken = Join-Path $PWD '.local\access\player-two.jwt'
 
 キーボード、観戦カメラ、接続メニューの操作は [Controls](Docs/Controls.md) に記載しています。
 
-## 検証
+## 運用状態
 
-```powershell
-# 実プロセス: server + 2 players + 3 inspectors + 満員拒否
-.\Scripts\Test-Multiplayer.ps1 -Inspectors 3
-
-# 実プロセス: 両roleの有効token・拒否・replay・異なるDTLS pin
-.\Scripts\Test-AuthAdmission.ps1
-
-# UE Automation（Editorビルドとマップ生成後、suiteごとに別process）
-.\Scripts\Test-Automation.ps1
-
-# 実在ログ・プロセスから状態を集計
-.\Scripts\Get-ValidationSummary.ps1
-```
-
-AuthAdmissionとMultiplayerのrunnerは試験専用の一時発行鍵をコンテナ／serverの外で作り、実サーバーのfingerprintを取得してから各クライアントへ異なるtokenを発行します。匿名接続の試験用bypassは使用しません。
-
-`MRFPS.Core.AuthorityCombat` は実authorityワールドと物理トレースで、連射制限、被弾、盾、観戦者の攻撃拒否、復活、壁の被弾・クールダウン・寿命を検証します。最新の33件は管理権限・固定床・建築・Manny IK・形状・映像・認証・DTLSなどのUE Automationです。この合格から、protocol5の実対戦通信、Quest共有映像、身体へのフィードバックまで確認したとは判断しません。
-
-AuthAdmissionでは両roleの実server replay拒否と、署名済みwrong-pin tokenに対するnative DTLS証明書検証失敗も確認しました。欠損・偽造・期限切れ・audience／role違いの10件は正規クライアント側での拒否です。悪意あるクライアントがそれらをserverへ送信したことや、packet captureで資格情報の非露出を確認したことまでは主張しません。詳細と残る範囲は [ImplementationStatus](Docs/ImplementationStatus.md) を参照してください。
-
-Multiplayerではserverの盾・壁・被弾・死亡、全3観戦者の2プレイヤー／壁／被弾同期と各POV→free切替、3人目の対戦参加拒否を確認しました。NullRHIの試験なので、実際に描画された画面・Quest・身体へのフィードバックの証拠にはしません。
+[UE local control](tools/automation/README.md) から起動中のクライアントとサーバーの状態を確認できます。
 
 ## デバイス連携
 

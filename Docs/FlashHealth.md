@@ -14,15 +14,3 @@ the nonce, expected port, and both readiness flags. The abstract socket has no
 filesystem path and creates no public TCP/UDP endpoint. Ordinary Docker keeps
 the original strict FD-inode path; the local-socket fallback is enabled only by
 the Flash healthcheck wrapper.
-
-Run `Scripts/Cloud/Test-FlashHealth.ps1` on the Windows development host to
-compile a small Linux fixture and run the tests under UID 10001 with no
-capabilities and `no_new_privileges` in WSL. The command checks the existing
-10 GiB / 75% memory thresholds and uses an ownership-marked test directory.
-The tests exercise the compiled socket responder, fragmented requests, stale
-and wrong nonces, wrong PID and port, stopped game-thread processing, missing
-or stopped listeners, invalid auth state, and unrelated sockets. This fixture
-does not itself build Unreal or prove the UE integration or a new Flash deployment.
-The 2026-10-30 Flash generation 4 subsequently passed the real healthcheck twice;
-wrong PID, UID and port were rejected on that actual gVisor Pod. Windows and
-Quest also authenticated and joined that generation.

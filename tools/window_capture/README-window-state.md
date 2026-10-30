@@ -50,8 +50,4 @@ $operationId = [guid]::NewGuid().ToString()
 
 Windows は別プロセスによる状態確認とウィンドウ操作を原子的にまとめる API を提供しません。対象を前後に再検証しますが、他の操作が同時に入る極めて短い競合を完全には排除できません。作業中は同じ対象の手動操作や別の制御を避けてください。journal が削除・破損した場合、再実行の一意性は保証できません。
 
-終了時は `capture.py release --identity-id $identityId` を実行します。実ウィンドウ・異なる DPI・前面化制限・所有ウィンドウとの相互作用はまだ実測していません。次の mock テストは実ウィンドウを操作しません。
-
-```powershell
-& $python -m unittest discover -s tools/window_capture -p 'test_*.py' -v
-```
+Finish with `capture.py release --identity-id <identityId>`.

@@ -38,9 +38,3 @@ $publicFingerprint = '<64 hexadecimal characters>'
 - 同一のプロセス PID・生成時刻・メイン HWND、status の connection UUID、選択視点、stream ID を各サンプルで確認します。同一プロセス内に複数 GameInstance があると同じ control directory を共有します。異なる connection UUID の応答が混入した区間は拒否しますが、結果が示すのは応答した単一 GameInstance であり、プロセス内の全 GameInstance の性能ではありません。サンプル間に変化して元に戻るケースも検出できません。
 - コンテナ ID・起動時刻・再起動回数は前後で一致させます。クライアントの `server_certificate_sha256` はその接続に設定した **expected pin** であり、独立して観測した相手証明書ではありません。暗号化された有効な観戦セッションの状態、期待 pin とコンテナ起動ログの pin 一致、サーバーログに同一 subject の inspector 認証・参加が存在することを併せて検査します。認証・参加の証拠は集計のみで、選んだ PID と結びつく証拠ではありません。クライアントとコンテナが同じ鍵を使っているだけでは、その接続が当該コンテナに到達していることも厳密には証明できません。ログの subject や生ログは診断結果に出しません。
 - リモート HeteroCloud サーバーの実行個体を識別する手段は、この CLI にありません。対象がローカル Docker であることを確認してから使用してください。
-
-軽量テスト：
-
-```powershell
-& $python -m unittest discover -s tools/video -p 'test_measure_inspector_fps.py' -v
-```

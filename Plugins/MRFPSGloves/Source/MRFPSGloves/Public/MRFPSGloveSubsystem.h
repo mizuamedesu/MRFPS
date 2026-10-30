@@ -101,9 +101,6 @@ public:
     void SubmitTrackedPose(EMRFPSGloveHand Hand, const FTransform& TrackingPose, bool bTracked);
 
 private:
-#if WITH_DEV_AUTOMATION_TESTS
-    friend class FMRFPSGloveBacklogTest;
-#endif
     void SendStationControl(const ANSICHAR* Address);
     bool StartReceiver();
     void StopReceiver();

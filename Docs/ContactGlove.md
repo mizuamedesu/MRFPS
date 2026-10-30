@@ -145,17 +145,9 @@ if (Gloves && Gloves->GetLatestHand(EMRFPSGloveHand::Left, Frame) &&
 - `TrackingTransform` は実トラッカーから mount offset を適用した、+X 指先 / +Z 手の甲の UE tracking space hand pose です。ゲーム world への変換は pawn の tracking origin が担当します。
 - `SubmitTrackedPose()` で local OpenXR pose を明示的に供給できます。古い最後の pose を tracked として渡さないでください。
 - 受信時刻は各ストリーム別の process monotonic clock です。元の DivingStation パケットには送信時刻・sequence がないため、ネットワーク到着前の遅延を検出できるという意味ではありません。
-- plugin subsystem は dedicated server、明示的な `-MRFPSDesktop` / `-MRFPSSmoke` / `-MRFPSInspector` / `-Inspector` client では生成せず、実機の OSC 受信ポートや DivingStation 接続を消費しません。
+- plugin subsystem は dedicated server、明示的な `-MRFPSDesktop` / `-MRFPSInspector` / `-Inspector` client では生成せず、実機の OSC 受信ポートや DivingStation 接続を消費しません。
 
-## 検証
-
-```powershell
-uv run --python 3.12 python -m unittest discover -s tools/gloves -p "test_*.py" -v
-```
-
-20 tests が OSC schema、bundle、不正 packet / NaN、device 固定、座標変換、計測点校正、未受信・鮮度・実測変化の判定、未接続dongleが送る既定ゼロの拒否、実際に起動した relay プロセスの UDP connect/forward を検証します。この fixture は実グローブの代わりであり、ハードウェア動作検証には数えません。
-
-UE Automation の `MRFPS.Gloves.OSCValidation` は本番 C++ parser の byte order、型、不正 packet、時刻鮮度判定を対象にします。UE 環境でビルドして実行が必要です。
+## グローブの状態
 
 実際の DivingStation 入力をゲームとは別に確認するときは、グローブを装着・校正して次を実行し、観測中に両手をパー・グーに動かしてください。
 

@@ -65,26 +65,8 @@ protected:
     virtual void NativeOnInitialized() override;
     virtual void NativeConstruct() override;
     virtual void NativeDestruct() override;
-#if WITH_DEV_AUTOMATION_TESTS
-    virtual void NativeTick(const FGeometry& Geometry,float DeltaTime) override;
-#endif
 
 private:
-#if WITH_DEV_AUTOMATION_TESTS
-    friend class FMRFPSLoginControlTickTest;
-    friend class FMRFPSQuestLoginToggleTest;
-    friend class FMRFPSLoginWidgetPaintScenario;
-    friend class FMRFPSLoginStatusPropagationTest;
-    friend class FMRFPSLoginAttemptCancellationTest;
-    friend class FMRFPSDisconnectAutomationTest;
-    FString TestControlPath;
-    bool bTestAndroidControl=false;
-    bool bUseTestWeapon=false;
-    FMRFPSWeaponPose TestWeapon;
-    TFunction<void()> TestDuringPaint;
-    bool bTestSkipHttpSend=false;
-    TFunction<void()> TestConnectAfterLogin;
-#endif
     bool ReadAddress(FString& Out) const;
     void SelectRole(const FString& InRole);
     void SetStage(bool bLogin);

@@ -23,8 +23,8 @@ struct FState
         // A controller grip naturally curls the other fingers, so require a
         // bent index finger too. The thumb can rest outside a fist. Separate
         // activation and release thresholds prevent flickering near the edge.
-        const float FingerLimit=Closed?.45f:.55f;
-        const float MeanLimit=Closed?.45f:.55f;
+        const float FingerLimit=Closed?.30f:.40f;
+        const float MeanLimit=Closed?.30f:.40f;
         float Total=0.f; int Bent=0;
         for (std::size_t I=1;I<5;++I) {
             Total+=Curls[I];

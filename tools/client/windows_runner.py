@@ -15,8 +15,6 @@ if config["editor"]:
     arguments.extend([str(root / "MRFPS.uproject"), "-game"])
 arguments.extend(["/Game/Maps/MRFPSArena", "-MRFPSDesktop", "-nohmd", "-windowed", "-NoLiveCoding",
                   f"-MRFPSWindowName={name}"])
-if config.get("test_url"):
-    arguments.append("-MRFPSDeviceAuthTestUrl=" + config["test_url"])
 log_path = Path(config["report"]).parent / "engine.log"
 log_path.parent.mkdir(parents=True, exist_ok=True)
 # FParse needs the quote immediately after '=' even when the path has spaces.

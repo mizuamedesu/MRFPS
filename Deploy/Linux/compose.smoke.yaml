@@ -1,8 +1,0 @@
-# Explicit synthetic combat QA only. Production requires ADMIN start and score10.
-# Returning to compose.yaml alone recreates the process and rotates its DTLS pin.
-services:
-  mrfps:
-    command:
-      - /Game/Maps/MRFPSArena
-      - -MRFPSSmoke
-      - '-ini:Game:[/Script/MRFPS.MRFPSGameMode]:bRequireAdminStart=False'

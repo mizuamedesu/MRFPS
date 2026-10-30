@@ -191,7 +191,7 @@ def verify_recovery_report(task, path):
     report = json.loads(path.read_text(encoding="utf-8-sig"))
     if (not isinstance(report, dict) or report.get("repository") != REPOSITORY or report.get("taskId") != task or
             report.get("runnerLabel") != "mrfps-private-" + task or
-            report.get("operation") not in {"Inspect", "Probe", "Publish"}):
+            report.get("operation") not in {"Inspect", "Publish"}):
         raise ValueError("RECOVERY_REPORT_IDENTITY_MISMATCH")
     return report
 
@@ -392,7 +392,7 @@ def cleanup(task, reason, *, skip_manager=False):
         for identifier in ids:
             container = inspect_container(identifier, root)
             if (container and container.get("Config", {}).get("Labels", {}).get("app.mrfps.publisher.task") == task
-                and container["Name"].startswith("/mrfps-private-negative-" + task + "-")):
+                and container["Name"] == "/mrfps-private-artifact-" + task):
                 if command(["docker", "rm", "-f", identifier], root, check=False).returncode == 0:
                     report["removed_container_ids"].append(identifier)
         # Only this job's labels; no prune, shared caches, or game images.

@@ -22,7 +22,7 @@
 | `StopHaptics()` | ローカル解除と `STOP_ALL`。停止確認は応答で判定 |
 | `GetStatus()` | 接続、ARM、再接続、最新の要求結果を表示 |
 
-本体はローカル所有の戦闘プレイヤーの Pawn にだけ接続します。専用サーバーでは無効化し、観戦クライアントと `-MRFPSDesktop` / `-MRFPSSmoke` の試験では接続しません。通常の自動接続はトラッキング専用で、ARMや刺激を自動開始しません。ゲーム側では H / 右AでARM、Escape / 右Bで停止します。
+本体はローカル所有の戦闘プレイヤーの Pawn にだけ接続します。専用サーバーでは無効化し、観戦クライアントと `-MRFPSDesktop` の試験では接続しません。通常の自動接続はトラッキング専用で、ARMや刺激を自動開始しません。ゲーム側では H / 右AでARM、Escape / 右Bで停止します。
 
 `AutomaticShot` は実際の発射1回に対して1回だけ呼びます。公式 SDK の連射プリセットは 150 ms以上の発射間隔が前提です。初回はプリロードに加えて **400 msの先読み時間** があり、50 ms以下の物理反動遅延を実現したものではありません。左右の前腕を独立に使うことで被弾が右腕の連射列を置き換えることを避けます。公式仕様: [MR FPS プリセット](https://github.com/MoBits-Project/UE5_SDK/blob/6d657216b990948581684f61ae18ddbc9ca9116a/Plugins/MoBitsSDK/Documentation/mr-fps.md)。
 
@@ -56,8 +56,6 @@ python tools/mobits/quest_bridge.py --adb C:/Android/Sdk/platform-tools/adb.exe 
 
 portable coreは2026-10-27、内部bridge更新は2026-10-28にWindowsで確認:
 
-- `python tools/mobits/test_quest_bridge.py -v`: 内部配置変更後は **11テスト合格**（当初7件）。認証情報を表示しない検証、loopback以外の拒否、ポート不一致拒否、run-as data root／stdin／private配置、セッション更新、ADB reverse喪失からの復旧を確認。ADB呼出しはモックであり、Quest実機試験の代用ではありません。
-- `python tools/mobits/run_core_tests.py`: 公式SDKの実際のportable core/WebSocket codecに対して MSVC 14.44、C++17、`/W4 /WX` でビルド・実行。**2456チェック、2000の不正入力ケース合格**。明示ARM、STOP後の旧ARM応答の拒否、effect/レベル/TTL、認証付きWebSocket、マスク・フラグメント・UTF-8などを含みます。テスト原本は公式SDK `Tests/CoreTests.cpp` で、includeパスのみ本プロジェクト用に変更しています。
 
 当初は `%LOCALAPPDATA%/MoBits/SDK/connection-v2.json` がなく実appに接続できませんでした。後続の実app SDK検査は下記のとおり合格しています。実機EMS/LRAの提示・体感、AndroidでのMoBits通信、UEゲームイベントからの物理出力は未確認です。`device_acknowledged` は要求受理であり、身体への提示・体感の証明ではありません。
 
@@ -108,7 +106,6 @@ Node 24.18.0、npm 11.16.0、MSVC、Windows SDK、Visual Studio同梱CMake/Ninja
 取得したアプリで実施した確認:
 
 - `npm ci --ignore-scripts --no-audit --no-fund`: 226パッケージのローカル導入に成功。
-- `node --test tests/evt5-mr-fps.test.mjs tests/evt5-mr-fps-store.test.mjs`: **32/32合格**。装着者の現在設定を保持したSDK登録、独立したbody ID、反動・被弾・復活のカーネルと保存処理を含みます。これは出力波形の計算・設定契約の試験で、実機刺激を伴いません。
 - `npm run build`: 4子module取得後、**Exit0**。TypeScript/Vite frontendを生成しました。CSS minifyの既存警告とchunk size警告があります。取得前の22件のTypeScript欠損エラーは解消しました。
 - Tracker CoreとVR driver: 実MSVC Releaseビルド **Exit0**。公式のdriver artifact policy/stamp/verifyも成功しました。`native-prerequisites.log` に記録しています。
 - 固定Cargo.lockの `cargo fetch --locked`: **Exit0**。当初のTauri本体debug/no-bundleビルドは2ジョブで進行しましたが、2026-10-28 02:07:56 JSTのPC再起動で中断しました。10:32 JST時点では完成したexeがなく、本体buildは未合格でした。その後、破損した旧rmetaを避けるfresh target/jobs1で再生成し、上記03:31:45Zのrunで成功しました。

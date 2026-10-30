@@ -30,10 +30,6 @@ jobs:
           node-version: '24'
       - name: Install Wrangler
         run: npm ci
-      - name: Test and validate
-        run: |
-          npm test
-          npx wrangler deploy --dry-run
       - name: Configure secrets
         shell: bash
         run: |

@@ -111,6 +111,19 @@ constexpr double DamageNumberLifetime=.85;
         const FString Path = FString::Printf(TEXT("/Game/Materials/M_%s.M_%s"), Name, Name);
         if (UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, *Path)) C->SetMaterial(0, M);
     }
+#if !UE_SERVER
+    static void DrawShot(UWorld* World,const FVector& Start,const FVector& End,float Seconds)
+    {
+        if (!World || Start.ContainsNaN() || End.ContainsNaN() || FVector::DistSquared(Start,End)<1.) return;
+        AActor* A=World->SpawnActor<AActor>(); if (!A) return;
+        auto* C=NewObject<UStaticMeshComponent>(A); A->SetRootComponent(C); A->AddInstanceComponent(C);
+        C->SetStaticMesh(LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Cylinder.Cylinder")));
+        C->SetCollisionEnabled(ECollisionEnabled::NoCollision); C->RegisterComponent(); Material(C,TEXT("Tracer"));
+        const FVector Delta=End-Start;
+        A->SetActorLocation((Start+End)*.5); A->SetActorRotation(FRotationMatrix::MakeFromZ(Delta).Rotator());
+        A->SetActorScale3D(FVector(.02,.02,Delta.Size()/100)); A->SetLifeSpan(Seconds);
+    }
+#endif
     static UStaticMeshComponent* Mesh(AActor* A, USceneComponent* Parent, const TCHAR* Name, const TCHAR* Asset, FVector Scale, const TCHAR* GeneratedAsset=nullptr)
     {
         UStaticMeshComponent* M = A->CreateDefaultSubobject<UStaticMeshComponent>(Name);
@@ -141,10 +154,16 @@ constexpr double DamageNumberLifetime=.85;
         return GS?GS->Layout:Nominal;
     }
     static bool HasDesktopFlag() { return FParse::Param(FCommandLine::Get(), TEXT("MRFPSDesktop")); }
-    static bool ViewerShowsAvatars(const UWorld* World)
+    static bool ViewerShowsAvatar(const AMRFPSPawn* Pawn)
     {
+        const UWorld* World=Pawn?Pawn->GetWorld():nullptr;
+        if (!World || Pawn->GetNetMode()==NM_DedicatedServer) return false;
         const auto* Viewer=World?Cast<AMRFPSPlayerController>(World->GetFirstPlayerController()):nullptr;
-        return Viewer && Viewer->IsInspector();
+        if (Viewer && Viewer->IsInspector()) return true;
+        const auto* GS=World->GetGameState<AMRFPSGameState>();
+        const auto* PS=Pawn->GetPlayerState<AMRFPSPlayerState>();
+        return Viewer && GS && GS->bSoloBotSession && GS->SoloHumanSlot>=0 && GS->SoloHumanSlot<2 &&
+            PS && PS->IsABot() && PS->Slot==1-GS->SoloHumanSlot;
     }
     static FString LoginToken(const FString& Options)
     {
@@ -258,7 +277,7 @@ void AMRFPSBarrier::BeginPlay()
 }
 void AMRFPSBarrier::ApplyShot(float Damage)
 {
-    if (!HasAuthority()) return;
+    if (!HasAuthority() || BuildKind==EMRFPSBuildKind::Wall || !FMath::IsFinite(Damage) || Damage<=0) return;
     Health -= Damage;
     if (Health <= 0) Destroy();
 }
@@ -376,8 +395,8 @@ AMRFPSPawn::AMRFPSPawn()
 }
 void AMRFPSPawn::BeginPlay()
 {
-    // Smoke/desktop clients must not consume the one official MoBits session.
-    if (MRFPS::HasDesktopFlag() || FParse::Param(FCommandLine::Get(), TEXT("MRFPSSmoke"))) Haptics->bAutoConnectTracking = false;
+    // Desktop clients do not consume the one official MoBits session.
+    if (MRFPS::HasDesktopFlag()) Haptics->bAutoConnectTracking = false;
     Super::BeginPlay(); MRFPS::Material(ShieldVisual, TEXT("Shield"));
     XRNotifications->HMDRecenteredDelegate.AddDynamic(this,&AMRFPSPawn::OnXRSpaceChanged);
     XRNotifications->XRTrackingOriginChangedDelegate.AddDynamic(this,&AMRFPSPawn::OnXRSpaceChanged);
@@ -563,11 +582,30 @@ void AMRFPSPawn::SetFiring(bool bPressed)
     bPhysicalFireDown=bPressed;
     const auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance());
     bFiring=bPressed && !bRequireFireRelease && !(IsLocallyControlled() && GI && !GI->FireTransition.CanPhysical());
+    if (bPressed && bFiring) TryLocalFire(true);
 }
 bool AMRFPSPawn::IsPhysicalFireAllowed() const
 {
     const auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance());
     return bFiring && (!GI || GI->FireTransition.CanPhysical());
+}
+void AMRFPSPawn::TryLocalFire(bool InputDown)
+{
+    if (!InputDown || !IsLocallyControlled() || bRequireFireRelease || !GetWorld()) return;
+    const auto* PC=Cast<AMRFPSPlayerController>(Controller);
+    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
+    if (!GS || GS->bCombatPaused || (PC && PC->DeviceLogin && PC->DeviceLogin->IsOpen())) return;
+    const double Now=GetWorld()->GetTimeSeconds(); if (Now-LastLocalFire<.16) return;
+    LastLocalFire=Now;
+#if !UE_SERVER
+    // Show a short muzzle streak immediately. The server still determines the
+    // actual trace, ammunition and damage; its confirmed tracer follows.
+    if (Health>0 && MagazineRounds>0 && Pose.bHeadTracked && Pose.bRightTracked &&
+        (GS->Phase==EMRFPSMatchPhase::Waiting || (GS->Phase==EMRFPSMatchPhase::Playing && bCalibrated))) {
+        const FVector Start=Muzzle(); MRFPS::DrawShot(GetWorld(),Start,Start+Pose.RightRotation.Vector()*35.f,.12f);
+    }
+#endif
+    ServerFire();
 }
 void AMRFPSPawn::DesktopWall() { if (!IsXR()) ServerDesktopWall(); }
 void AMRFPSPawn::ServerDesktopWall_Implementation()
@@ -737,9 +775,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     LastLocalPoseSampleAt=FPlatformTime::Seconds();
     PoseAccumulator += Dt;
     if (PoseAccumulator >= 1.f/30.f) { PoseAccumulator=0; ServerPose(Next); }
-    const double Now=GetWorld()->GetTimeSeconds();
-    const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
-    if (!LoginOpen && !bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (IsPhysicalFireAllowed() || (AutomationAllowed && AutomationFire) || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
+    if (!LoginOpen) TryLocalFire(IsPhysicalFireAllowed() || (AutomationAllowed && AutomationFire) || bFingerTriggerDown);
 }
 
 void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
@@ -811,14 +847,11 @@ void AMRFPSPawn::ServerFire_Implementation()
         if (auto* Target=Cast<AMRFPSPawn>(Hit.GetActor())) {
             const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
             if (Hit.GetComponent()==Target->MiniShield && Target->bShieldActive && GS && GS->Phase==EMRFPSMatchPhase::Playing && Target->CanAct()) {
-                const float Blocked=FMath::Min(Target->ShieldEnergy,22.f);
                 Target->ShieldEnergy=FMath::Max(0.f,Target->ShieldEnergy-22.f); Target->LastShieldUse=Now;
-                if (Blocked>0 && Cast<APlayerController>(Controller)) ClientDamageNumber(Hit.ImpactPoint+Hit.ImpactNormal*3,Blocked,2);
                 UE_LOG(LogMRFPS,Display,TEXT("MRFPS_BLOCK shooter=%d target=%d shield=%.1f"),GetSlot(),Target->GetSlot(),Target->ShieldEnergy);
             } else Target->ApplyShot(Hit.GetComponent()==Target->HeadHitbox ? 30.f : 20.f,this,Hit.GetComponent()==Target->HeadHitbox,Hit.ImpactPoint+Hit.ImpactNormal*3);
         } else if (auto* Wall=Cast<AMRFPSBarrier>(Hit.GetActor())) {
-            const float Applied=FMath::Min(FMath::Max(0.f,Wall->Health),20.f);
-            Wall->ApplyShot(20); if (Applied>0 && Cast<APlayerController>(Controller)) ClientDamageNumber(Hit.ImpactPoint+Hit.ImpactNormal*3,Applied,3);
+            Wall->ApplyShot(20);
         }
     }
     ClientFeedback(0,0); MulticastShot(Start,bGeometryHit ? GeometryHit : bHit ? Hit.ImpactPoint : End,bHit || bGeometryHit);
@@ -864,7 +897,7 @@ void AMRFPSPlayerController::BeginPlay()
     }
     FString StartupServer,DeviceCodeFile;
     const auto* StartupInstance=GetGameInstance<UMRFPSGameInstance>();
-    if (IsLocalController() && GetNetMode()==NM_Standalone && !FParse::Param(FCommandLine::Get(),TEXT("MRFPSSmoke")) &&
+    if (IsLocalController() && GetNetMode()==NM_Standalone &&
         !(StartupInstance && StartupInstance->IsAutoReconnectPending()) &&
         !FParse::Value(FCommandLine::Get(),TEXT("MRFPSServer="),StartupServer) &&
         !FParse::Value(FCommandLine::Get(),TEXT("MRFPSDeviceCodeFile="),DeviceCodeFile)) {
@@ -1127,9 +1160,6 @@ void AMRFPSPlayerController::QuestArmHaptics()
     if (!IsLocalController() || (DeviceLogin && DeviceLogin->IsOpen())) return;
     const auto* Fighter=GetPawn<AMRFPSPawn>();
     if (!Fighter || !Fighter->Haptics) return;
-#if WITH_DEV_AUTOMATION_TESTS
-    if (TestQuestArmRequest) { TestQuestArmRequest(); return; }
-#endif
     const bool Connected=Fighter->Haptics->GetConnectionState()==EMoBitsConnectionState::Connected;
     ArmHaptics();
     // This records an attempt only. The SDK's asynchronous receipt confirms
@@ -1429,37 +1459,6 @@ void AMRFPSPlayerController::PlayerTick(float Dt)
         if (!StillAllowed && AutomationInputPawn.IsValid()) ClearAutomationInput();
         if (AutoDt>0) P->DesktopMove((MoveAxes+Extra).GetClampedToMaxSize(1),AutoDt);
         P->DesktopMove(MoveAxes,FMath::Max(0.f,Dt-AutoDt));
-    }
-    if (FParse::Param(FCommandLine::Get(),TEXT("MRFPSAutoReady"))) {
-        if (auto* P=GetPawn<AMRFPSPawn>(); P && P->GetSlot()>=0 && !P->bCalibrated && Now>.5) P->Calibrate();
-    }
-    if (FParse::Param(FCommandLine::Get(),TEXT("MRFPSSmoke"))) {
-        const auto* SmokeGS=GetWorld()->GetGameState<AMRFPSGameState>();
-        if (SmokeGS && SmokeGS->Phase==EMRFPSMatchPhase::Playing && SmokeCombatStartedAt<0) SmokeCombatStartedAt=Now;
-        const double CombatTime=SmokeCombatStartedAt<0 ? -100 : Now-SmokeCombatStartedAt;
-        if (auto* P=GetPawn<AMRFPSPawn>()) {
-            if (P->GetSlot()==1) {
-                P->SetDesktopShield(CombatTime>=2 && CombatTime<4);
-                if (CombatTime>=4.5 && SmokeStage==0) { SmokeStage=1; P->DesktopWall(); }
-            } else if (P->GetSlot()==0) {
-                if (auto* Other=FindPlayer(1)) {
-                    const FVector Aim=Other->bShieldActive ? Other->MiniShield->GetComponentLocation() : FVector(Other->Pose.Head)+FVector(0,0,-52);
-                    const FRotator Want=(Aim-P->Muzzle()).Rotation();
-                    const FRotator Delta=(Want-P->Pose.RightRotation).GetNormalized(); P->DesktopLook(Delta.Yaw,Delta.Pitch);
-                    P->SetFiring((CombatTime>=2.5 && CombatTime<3.6) || (CombatTime>=5 && CombatTime<9));
-                }
-            }
-        }
-        if (Now>=NextSmokeAction) {
-            NextSmokeAction=Now+1;
-            const auto Players=GetPlayers(); int32 Walls=0; for (TActorIterator<AMRFPSBarrier> It(GetWorld());It;++It) if(!It->bPlacementPreview) ++Walls;
-            const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
-            UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SNAPSHOT players=%d role=%s phase=%d walls=%d p0hp=%.1f p1hp=%.1f kills0=%d"),
-                Players.Num(),IsInspector()?TEXT("inspector"):TEXT("player"),GS?int32(GS->Phase):-1,Walls,
-                FindPlayer(0)?FindPlayer(0)->Health:-1,FindPlayer(1)?FindPlayer(1)->Health:-1,
-                FindPlayer(0)&&FindPlayer(0)->GetPlayerState<AMRFPSPlayerState>()?FindPlayer(0)->GetPlayerState<AMRFPSPlayerState>()->Kills:-1);
-            if (IsInspector() && Players.Num()==2) { if (SmokeStage==0) { MRFPSView(0); SmokeStage=1; } else if (SmokeStage==1) { MRFPSView(1); SmokeStage=2; } else if (SmokeStage==2) { FreeView(); SmokeStage=3; } }
-        }
     }
 }
 
@@ -2016,7 +2015,7 @@ void AMRFPSPawn::ClientFeedback_Implementation(uint8 Kind, float Damage)
 void AMRFPSPawn::ClientDamageNumber_Implementation(FVector_NetQuantize10 HitLocation,float Damage,uint8 Style)
 {
 #if !UE_SERVER
-    if (!IsLocallyControlled() || HitLocation.ContainsNaN() || !FMath::IsFinite(Damage) || Damage<=0 || Damage>1000 || Style>3) return;
+    if (!IsLocallyControlled() || HitLocation.ContainsNaN() || !FMath::IsFinite(Damage) || Damage<=0 || Damage>1000 || Style>1) return;
     const double Now=FPlatformTime::Seconds(); int32 Index=INDEX_NONE; bool bRefresh=false;
     // Rapid hits in the same area refresh one number instead of stacking a
     // cluster of overlapping labels. Each value remains the actual hit damage.
@@ -2040,7 +2039,7 @@ void AMRFPSPawn::ClientDamageNumber_Implementation(FVector_NetQuantize10 HitLoca
     }
     auto* DamageLabel=DamageNumberLabels[Index].Get(); if (!DamageLabel) return;
     DamageLabel->SetText(FText::AsNumber(FMath::RoundToInt(Damage)));
-    DamageLabel->SetTextRenderColor(Style==1?FColor(255,203,83):Style==2?FColor(90,178,255):FColor(225,255,250));
+    DamageLabel->SetTextRenderColor(Style==1?FColor(255,203,83):FColor(225,255,250));
     DamageNumberStates[Index].Location=FVector(HitLocation);
     DamageNumberStates[Index].StartedAt=bRefresh?Now-.12:Now; DamageLabel->SetVisibility(true); UpdateDamageNumbers();
 #endif
@@ -2067,15 +2066,9 @@ void AMRFPSPawn::UpdateDamageNumbers()
 }
 void AMRFPSPawn::MulticastShot_Implementation(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit)
 {
-    if (GetNetMode()==NM_DedicatedServer) return;
-    AActor* A=GetWorld()->SpawnActor<AActor>();
-    auto* C=NewObject<UStaticMeshComponent>(A); A->SetRootComponent(C); A->AddInstanceComponent(C);
-    C->SetStaticMesh(LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Cylinder.Cylinder")));
-    C->SetCollisionEnabled(ECollisionEnabled::NoCollision); C->RegisterComponent(); MRFPS::Material(C,TEXT("Tracer"));
-    const FVector Delta=FVector(End)-FVector(Start);
-    A->SetActorLocation((FVector(Start)+FVector(End))*.5);
-    A->SetActorRotation(FRotationMatrix::MakeFromZ(Delta).Rotator());
-    A->SetActorScale3D(FVector(.012,.012,Delta.Size()/100)); A->SetLifeSpan(.065);
+#if !UE_SERVER
+    if (GetNetMode()!=NM_DedicatedServer) MRFPS::DrawShot(GetWorld(),FVector(Start),FVector(End),.12f);
+#endif
 }
 void AMRFPSPawn::UpdateVisuals()
 {
@@ -2097,8 +2090,7 @@ void AMRFPSPawn::UpdateVisuals()
     HeadHitbox->SetCollisionEnabled(Targetable ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
     BodyHitbox->SetCollisionEnabled(Targetable ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
     MiniShield->SetCollisionEnabled(Targetable && bShieldActive ? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
-    const auto* VisualState=GetPlayerState<AMRFPSPlayerState>();
-    const bool ShowAvatar=MRFPS::ViewerShowsAvatars(GetWorld()) || (GetNetMode()!=NM_DedicatedServer && VisualState && VisualState->IsABot());
+    const bool ShowAvatar=MRFPS::ViewerShowsAvatar(this);
     FMRFPSPose RetainedPose;
     const bool HaveRetainedPose=ShowAvatar && Avatar && Avatar->GetVisualPose(RetainedPose);
     const FMRFPSPose& DisplayPose=HaveRetainedPose?RetainedPose:Pose;
@@ -2140,8 +2132,7 @@ void AMRFPSPawn::Tick(float Dt)
         else if (Now-LastShieldUse>1.0) ShieldEnergy=FMath::Min(100.f,ShieldEnergy+14*Dt);
         if (Health<=0 && Now>=RespawnAt) if (auto* GS=GetWorld()->GetGameState<AMRFPSGameState>(); GS && GS->Phase==EMRFPSMatchPhase::Playing) Respawn();
     }
-    const auto* VisualState=GetPlayerState<AMRFPSPlayerState>();
-    const bool ShowAvatar=MRFPS::ViewerShowsAvatars(GetWorld()) || (GetNetMode()!=NM_DedicatedServer && VisualState && VisualState->IsABot());
+    const bool ShowAvatar=MRFPS::ViewerShowsAvatar(this);
     if (ShowAvatar && Avatar && !Avatar->IsAvatarReady()) Avatar->InitializeAvatar();
     if(Avatar) {
         if (ShowAvatar && Health>0 && Avatar->IsAvatarReady()) Avatar->UpdateTracking(Pose,MRFPS::Layout(GetWorld()),GeometryCalibrationGeneration,Dt,false);

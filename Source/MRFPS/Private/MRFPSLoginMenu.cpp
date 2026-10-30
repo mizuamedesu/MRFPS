@@ -1,5 +1,4 @@
 #include "MRFPSLoginMenu.h"
-#include "MRFPSDeviceAuthUrl.h"
 #include "MRFPSConnectionSettings.h"
 #include "MRFPSLoginInteraction.h"
 #include "MRFPSLoginWidgetComponent.h"
@@ -109,9 +108,6 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
     Menu->bVR=true;
 #else
     Menu->bVR=UHeadMountedDisplayFunctionLibrary::IsHeadMountedDisplayEnabled();
-#endif
-#if WITH_DEV_AUTOMATION_TESTS
-    if (Owner->bTestQuestVR) Menu->bVR=true;
 #endif
     if (Menu->bVR) {
         auto* Pawn=Owner->GetPawn<AMRFPSPawn>();
@@ -279,18 +275,8 @@ void UMRFPSLoginMenu::NativeDestruct()
     if (!bClosing) CloseLogin();
     Super::NativeDestruct();
 }
-#if WITH_DEV_AUTOMATION_TESTS
-void UMRFPSLoginMenu::NativeTick(const FGeometry& Geometry,float DeltaTime)
-{
-    Super::NativeTick(Geometry,DeltaTime);
-    if (TestDuringPaint) TestDuringPaint();
-}
-#endif
 bool UMRFPSLoginMenu::ResolvePointerWeapon(AMRFPSPawn* Pawn,FMRFPSWeaponPose& Weapon)
 {
-#if WITH_DEV_AUTOMATION_TESTS
-    if (bUseTestWeapon) { Weapon=TestWeapon; return Weapon.Source!=MRFPSLoginPointer::ESource::None; }
-#endif
     return Pawn && Pawn->GetLocalWeaponPose(Weapon);
 }
 void UMRFPSLoginMenu::LogPointerGeometry(AMRFPSPawn* Pawn,const FMRFPSWeaponPose& Weapon,bool HasWeapon,const TCHAR* Input)
@@ -372,10 +358,7 @@ void UMRFPSLoginMenu::TickControlFile()
     if (!IsValid(PC) || PC->IsActorBeingDestroyed() || PC->DeviceLogin!=this || !PC->IsLocalController()) return;
     UWorld* World=PC->GetWorld();
     if (!World || World!=GetWorld() || World->bIsTearingDown) return;
-    bool bAndroid=PLATFORM_ANDROID;
-#if WITH_DEV_AUTOMATION_TESTS
-    bAndroid=bAndroid || bTestAndroidControl;
-#endif
+    const bool bAndroid=PLATFORM_ANDROID;
     const bool bAllowedMode=PC->GetNetMode()==NM_Standalone || (bAndroid && bVR && PC->GetNetMode()==NM_Client);
     if (!bAllowedMode) return;
     const FWorldContext* Context=GEngine?GEngine->GetWorldContextFromWorld(World):nullptr;
@@ -619,9 +602,6 @@ void UMRFPSLoginMenu::ProcessControlFile()
 {
 #if !UE_SERVER
     FString File=ControlPath();
-#if WITH_DEV_AUTOMATION_TESTS
-    if (!TestControlPath.IsEmpty()) File=TestControlPath;
-#endif
     if (File.IsEmpty()) return;
     if (!IFileManager::Get().FileExists(*File)) return;
     // Claim the current instruction atomically. A subsequent CLI submission
@@ -814,22 +794,11 @@ void UMRFPSLoginMenu::Exchange()
     if (auto* PC=Controller.Get()) if (auto* Instance=PC->GetGameInstance<UMRFPSGameInstance>()) {
         Instance->ConnectionStatus.ClearFailure(); PC->ConnectionError.Empty();
     }
-    FString URL=AuthUrl;
-#if !UE_BUILD_SHIPPING
-    FString TestURL;
-    if (FParse::Value(FCommandLine::Get(),TEXT("MRFPSDeviceAuthTestUrl="),TestURL)) {
-        if (!MRFPSDeviceAuthUrl::IsSafeTestUrl(TestURL)) {
-            UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=TEST_URL"));
-            SetStatus(TEXT("テスト用認証先が無効です"),true); return;
-        }
-        URL=TestURL;
-    }
-#endif
     auto Json=MakeShared<FJsonObject>(); Json->SetStringField(TEXT("role"),Role); Json->SetStringField(TEXT("code"),Code);
     FString Body; const auto Writer=TJsonWriterFactory<>::Create(&Body); FJsonSerializer::Serialize(Json,Writer);
     CodeBox->SetText(FText::GetEmpty()); Code.Empty();
     auto Request=FHttpModule::Get().CreateRequest(); PendingRequest=Request;
-    Request->SetURL(URL); Request->SetVerb(TEXT("POST")); Request->SetHeader(TEXT("Content-Type"),TEXT("application/json"));
+    Request->SetURL(AuthUrl); Request->SetVerb(TEXT("POST")); Request->SetHeader(TEXT("Content-Type"),TEXT("application/json"));
     Request->SetTimeout(12.f); Request->SetContentAsString(Body); Body.Empty();
     const TWeakObjectPtr<UMRFPSLoginMenu> Weak(this);
     Request->OnProcessRequestComplete().BindLambda([Weak,Generation](FHttpRequestPtr Req,FHttpResponsePtr Response,bool OK) {
@@ -837,11 +806,7 @@ void UMRFPSLoginMenu::Exchange()
     });
     bExchanging=true; SetStatus(TEXT("認証中…"));
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_DEVICE_EXCHANGE_START role=%s"),*Role);
-    bool Started=true;
-#if WITH_DEV_AUTOMATION_TESTS
-    if (!bTestSkipHttpSend)
-#endif
-        Started=Request->ProcessRequest();
+    const bool Started=Request->ProcessRequest();
     if (!Started && IsCurrentExchange(Generation) && PendingRequest==Request) {
         UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_DEVICE_EXCHANGE_ERROR code=REQUEST_START"));
         SetExchangeError(TEXT("認証サーバーに接続できません"));
@@ -899,9 +864,6 @@ void UMRFPSLoginMenu::ResetTrust()
 void UMRFPSLoginMenu::ConnectAfterLogin(uint64 Generation)
 {
     if (!IsCurrentExchange(Generation)) return;
-#if WITH_DEV_AUTOMATION_TESTS
-    if (TestConnectAfterLogin) { TestConnectAfterLogin(); return; }
-#endif
     auto* PC=Controller.Get(); if (!PC) { SetExchangeError(TEXT("接続を開始できません")); return; }
     const FString Address=Destination, SelectedRole=Role;
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_DEVICE_CONNECT role=%s"),*SelectedRole);

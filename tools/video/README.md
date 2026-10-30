@@ -71,9 +71,5 @@ rejected by the native timestamp-age rule. Only the producer's own incomplete
 temporary file is removed. An OS lock prevents duplicate producers for the same
 explicit serial/package on this host.
 
-`test_quest_video_bridge.py` has30 passing tests using synthetic pixels, mock ADB and tiny local pipe
-fixtures. It does not capture a headset, launch a game or establish live-stream
-acceptance. Run with `.local/video-tools/Scripts/python.exe tools/video/test_quest_video_bridge.py -v`.
-
 The only Python dependency is pinned [Pillow13.0.0](https://pypi.org/project/pillow/13.0.0/).
 Codec options follow [Pillow's JPEG documentation](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#jpeg).

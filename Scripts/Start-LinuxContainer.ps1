@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param([string]$WslDistribution = 'Ubuntu', [switch]$Build, [switch]$Stop, [switch]$Status,
     [string]$PublicKeyFile, [string]$Audience = 'mrfps', [ValidateRange(1,65535)][int]$HostPort = 7777,
-    [switch]$SmokeValidation,
     [ValidatePattern('^(?:[a-z0-9][a-z0-9_-]{0,62})?$')][string]$ProjectName='')
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MRFPS.Tools.psm1') -Force
@@ -12,11 +11,6 @@ $docker = Get-Command docker -ErrorAction SilentlyContinue
 $arguments = @('compose')
 if ($ProjectName) { $arguments+=@('--project-name',$ProjectName) }
 $arguments+=@('-f',$compose)
-if ($SmokeValidation) {
-    $smokeCompose = Join-Path $root 'Deploy\Linux\compose.smoke.yaml'
-    if (-not (Test-Path -LiteralPath $smokeCompose -PathType Leaf)) { throw 'The explicit QA compose override is missing.' }
-    $arguments += @('-f',$smokeCompose)
-}
 $publicEncoded = ''
 if (-not $Status -and -not $Stop) {
     if ($PublicKeyFile) {

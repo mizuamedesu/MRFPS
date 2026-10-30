@@ -18,9 +18,3 @@ $taskPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\py
 `stop` は専用 Linux プロセスへ停止を要求し、そのプロセスと対応する Windows `wsl.exe` の両方の終了を確認します。結果不明のときは勝手に再信号を送りません。Windows 側が残るなど、終了を確認できない場合は `unknown` です。短命の WSL 照会は Ubuntu が稼働中の場合に行います。
 
 Windows では `Start-Process -WindowStyle Hidden` を使います。`windows_in_job` は Windows 側プロセスが Job に所属しているかを示します。この PC では独立した既存 keepalive を維持したまま、新しい keeper の起動・状態確認・重複起動の抑止・停止と停止の再実行を実機で確認しました。その新しい Windows プロセスは Job に所属していました。単独でのアイドル時間や Codex 再起動を超えた持続は未検証です。このコマンドは、PC 再起動・Ubuntu の異常終了・明示的な WSL 終了後の自動起動や、止まったコンテナの復旧を保証しません。
-
-軽量テスト：
-
-```powershell
-& $taskPython -m unittest discover -s tools/wsl_keepalive -p 'test_*.py' -v
-```

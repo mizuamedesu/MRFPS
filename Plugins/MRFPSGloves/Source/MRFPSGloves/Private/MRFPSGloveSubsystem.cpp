@@ -31,7 +31,6 @@ bool UMRFPSGloveSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
     return Super::ShouldCreateSubsystem(Outer) && !IsRunningDedicatedServer()
         && !FParse::Param(FCommandLine::Get(), TEXT("MRFPSDesktop"))
-        && !FParse::Param(FCommandLine::Get(), TEXT("MRFPSSmoke"))
         && !FParse::Param(FCommandLine::Get(), TEXT("MRFPSInspector"))
         && !FParse::Param(FCommandLine::Get(), TEXT("Inspector"));
 }

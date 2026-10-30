@@ -77,26 +77,3 @@ JWTはこの検査後のNMT_Loginにだけ追加します。ClientTravel URLの 
 UE標準の `World.cpp` はlogin optionsやinvalid URLをLogNetに出すため、`FMRFPSAuthLogPrivacy` はLogNet・LogNetTraffic・LogHandshakeをlogin前に抑止します。module起動、engine初期化完了、server設定読込、client初期化、login直前に適用します。別の認証ログには安全な結果code、要求ロール、認証済みsubject、失効時刻だけを残します。
 
 主なcodeは `AUTH_MISSING`, `AUTH_INVALID`, `AUTH_EXPIRED`, `AUTH_AUDIENCE`, `AUTH_ROLE`, `AUTH_REPLAY`, `AUTH_CONFIG`, `AUTH_CAPACITY`, `AUTH_TRANSPORT` です。tokenや秘密鍵の一部をerrorへ含めません。
-
-## 検証結果
-
-2026-10-28、Windowsで実施:
-
-| 検証 | 確認した範囲 |
-|---|---|
-| `Plugins/MRFPSAuth/Tests/run_core_tests.py` | 実際のparserとengine OpenSSLをMSVC `/W4 /WX` でコンパイル・実行。**3061チェック合格**。うち3000件は不正入力。署名偽造、alg/type変更、重複JSON、時刻、用途、role、DTLS binding、鍵種別も含む |
-| Python → native相互運用 | `tools/auth` が独立に発行したJWTと公開鍵ファイルをactual C++ verifierへ渡し **`MRFPS_AUTH_INTEROP_OK`**。issuerの秘密鍵は共有していない。pinは試験専用の `a` 64文字で、実DTLS handshakeの試験ではない |
-| `Tests/run_ue_compile_checks.py` | 実UBT生成の定義・ヘッダー・shared PCHでauthの7翻訳単位を個別コンパイル。すべてExit0。OpenSSLのUI型はengine本体と同じ `UI_ST` の局所renameでUE namespaceとの衝突を回避 |
-| UE automation | `Saved/Validation/Automation/MRFPS/index.json` の実MRFPS suite **10件すべてSuccess**、うち `MRFPS.Auth.*` は4件。対応run-reportは2026-10-27T16:30:04.0896192Z終了、Exit0。client診断保持と追加assertionを含む |
-| 実UE AuthAdmission | `Saved/Validation/AuthAdmission-20261028-014040/report.json`、2026-10-27T16:42:18.5451524Z、**Passed=true**。有効player/inspector接続、両role合計14negative case合格、ログ上 `NoCredentialLeak` / `NoFatalError` / `ValidClientsRemainAlive` はtrue |
-| 実UE Multiplayer | `Saved/Validation/Multiplayer-20261028-014339/report.json`、2026-10-27T16:44:29.0625017Z、**Passed=true**。署名tokenを使った2対戦者＋3観戦者、27チェックすべてtrue、ログ上credential漏出・fatalなし。NullRHIのため描画・MR・物理動作は範囲外 |
-
-UE automationには `MRFPS.Auth.AdmissionAndReplay`, `AtomicReservation`, `EnvironmentFailsClosed`, `ClientVerifiedCredentials` を用意しています。8つの並行要求で1つだけがjtiを予約する検査、実署名済みcredentialが読み込まれた状態でも暗号化されたpending接続なしではJWTを出さない検査を含みます。ファイル資格情報の試験はAuth subsystemだけを初期化し、ハードウェアSDKを起動しません。
-
-clientの読み込み時に不正署名・期限切れ・audience違いを検出した場合、次のjoin要求でも元の安全な診断codeを保持します。credentialの未指定・明示削除・空または欠落したtokenファイルは `AUTH_MISSING` のままです。`ClientVerifiedCredentials` はこれらの読込→joinの経路も検査します。
-
-実AuthAdmissionの欠損・偽造・期限切れ・audience／role違いは、両roleとも正規クライアント側で拒否されています。不正JWTを悪意あるclientからserverまで送ったことは証明しません。Replayは両roleで実serverの `AUTH_REPLAY`、wrong-pinの署名済みtokenはnative DTLS証明書fingerprint検証失敗と追加joinなしを確認しました。Wrong-pin JWTをserverが解析したという意味ではありません。
-
-`Saved/Validation/AuthExpiry-20261028-015443/report.json` は2026-10-27T16:55:24.2308945Z、`Passed=true`、8チェックすべてtrueでした。30秒の署名済みtokenでplayer・inspectorを実UE serverへ入場させ、server側の `MRFPS_AUTH_SESSION_EXPIRED` 2件、両clientの実切断、serverの継続稼働を確認しました。ログ上のcredential漏出・fatal errorもありません。試験の3プロセスは終了済みです。
-
-本記録時点で未完了なのは、実際のDocker/Linux game serverでの接続、packet captureによる資格情報非露出の検査などです。ログの漏出検査合格をpacketの検査まで拡張しません。現在の全gateは [ImplementationStatus](ImplementationStatus.md) を参照してください。

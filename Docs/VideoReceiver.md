@@ -78,7 +78,7 @@ using local monotonic time, not from decode completion or the remote capture clo
 
 Dedicated-server and NullRHI instances reject submission, create no texture and
 start no worker. The dedicated-server translation unit selects a minimal stub,
-excluding the client codec, renderer, worker and video-test implementation at
+excluding the client codec, renderer, worker implementation at
 compile time. Client UObject ticking begins in Initialize and stops before
 teardown. Teardown cancels delivery and waits only for its bounded local codec
 tasks; callbacks retain their own mailbox, buffers and permits. UE 5.8's normal
@@ -89,33 +89,3 @@ does not currently drain those callbacks before such an unload. Dynamic module
 unload with a running Editor is therefore unverified; close the Editor normally
 before rebuilding or reloading this module. Normal process shutdown does not
 require a GPU presentation fence.
-
-The following automation tests are implemented in MRFPSVideoReceiver.cpp:
-
-- `MRFPS.Video.JpegValidation`: a real engine-generated JPEG, declared dimensions,
-  byte cap, truncated/overflowing markers and bounded malformed input.
-- `MRFPS.Video.NativeDecode`: real JPEG decode, channel order, opaque letterbox,
-  fixed output size, an independent post-decode dimension check and the direct
-  640×360 copy path. No GPU/network.
-- `MRFPS.Video.FairScheduling`, `MRFPS.Video.ConcurrentBudget` and
-  `MRFPS.Video.ReceiverFairness`: per-view eligibility, process cap, separate
-  mailboxes, permit lifetime, receiver ordering and stale-waiter expiry.
-- `MRFPS.Video.FrameLifecycle`: ordering, exact TTL expiry, slower-worker progress
-  with newer pending input, displayed-sequence regression rejection, exact expected
-  displayed-stream matching, changed generations, reset fencing and sequence wrap.
-
-The earlier UE automation run completed at **2026-10-28T05:25:25Z** with all
-**20 results successful**: 17 MRFPS tests (including these three receiver tests
-and the bounded relay/protocol tests) and three MoBits SDK tests, with no errors
-or warnings. See the actual
-[automation report](../Saved/Validation/Video-final-builds-20261028-052419/Automation/report.json).
-It predates the two-permit change and does not verify it. The independent
-`tools/video/test_video_budget.cpp` stress test can also be compiled as a small
-C++17 program; it checks the actual atomic budget across several concurrent
-threads and multiple receivers without building UE. The report separately marks external MoBits recovery/Rust interop as unexercised
-in this run; successful automation results do not establish physical output.
-
-Actual Quest capture, authenticated live relay into a visible Windows inspector,
-and visual confirmation that the image contains real passthrough remain integration
-checks. The automation results do not establish that path, and a role snapshot,
-"No real video" state or reconstructed 3D view is not evidence of live Quest video.

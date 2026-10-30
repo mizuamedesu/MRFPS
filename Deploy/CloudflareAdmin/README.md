@@ -71,7 +71,7 @@ CLI のプロセスがロック回収中に強制終了すると `lock.recovery`
 
 旧画面や旧 CLI が開いている場合は引き続き短いコードを発行することがある。新しいコード寿命を使うには、画面を再読み込みして発行を開始するか、新 CLI で再開する。発行済みのコードは発行時の期限まで有効で、更新によって延長されない。異なる発行者の有効コードが残っている間は、その期限を待つか意図的に「他端末から切替」または `--takeover true` を使う。
 
-`exchange-test --role player --code-file <player.code>` は交換・署名検証を行うが、そのコードを消費するため実クライアントに入力する前には実行しない。`exchange-export` は `--operation-id <UUIDv4> --code-file ... --role ... --public-key-file ... --fingerprint ... --state-dir ...` を受け、署名・公開鍵・役割・指紋を検証して同ディレクトリにJWTを保護保存する。出力にはパスだけを出す。同じ操作IDの再実行は保存済みトークンを再利用し、途中で結果が不明になれば安全に停止する。使用後は `exchange-clean --operation-id <UUIDv4> --state-dir ...` で削除する。`status --credentials-file ...` は発行状態と実行中 Durable Object の `code_lifetime_seconds` を返す。旧版が稼働中で値を返さない場合、CLI は `null` と表示する。Mac では状態を `~/Library/Application Support/MRFPS/admin-cli` など端末内の専用ディレクトリに置き、バックアップとパスフレーズは安全な方法でローカルへ移す。
+`exchange-export` は `--operation-id <UUIDv4> --code-file ... --role ... --public-key-file ... --fingerprint ... --state-dir ...` を受け、署名・公開鍵・役割・指紋を検証して同ディレクトリにJWTを保護保存する。出力にはパスだけを出す。同じ操作IDの再実行は保存済みトークンを再利用し、途中で結果が不明になれば安全に停止する。使用後は `exchange-clean --operation-id <UUIDv4> --state-dir ...` で削除する。`status --credentials-file ...` は発行状態と実行中 Durable Object の `code_lifetime_seconds` を返す。旧版が稼働中で値を返さない場合、CLI は `null` と表示する。Mac では状態を `~/Library/Application Support/MRFPS/admin-cli` など端末内の専用ディレクトリに置き、バックアップとパスフレーズは安全な方法でローカルへ移す。
 
 ## API とデプロイ
 
@@ -81,11 +81,7 @@ CLI のプロセスがロック回収中に強制終了すると `lock.recovery`
 
 発行停止は未交換のコードを無効にする操作であり、すでに交換された JWT や接続済みセッションを個別に失効させる機能ではない。JWT は最大1時間有効で、サーバーは期限時に接続を終了する。初回のクライアントは HTTPS 認証先から返された公開鍵を保存し、以後の鍵変更を拒否するため、パネルで表示した公開鍵とコンテナに設定した公開鍵を一致させる必要がある。IP ごと・全体の失敗制限に達すると正しいコードや Basic 認証も一時的に拒否される。
 
-ローカル試験は Node.js 24 で `npm test` を実行する。SQLite の in-memory fixture は外部サービスに接続せず、実際の Durable Object メソッドと CLI 復旧処理を検査する。HTTP 統合試験は `.dev.vars` にテスト専用 Basic 認証値を設定してから `npm run dev`、別のターミナルで `npm run test:integration`、`npm run test:watch`、`npm run test:panel` を順番に実行する。統合試験は発行と停止を行うため、本番や他の試験と同時に動かさない。開発用設定は本番カスタムドメインを持たず、loopback のみ HTTP を許す。本番は `npx wrangler deploy --dry-run`、`npx wrangler deploy`。`mrfps-admin.mizuame.app` はカスタムドメインとして `wrangler.jsonc` に指定。
-
-旧 Worker からの移行試験 `npm run test:migration` は旧リビジョンの Git 履歴を必要とし、別の一時 Wrangler とデータストアを使う。`npm run test:locking` は独立した一時ディレクトリと HTTP fixture を使い、クラッシュ後の並列ロック回収を確認する。
-
-今回の発行 receipt を追加する直前の Worker からは、Windows 上で `npm run test:receipt-migration` を実行し、未使用・使用済みコードを含む一時ローカルストアの再起動と移行を確認できる。Git の旧リビジョンを読み、2 回のローカル Wrangler を順番に専用メモリガード下で実行する。本番環境には接続しない。
+`npx wrangler deploy` でデプロイします。カスタムドメイン `mrfps-admin.mizuame.app` は `wrangler.jsonc` で設定します。
 
 GitHub Actions は secrets `MRFPS_ADMIN_USERNAME`、`MRFPS_ADMIN_PASSWORD`、`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN` と repository variable `MRFPS_ADMIN_CI_DEPLOY=true` が必要。現在は前者3つのみ設定し、API token 未設定のまま有効にしない。Cloudflare の [GitHub Actions の手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) に従って対象アカウントとゾーンに限定した `Edit Cloudflare Workers` トークンを作成し、`gh secret set CLOUDFLARE_API_TOKEN` に対話入力後、`gh variable set MRFPS_ADMIN_CI_DEPLOY --body true` で有効化する。現在の Wrangler OAuth はトークン管理 API で 403 のため、自動作成できない。Worker secrets はワークフローが安全な一時ファイルから設定する。
 

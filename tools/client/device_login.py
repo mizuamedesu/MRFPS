@@ -37,11 +37,6 @@ def endpoint(value: str) -> str:
     return value
 
 
-def test_auth_url(value: str) -> bool:
-    match=re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):([0-9]{1,5})(?:/[A-Za-z0-9_./-]*)?",value)
-    return bool(match and 1<=int(match.group(1))<=65535)
-
-
 def quest_glove_config(args: argparse.Namespace) -> dict | None:
     """Validate an explicitly pinned PC relay before using it in an adb intent."""
     sender = getattr(args, "glove_sender", None)
@@ -495,10 +490,8 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     address = endpoint(args.server)
     if args.show_settings and args.code_file is not None:
         raise ValueError("--show-settings cannot include a code")
-    if args.auth_test_url and not test_auth_url(args.auth_test_url):
-        raise ValueError("test auth URL must be a localhost HTTP URL")
     binary = args.executable.resolve(strict=True)
-    wanted = {"server": address, "role": args.role, "name": args.name, "auth_test_url": args.auth_test_url or "",
+    wanted = {"server": address, "role": args.role, "name": args.name, "auth_test_url": "",
               "binary":str(binary), "editor":args.editor}
     marker, code = submission(args.code_file)
     expected_marker = getattr(args, "expected_marker", None)
@@ -630,7 +623,7 @@ def windows_locked(args: argparse.Namespace, state_path: Path) -> dict:
     report = ROOT / "Saved" / "Validation" / "DeviceLogin" / args.name / run_id / "report.json"
     launch_config = state_path.parent / ("windows-" + args.name + "-launch-" + run_id + ".json")
     save_state(launch_config, {"binary":str(binary), "editor":args.editor, "name":args.name,
-                               "test_url":args.auth_test_url or "", "report":str(report), "python":sys.executable})
+                               "report":str(report), "python":sys.executable})
     guard = ROOT / "Scripts" / "Start-DeviceLoginGuarded.ps1"
     # Save before spawning: a crash between Popen and process identity capture
     # must not produce a second, untracked client on retry.
@@ -799,7 +792,6 @@ def main() -> int:
             p.add_argument("--editor", action="store_true")
             p.add_argument("--name", default="MRFPS-Client")
             p.add_argument("--replace", action="store_true")
-            p.add_argument("--auth-test-url", default="", help="development builds only; localhost HTTP")
             p.add_argument("--show-settings", action="store_true", help="start at the server settings page")
         else:
             p.add_argument("--adb", default="adb")

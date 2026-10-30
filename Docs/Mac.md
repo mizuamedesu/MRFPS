@@ -12,16 +12,6 @@ bash Scripts/mac/build.sh Editor  # 開発用
 bash Scripts/mac/build.sh Client  # 配布アプリ
 ```
 
-Mac 上では、UE を起動せず CLI とメモリガードの軽量テストも実行できます。
-
-```bash
-python3 -m unittest discover -s tools/dev -p 'test_mac_resource_guard.py' -v
-python3 -m unittest discover -s tools/dev -p 'test_mac_launchers.py' -v
-python3 -m unittest discover -s tools/client -p 'test_mac_login.py' -v
-```
-
-これらは実クライアントやサーバーへの接続試験ではありません。初回は続けて Mac のビルド、ログイン、サーバー参加、映像・別ウィンドウの表示を実機で確認してください。
-
 デバイスコードでログイン画面から起動する場合は、各ウィンドウに別の名前を指定します。繰り返し起動しても同じ名前の管理対象プロセスが動いていれば再利用します。
 
 ```bash

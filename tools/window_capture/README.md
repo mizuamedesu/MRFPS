@@ -51,9 +51,3 @@ $captureId = [guid]::NewGuid().ToString()
 再実行の判定はローカル journal が残っていることを前提とします。停電やストレージ障害などで journal 自体が失われた場合の一意性は保証できません。
 
 WGC や GPU、対象ウィンドウの状態によっては timeout や黒い画像になります。PNG の保存成功は、Quest の最新映像が届いたことや人間の目による確認を意味しません。実画面のログインコードなども画像に含まれ得るため、ログイン画面を閉じてから対象を選んでください。
-
-実機の GPU 映像、ウィンドウの background 描画、対象を閉じた場合の実際の後片付けは未検証です。mock テストは次のコマンドで実行できます。
-
-```powershell
-& $capturePython -m unittest discover -s tools/window_capture -p 'test_*.py' -v
-```

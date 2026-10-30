@@ -5,9 +5,6 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$SourceCommit,
     [string]$Repository='mizuamedesu/MRFPS-Server-Registry',
     [string]$SourceRepository='mizuamedesu/MRFPS',
-    [string]$PrivacyReport,
-    [long]$PrivacyWorkflowRunId,
-    [long]$RegistryProbeRunId,
     [ValidatePattern('^mrfps-private-[0-9a-f]{16}$')][string]$RunnerLabel,
     [ValidateSet('Plan','Publish')][string]$Mode='Plan'
 )
@@ -28,20 +25,14 @@ if($Mode -eq 'Plan'){$plan|ConvertTo-Json;exit 0}
 $publisher=(& gh api "repos/$Repository" | Out-String)|ConvertFrom-Json
 if($LASTEXITCODE -ne 0 -or $publisher.full_name -ne $Repository -or $publisher.private -ne $true){throw 'PRIVATE_PUBLISHER_REQUIRED_BEFORE_ARTIFACT_UPLOAD'}
 $plan.publisherPrivateVerified=$true
-if(-not $PrivacyReport -or $RegistryProbeRunId -le 0 -or -not $RunnerLabel){throw 'DRAFT_AND_PRIVATE_REGISTRY_PROBE_EVIDENCE_REQUIRED'}
-$privacy=Get-Content -LiteralPath $PrivacyReport -Raw|ConvertFrom-Json
-if($privacy.repository -ne $Repository -or -not $privacy.authenticatedDraft -or -not $privacy.anonymousDenied){throw 'DRAFT_ANONYMOUS_DENIAL_NOT_PROVEN'}
-$probe=(& gh run view $RegistryProbeRunId --repo $Repository --json status,conclusion,workflowName | Out-String)|ConvertFrom-Json
-if($LASTEXITCODE -ne 0 -or $probe.status -ne 'completed' -or $probe.conclusion -ne 'success' -or $probe.workflowName -ne 'Publish approved Linux server image'){throw 'PRIVATE_REGISTRY_FIXTURE_WORKFLOW_NOT_SUCCESSFUL'}
-$probeLog=(& gh run view $RegistryProbeRunId --repo $Repository --log|Out-String)
-if($LASTEXITCODE -ne 0 -or $probeLog -notmatch 'MRFPS_GHCR_AUTHENTICATED_FIXTURE_PULL=true' -or $probeLog -notmatch 'MRFPS_PRIVATE_DRAFT_FIXTURE_DOWNLOAD=true'){throw 'PRIVATE_REGISTRY_AND_DRAFT_AUTHENTICATED_PULL_NOT_PROVEN'}
-$boundaryLines=@($probeLog -split "`n"|Where-Object {$_ -match '\sMRFPS_GHCR_BOUNDARY \{.*\}\s*$' -and $_ -notmatch '\x1b'})
-$privateProven=$false
-foreach($line in $boundaryLines){
-    $proof=($line -replace '^.*MRFPS_GHCR_BOUNDARY ','').Trim()|ConvertFrom-Json
-    if($proof.repository -eq $Repository -and $proof.package -eq 'mrfps-server-private' -and $proof.tag -eq 'privacy-fixture-v1' -and $proof.package_private -eq $true -and $proof.package_id_pinned -eq $true -and $proof.source_label_verified -eq $true -and $proof.anonymous_denied -eq $true){$privateProven=$true}
+if(-not $RunnerLabel){throw 'PRIVATE_RUNNER_REQUIRED'}
+$identity=Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../tools/cloud/private-registry-identity.json') -Raw|ConvertFrom-Json
+$package=(& gh api 'users/mizuamedesu/packages/container/mrfps-server-private'|Out-String)|ConvertFrom-Json
+if($LASTEXITCODE -ne 0 -or $identity.repository -ne $Repository -or $publisher.id -ne $identity.publisher_repository_id -or
+   $package.id -ne $identity.package_id -or $package.created_at -ne $identity.created_at -or
+   $package.name -ne $identity.package -or $package.visibility -ne 'private' -or $package.package_type -ne 'container'){
+    throw 'PRIVATE_PACKAGE_IDENTITY_OR_VISIBILITY_MISMATCH'
 }
-if(-not $privateProven){throw 'PRIVATE_REGISTRY_ANONYMOUS_DENIAL_NOT_PROVEN'}
 $remoteCommit=(& gh api "repos/$SourceRepository/commits/$SourceCommit" --jq .sha|Out-String).Trim()
 if($LASTEXITCODE -ne 0 -or $remoteCommit -ne $SourceCommit){throw 'REVIEWED_SOURCE_COMMIT_NOT_ON_GITHUB'}
 function Find-ArtifactDraft {

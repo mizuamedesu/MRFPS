@@ -110,9 +110,6 @@ FString AMRFPSPlayerController::AutomationDirectory() const
 #if UE_SERVER
     return FString();
 #else
-#if WITH_DEV_AUTOMATION_TESTS
-    if (!TestAutomationDirectory.IsEmpty()) return TestAutomationDirectory;
-#endif
     FString Name=TEXT("MRFPS-Client"); FParse::Value(FCommandLine::Get(),TEXT("MRFPSWindowName="),Name);
     if(Name.IsEmpty()||Name.Len()>64) return FString();
     for(TCHAR C:Name) if(!((C>='A'&&C<='Z')||(C>='a'&&C<='z')||(C>='0'&&C<='9')||C=='_'||C=='-')) return FString();
@@ -286,6 +283,17 @@ void AMRFPSPlayerController::TickAutomation()
                 PlayerInfo->SetBoolField(TEXT("right_glove_fingers_valid"),SampleFresh && Fighter->IsXR() && Fighter->Pose.RightFingers.bValid && CurrentGloves[1].bFlexValid);
                 PlayerInfo->SetBoolField(TEXT("left_glove_controls_valid"),SampleFresh && Fighter->IsXR() && Fighter->AreLocalGloveControlsFresh(0) && CurrentGloves[0].bControllerValid);
                 PlayerInfo->SetBoolField(TEXT("right_glove_controls_valid"),SampleFresh && Fighter->IsXR() && Fighter->AreLocalGloveControlsFresh(1) && CurrentGloves[1].bControllerValid);
+                PlayerInfo->SetBoolField(TEXT("physical_fire_down"),Fighter->IsPhysicalFireDown());
+                PlayerInfo->SetBoolField(TEXT("glove_fire_down"),Fighter->IsGloveFireDown());
+                PlayerInfo->SetBoolField(TEXT("fire_release_required"),Fighter->IsFireReleaseRequired());
+                const double FireTime=Fighter->LocalFireTime();
+                PlayerInfo->SetNumberField(TEXT("last_fire_request_age_seconds"),FireTime<0?-1:FMath::Max(0.,GetWorld()->GetTimeSeconds()-FireTime));
+                if (const auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance())) {
+                    PlayerInfo->SetBoolField(TEXT("fire_menu_locked"),GI->FireTransition.Login);
+                    PlayerInfo->SetBoolField(TEXT("physical_fire_locked"),!GI->FireTransition.CanPhysical());
+                    PlayerInfo->SetBoolField(TEXT("glove_flex_fire_locked"),!GI->FireTransition.CanFlex());
+                    PlayerInfo->SetBoolField(TEXT("glove_controller_fire_locked"),!GI->FireTransition.CanController());
+                }
                 const bool InputAllowed=DesktopAutomationAllowed();
                 PlayerInfo->SetBoolField(TEXT("desktop_input_allowed"),InputAllowed);
                 const bool LeaseActive=InputAllowed && AutomationInputPawn.Get()==Fighter && AutomationInput.Active(FPlatformTime::Seconds());

@@ -406,14 +406,6 @@ async function main() {
         await new Promise(resolveDone => setTimeout(resolveDone,delay));
       }
     }
-  } else if (command === 'exchange-test') {
-    const code = (await readFile(required('code-file'),'utf8')).trim(), role = required('role');
-    const result = await call('/api/device/exchange',{role,code},false);
-    const parts = result.token.split('.');
-    const valid = parts.length === 3 && verify(null,Buffer.from(parts[0]+'.'+parts[1]),createPublicKey(result.public_key),Buffer.from(parts[2],'base64url'));
-    const claims = valid ? JSON.parse(Buffer.from(parts[1],'base64url')) : {};
-    if (!valid || claims.role !== role || claims.exp <= Math.floor(Date.now()/1000)) throw Error('signature or role verification failed');
-    output({exchanged:true,signature_verified:true,role,token_expires_at:result.expires_at,dtls_fp:claims.dtls_fp});
   } else if (command === 'exchange-export') {
     output(await exportExchange());
   } else if (command === 'exchange-clean') {
@@ -421,6 +413,6 @@ async function main() {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw Error('invalid operation ID');
     await withState(async () => { for (const extension of ['jwt','json']) await unlink(join(stateDir,'exchange-'+id+'.'+extension)).catch(e => {if(e.code!=='ENOENT')throw e;}); });
     output({cleaned:true});
-  } else throw Error('commands: roster-key-ensure, roster-backup, roster-restore, participants, key-ensure, public-key, status, local-status, stop, stop-all, ensure, watch, exchange-test, exchange-export, exchange-clean; see README.md');
+  } else throw Error('commands: roster-key-ensure, roster-backup, roster-restore, participants, key-ensure, public-key, status, local-status, stop, stop-all, ensure, watch, exchange-export, exchange-clean; see README.md');
 }
 main().catch(error => { process.stderr.write('MRFPS admin: '+error.message+'\n'); process.exitCode=1; });

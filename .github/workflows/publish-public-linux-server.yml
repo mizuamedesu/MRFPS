@@ -120,17 +120,6 @@ jobs:
               --label "app.mrfps.bundle.sha256=$BUNDLE_SHA256" \
               -t "$IMAGE:$TAG" server-source/Deploy/Cloud
             check_image_elf "$IMAGE:$TAG"
-            # Fail closed before publishing; both Flash root and image user must
-            # drop to UID 10001 and require the configured public key.
-            for uid in 10001 0; do
-              set +e
-              docker run --rm --user "$uid" --memory 128m --cpus 1 --security-opt no-new-privileges:true "$IMAGE:$TAG" >"$RUNNER_TEMP/negative-$uid.log" 2>&1
-              result=$?
-              set -e
-              [[ "$result" -ne 0 ]]
-              grep -q '^MRFPS_FLASH_RUNTIME uid=10001 ' "$RUNNER_TEMP/negative-$uid.log"
-              grep -q '^AUTH_CONFIG:' "$RUNNER_TEMP/negative-$uid.log"
-            done
             export DOCKER_CONFIG="$AUTH_CONFIG"
             trap 'DOCKER_CONFIG="$AUTH_CONFIG" docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin

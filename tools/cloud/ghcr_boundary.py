@@ -56,7 +56,7 @@ def token_for(owner, package, authorization=None):
     return status, "Bearer " + token
 
 
-def check_private_package(repository, package, credential, *, allow_absent=False, identity=None, inspect_only=False):
+def check_private_package(repository, package, credential, *, allow_absent=False, identity=None):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,127}", package):
         raise ValueError("REGISTRY_IDENTITY_INVALID")
     owner = repository.split("/")[0]
@@ -77,20 +77,6 @@ def check_private_package(repository, package, credential, *, allow_absent=False
     linked_repository = (value.get("repository") or {}).get("full_name")
     basic_match = (value.get("name") == package and value.get("package_type") == "container"
         and value.get("owner", {}).get("login", "").lower() == owner.lower() and value.get("visibility") == "private")
-    if inspect_only and basic_match:
-        versions_status, versions_raw, _ = request(f"https://api.github.com/users/{owner}/packages/container/{package}/versions?per_page=100&state=active", "Bearer " + credential)
-        if versions_status != 200:
-            raise ValueError("PACKAGE_VERSION_INSPECTION_HTTP_" + str(versions_status))
-        versions = json.loads(versions_raw)
-        if (value.get("version_count") != 1 or not isinstance(versions, list) or len(versions) != 1
-            or versions[0].get("name") != "sha256:0f94eeae41fcbe2acc2654022fddf033198e116d274f53150ffea6c9437d2993"
-            or versions[0].get("metadata", {}).get("container", {}).get("tags") != ["privacy-fixture-v1"]):
-            raise ValueError("INITIAL_PRIVATE_FIXTURE_VERSION_HISTORY_MISMATCH")
-        return {"repository": repository, "publisher_repository_id": repo.get("id"), "repository_private": True,
-                "package": package, "package_id": value.get("id"), "package_private": True,
-                "linked_repository": linked_repository, "created_at": value.get("created_at"),
-                "version_count": value.get("version_count"), "fixture_digest": versions[0]["name"],
-                "fixture_version_id": versions[0]["id"], "fixture_created_at": versions[0].get("created_at"), "identity_verified": False}
     pinned = False
     if identity:
         pinned = (identity.get("repository") == repository and identity.get("publisher_repository_id") == repo.get("id")
@@ -128,8 +114,6 @@ def verify(repository, package, tag, credential, actor, identity=None):
     digest = headers.get("docker-content-digest", "")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise ValueError("REGISTRY_MANIFEST_DIGEST_INVALID")
-    if identity and tag == "privacy-fixture-v1" and digest != identity.get("fixture_digest"):
-        raise ValueError("PRIVATE_FIXTURE_DIGEST_PIN_MISMATCH")
     manifest = json.loads(data)
     config_digest = manifest.get("config", {}).get("digest", "")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest):
@@ -140,10 +124,7 @@ def verify(repository, package, tag, credential, actor, identity=None):
     labels = json.loads(config_raw).get("config", {}).get("Labels", {})
     if labels.get("org.opencontainers.image.source") != "https://github.com/" + repository:
         raise ValueError("PRIVATE_PUBLISHER_SOURCE_LABEL_MISMATCH")
-    if tag == "privacy-fixture-v1" and labels.get("app.mrfps.privacy-fixture") != "nonsecret-v1":
-        raise ValueError("PRIVATE_FIXTURE_LABEL_MISMATCH")
     report["source_label_verified"] = True
-    # A scratch fixture must contain a non-secret file so a layer can be probed.
     layers = manifest.get("layers", [])
     if not layers:
         raise ValueError("REGISTRY_MANIFEST_LAYER_MISSING")
@@ -179,7 +160,7 @@ def main():
         raise ValueError("SCOPED_JOB_TOKEN_REQUIRED")
     identity = json.loads(args.identity_file.read_text(encoding="utf-8-sig")) if args.identity_file.is_file() else None
     if args.inspect:
-        result = check_private_package(args.repository, args.package, credential, inspect_only=True)
+        result = check_private_package(args.repository, args.package, credential, identity=identity)
         print("MRFPS_GHCR_IDENTITY_INSPECTION " + json.dumps(result, sort_keys=True))
         return
     if args.preflight:

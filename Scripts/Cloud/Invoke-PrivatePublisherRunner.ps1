@@ -1,12 +1,9 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Inspect','Probe','Publish')][string]$Operation='Probe',
+    [ValidateSet('Inspect','Publish')][string]$Operation='Inspect',
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{40}$')][string]$SourceCommit,
-    [ValidatePattern('^mrfps-privacy-probe-[0-9a-f]{16}$')][string]$PrivacyTag,
     [string]$BundleDirectory,
     [string]$ExpectedServerSha256,
-    [string]$PrivacyReport,
-    [long]$RegistryProbeRunId,
     [string]$ReportDirectory,
     [switch]$InternalWorker,
     [ValidatePattern('^[0-9a-f]{16}$')][string]$TaskId,
@@ -85,12 +82,11 @@ $initialRunners=(& gh api "repos/$repository/actions/runners?per_page=100"|Out-S
 if($LASTEXITCODE -ne 0 -or @($initialRunners.runners|Where-Object {$_.name -eq $label}).Count -ne 0){throw 'OWNED_RUNNER_NAME_COLLISION'}
 $record.runnerNameInitiallyAbsent=$true
 try{
-    if($Operation -in @('Inspect','Probe')){
-        if($Operation -eq 'Probe' -and -not $PrivacyTag){throw 'NON_SECRET_PRIVATE_DRAFT_FIXTURE_REQUIRED'}
-        & gh workflow run publish-linux-server.yml --repo $repository --ref main -f "operation=$Operation" -f "runner_label=$label" -f "source_commit=$SourceCommit" -f "release_tag=$PrivacyTag"
-        if($LASTEXITCODE -ne 0){throw 'PRIVATE_RUNNER_PROBE_DISPATCH_FAILED'}
+    if($Operation -eq 'Inspect'){
+        & gh workflow run publish-linux-server.yml --repo $repository --ref main -f "operation=$Operation" -f "runner_label=$label" -f "source_commit=$SourceCommit"
+        if($LASTEXITCODE -ne 0){throw 'PRIVATE_RUNNER_INSPECTION_DISPATCH_FAILED'}
     }else{
-        & (Join-Path $PSScriptRoot Publish-GhcrServer.ps1) -Repository $repository -BundleDirectory $BundleDirectory -ExpectedServerSha256 $ExpectedServerSha256 -SourceCommit $SourceCommit -PrivacyReport $PrivacyReport -RegistryProbeRunId $RegistryProbeRunId -RunnerLabel $label -Mode Publish
+        & (Join-Path $PSScriptRoot Publish-GhcrServer.ps1) -Repository $repository -BundleDirectory $BundleDirectory -ExpectedServerSha256 $ExpectedServerSha256 -SourceCommit $SourceCommit -RunnerLabel $label -Mode Publish
         if($LASTEXITCODE -ne 0){throw 'PRIVATE_PUBLISHER_DISPATCH_FAILED'}
     }
     for($attempt=0;$attempt -lt 8;$attempt++){

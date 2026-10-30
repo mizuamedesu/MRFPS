@@ -94,24 +94,6 @@ function Resolve-MRFPSCredentialFile {
     return $fullPath
 }
 
-function New-MRFPSTestAuthKeys {
-    param([Parameter(Mandatory)][string]$Directory, [switch]$DryRun)
-    $root = Get-MRFPSRoot
-    $python = Join-Path $root '.local\auth-tools\Scripts\python.exe'
-    if ($DryRun) { return [PSCustomObject]@{ public_key_path = (Join-Path $Directory 'issuer-public.pem'); public_key_b64 = ''; audience = 'mrfps' } }
-    if (-not (Test-Path -LiteralPath $python)) { throw 'Run Scripts/Initialize-AuthTools.ps1 before auth/network tests.' }
-    Invoke-MRFPSCommand $python @((Join-Path $root 'tools\auth\create_test_credentials.py'),'--directory',$Directory,'--keys-only') | Out-Host
-    return Get-Content -Raw -LiteralPath (Join-Path $Directory 'keys.json') | ConvertFrom-Json
-}
-
-function Complete-MRFPSTestAuthTokens {
-    param([Parameter(Mandatory)][string]$Directory, [Parameter(Mandatory)][string]$Fingerprint, [int]$Inspectors = 3)
-    $root = Get-MRFPSRoot
-    $python = Join-Path $root '.local\auth-tools\Scripts\python.exe'
-    Invoke-MRFPSCommand $python @((Join-Path $root 'tools\auth\create_test_credentials.py'),'--directory',$Directory,'--dtls-fingerprint',$Fingerprint,'--inspectors',"$Inspectors") | Out-Host
-    return Get-Content -Raw -LiteralPath (Join-Path $Directory 'manifest.json') | ConvertFrom-Json
-}
-
 function Test-MRFPSCredentialPrivacy {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text, [string[]]$TokenFiles = @())
     if ($Text -match 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{80,}|-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----') { return $false }
@@ -163,4 +145,4 @@ function Get-MRFPSDisabledPluginNames {
     return $disabled
 }
 
-Export-ModuleMember -Function Get-MRFPSRoot, Resolve-MRFPSEngine, Resolve-MRFPSAndroidSdk, Resolve-MRFPSJava, Invoke-MRFPSCommand, Get-MRFPSQuest, Resolve-MRFPSCredentialFile, New-MRFPSTestAuthKeys, Complete-MRFPSTestAuthTokens, Test-MRFPSCredentialPrivacy, Assert-MRFPSQuestSharePermissionClear, Get-MRFPSDisabledPluginNames
+Export-ModuleMember -Function Get-MRFPSRoot, Resolve-MRFPSEngine, Resolve-MRFPSAndroidSdk, Resolve-MRFPSJava, Invoke-MRFPSCommand, Get-MRFPSQuest, Resolve-MRFPSCredentialFile, Test-MRFPSCredentialPrivacy, Assert-MRFPSQuestSharePermissionClear, Get-MRFPSDisabledPluginNames

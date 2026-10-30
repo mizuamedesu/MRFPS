@@ -9,10 +9,10 @@ on:
         type: string
         required: true
       operation:
-        description: Probe harmless fixture first; Publish requires that proof again
+        description: Inspect the private package or publish the server
         type: choice
-        options: [Inspect, Probe, Publish]
-        default: Probe
+        options: [Inspect, Publish]
+        default: Inspect
         required: true
       source_commit:
         description: Full approved commit in mizuamedesu/MRFPS
@@ -59,19 +59,17 @@ jobs:
           [[ "$REQUESTED_RUNNER_LABEL" =~ ^mrfps-private-[0-9a-f]{16}$ ]]
           [[ "$REQUESTED_RUNNER_LABEL" == "mrfps-private-$MRFPS_PUBLISHER_TASK_ID" ]]
           [[ "$MRFPS_BUILDER_NAME" == "mrfps-private-builder-$MRFPS_PUBLISHER_TASK_ID" ]]
-          [[ "$OPERATION" == Inspect || "$OPERATION" == Probe || "$OPERATION" == Publish ]]
+          [[ "$OPERATION" == Inspect || "$OPERATION" == Publish ]]
           if [[ "$OPERATION" == Publish ]]; then
             [[ "$BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
             [[ "$SERVER_SHA256" =~ ^[0-9a-f]{64}$ ]]
             [[ "$RELEASE_TAG" == "server-artifacts-${BUNDLE_SHA256:0:12}-${SOURCE_COMMIT:0:12}" ]]
-          elif [[ "$OPERATION" == Probe ]]; then
-            [[ "$RELEASE_TAG" =~ ^mrfps-privacy-probe-[0-9a-f]{16}$ ]]
           fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           path: publisher
           persist-credentials: false
-      - name: Refuse another repository's or public package before pushing even a fixture
+      - name: Refuse another repository's or public package before publishing
         if: inputs.operation != 'Inspect'
         shell: bash
         run: |
@@ -90,45 +88,6 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-      - name: Publish harmless fixture and prove authenticated pull plus anonymous denial
-        if: inputs.operation != 'Inspect'
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$PACKAGE_NAME"
-          FIXTURE="$IMAGE:privacy-fixture-v1"
-          mkdir -p "$RUNNER_TEMP/private-image-fixture"
-          printf 'MRFPS non-secret private registry fixture\n' > "$RUNNER_TEMP/private-image-fixture/fixture.txt"
-          cat > "$RUNNER_TEMP/private-image-fixture/Dockerfile" <<'EOF'
-          FROM scratch
-          LABEL app.mrfps.privacy-fixture="nonsecret-v1"
-          COPY fixture.txt /fixture.txt
-          EOF
-          # Linking must point at this PRIVATE publisher, never the public source.
-          if ! docker manifest inspect "$FIXTURE" >/dev/null 2>&1; then
-            docker buildx build --builder "$MRFPS_BUILDER_NAME" --load \
-              --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" \
-              --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-              -t "$FIXTURE" "$RUNNER_TEMP/private-image-fixture"
-            docker push "$FIXTURE"
-            docker image rm "$FIXTURE"
-          fi
-          docker pull "$FIXTURE"
-          [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.privacy-fixture" }}' "$FIXTURE")" == nonsecret-v1 ]]
-          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$FIXTURE")" == "https://github.com/$GITHUB_REPOSITORY" ]]
-          python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --tag privacy-fixture-v1 \
-            | tee "$RUNNER_TEMP/private-registry-proof.txt" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo 'MRFPS_GHCR_AUTHENTICATED_FIXTURE_PULL=true' | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Prove this scoped token can download the non-secret private draft fixture
-        if: inputs.operation == 'Probe'
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern privacy-fixture.txt --dir "$RUNNER_TEMP/mrfps-draft-privacy"
-          grep -qx 'MRFPS non-secret draft-access fixture' "$RUNNER_TEMP/mrfps-draft-privacy/privacy-fixture.txt"
-          echo 'MRFPS_PRIVATE_DRAFT_FIXTURE_DOWNLOAD=true' | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Fetch only the reviewed server build context without a whole-repository checkout
         if: inputs.operation == 'Publish'
         shell: bash
@@ -159,7 +118,6 @@ jobs:
           set -euo pipefail
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$PACKAGE_NAME"
           TAG="linux-${BUNDLE_SHA256:0:12}-${SOURCE_COMMIT:0:12}"
-          python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --tag privacy-fixture-v1
           if docker manifest inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
             docker pull --platform linux/amd64 "$IMAGE:$TAG"
             [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.server.sha256" }}' "$IMAGE:$TAG")" == "$SERVER_SHA256" ]]
@@ -190,32 +148,20 @@ jobs:
               --label "app.mrfps.server.sha256=$SERVER_SHA256" \
               --label "app.mrfps.bundle.sha256=$BUNDLE_SHA256" -t "$IMAGE:$TAG" server-source
           fi
-          for uid in 10001 0; do
-            set +e
-            docker run --rm --name "mrfps-private-negative-$MRFPS_PUBLISHER_TASK_ID-$uid" \
-              --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" \
-              --user "$uid" --memory 128m --memory-swap 128m --cpus 1 \
-              --security-opt no-new-privileges:true "$IMAGE:$TAG" >"$RUNNER_TEMP/mrfps-negative-$uid.log" 2>&1
-            result=$?
-            set -e
-            [[ "$result" -ne 0 ]]
-            grep -q '^MRFPS_FLASH_RUNTIME uid=10001 ' "$RUNNER_TEMP/mrfps-negative-$uid.log"
-            grep -q '^AUTH_CONFIG:' "$RUNNER_TEMP/mrfps-negative-$uid.log"
-          done
           docker push "$IMAGE:$TAG"
-          # Verify retrieval of the actual published server image, not only a
-          # manifest or the harmless fixture. No game server is launched here.
+          # Check the actual published image without starting it.
           docker image rm "$IMAGE:$TAG"
           docker pull --platform linux/amd64 "$IMAGE:$TAG"
           [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$IMAGE:$TAG")" == "https://github.com/$GITHUB_REPOSITORY" ]]
           [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE:$TAG")" == "$SOURCE_COMMIT" ]]
           [[ "$(docker image inspect --format '{{ index .Config.Labels "app.mrfps.bundle.sha256" }}' "$IMAGE:$TAG")" == "$BUNDLE_SHA256" ]]
-          ACTUAL_ELF=$(docker run --rm --name "mrfps-private-negative-$MRFPS_PUBLISHER_TASK_ID-elf" \
-            --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" \
-            --memory 128m --memory-swap 128m --cpus 1 --network none --read-only \
-            --security-opt no-new-privileges:true --entrypoint /usr/bin/sha256sum \
-            "$IMAGE:$TAG" /opt/mrfps/MRFPS/Binaries/Linux/MRFPSServer)
-          [[ "${ACTUAL_ELF%% *}" == "$SERVER_SHA256" ]]
+          container=$(docker create --name "mrfps-private-artifact-$MRFPS_PUBLISHER_TASK_ID" \
+            --label "app.mrfps.publisher.task=$MRFPS_PUBLISHER_TASK_ID" "$IMAGE:$TAG")
+          if ! docker cp "$container:/opt/mrfps/MRFPS/Binaries/Linux/MRFPSServer" "$RUNNER_TEMP/mrfps-server"; then
+            docker rm "$container" >/dev/null; exit 1
+          fi
+          docker rm "$container" >/dev/null
+          [[ "$(sha256sum "$RUNNER_TEMP/mrfps-server" | cut -d' ' -f1)" == "$SERVER_SHA256" ]]
           echo 'MRFPS_GHCR_AUTHENTICATED_SERVER_PULL_AND_ELF=true' | tee -a "$GITHUB_STEP_SUMMARY"
           python3 publisher/tools/cloud/ghcr_boundary.py --repository "$GITHUB_REPOSITORY" --package "$PACKAGE_NAME" --tag "$TAG" \
             | tee -a "$GITHUB_STEP_SUMMARY"

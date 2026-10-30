@@ -297,6 +297,10 @@ public:
     bool CanAct() const;
     bool IsPoseFresh() const;
     bool AreLocalGloveControlsFresh(int32 Hand) const { return Hand>=0 && Hand<2 && bGloveControlsFresh[Hand]; }
+    bool IsPhysicalFireDown() const { return bPhysicalFireDown; }
+    bool IsGloveFireDown() const { return bFingerTriggerDown; }
+    bool IsFireReleaseRequired() const { return bRequireFireRelease; }
+    double LocalFireTime() const { return LastLocalFire; }
     bool IsInsideArena() const;
     void OffsetCombatTimers(double Seconds);
     bool GetGeometryCalibration(FTransform& TrackingToArena,double& CalibratedSince) const;
@@ -358,13 +362,8 @@ public:
     double LastLocalPoseSampleAt = -1;
     int32 AcceptedShots = 0;
 private:
-#if WITH_DEV_AUTOMATION_TESTS
-    friend class FMRFPSLoginPointerPoseTest;
-    friend class FMRFPSQuestLoginToggleTest;
-    friend class FMRFPSEnemyHealthBarTest;
-    friend class FMRFPSDamageNumberTest;
-#endif
     bool IsPhysicalFireAllowed() const;
+    void TryLocalFire(bool InputDown);
     void SampleLocalPose(float DeltaSeconds);
     void UpdateVisuals();
     void RemoveDeployedWall();
@@ -504,22 +503,11 @@ public:
     UPROPERTY() TArray<TObjectPtr<UTextureRenderTarget2D>> ViewTextures;
     UPROPERTY() TObjectPtr<UMRFPSMenu> SessionMenu;
     UPROPERTY(Transient) TObjectPtr<UMRFPSLoginMenu> DeviceLogin;
-#if WITH_DEV_AUTOMATION_TESTS
-    bool bTestQuestVR=false;
-#endif
     bool bMultiView = true;
     int32 ViewSlot = -1;
     FString ConnectionError;
 private:
     friend class AMRFPSPawn;
-#if WITH_DEV_AUTOMATION_TESTS
-    friend class FMRFPSSoloBotScenario;
-    friend class FMRFPSQuestLoginToggleTest;
-    TFunction<void()> TestQuestArmRequest;
-    friend class FMRFPSLoginAttemptCancellationTest;
-    friend class FMRFPSDisconnectAutomationTest;
-    FString TestAutomationDirectory;
-#endif
 #if !UE_SERVER
     FString RequestedWindowTitle;
     double NextWindowTitleUpdate=0;
@@ -641,9 +629,6 @@ private:
     TWeakObjectPtr<UMRFPSLoginMenu> PendingDeviceOwner;
     uint64 PendingDeviceGeneration=0;
     double LastCaptureRefresh = -100;
-    double NextSmokeAction = 0;
-    int32 SmokeStage = 0;
-    double SmokeCombatStartedAt = -1;
 };
 
 UCLASS()

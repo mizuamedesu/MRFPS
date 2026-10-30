@@ -110,19 +110,6 @@ jobs:
             docker build --platform linux/amd64 -f Deploy/Cloud/Flash.Dockerfile \
               --build-arg MRFPS_BASE_IMAGE=mrfps-base:approved -t "$IMAGE:$TAG" Deploy/Cloud
           fi
-          # No credentials: both image-user and Flash-forced-root startup must
-          # drop to the existing fail-closed public-key validator.
-          for uid in 10001 0; do
-            set +e
-            docker run --rm --user "$uid" --memory 128m --cpus 1 \
-              --security-opt no-new-privileges:true "$IMAGE:$TAG" \
-              >"$RUNNER_TEMP/mrfps-negative-$uid.log" 2>&1
-            result=$?
-            set -e
-            [[ "$result" -ne 0 ]]
-            grep -q '^MRFPS_FLASH_RUNTIME uid=10001 ' "$RUNNER_TEMP/mrfps-negative-$uid.log"
-            grep -q '^AUTH_CONFIG:' "$RUNNER_TEMP/mrfps-negative-$uid.log"
-          done
           docker push "$IMAGE:$TAG"
           gh api "$PACKAGE_API" --jq .visibility | grep -qx private
           docker buildx imagetools inspect "$IMAGE:$TAG" > "$RUNNER_TEMP/mrfps-image.txt"

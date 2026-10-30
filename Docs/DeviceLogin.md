@@ -73,25 +73,3 @@ Windows も名前ごとの `Saved/DeviceAuth/windows-<name>.json` に投入前�
 Windows クライアントは毎回、空き RAM 10 GB 以上・コミット率 75% 以下の既存のメモリガードの子プロセスとして起動します。制限を超えた場合、ガードは自身のジョブだけを停止します。公開鍵の Windows 保存先は `%LOCALAPPDATA%\MRFPS\Auth` です。
 
 開発版の UE コンソールでは `MRFPSConfigureServer <host:port>`、`MRFPSLoginFile <path> <player|inspector|admin>`、`MRFPSResetIssuerTrust` を使用できます。ファイルによる起動パラメータは `-MRFPSServer=... -MRFPSRole=... -MRFPSDeviceCodeFile="..."` です。コードそのものを引数にしないでください。
-
-## 接続枠の実サーバー試験
-
-`Scripts/Test-DeviceRoles.ps1` は指定コンテナの稼働状態と fingerprint を確認し、本番 Worker で役割ごとに新しいコードを交換して、描画なしの実 Windows クライアントを1つずつ接続します。プレイヤー2人と追加プレイヤーの拒否、管理者1人と追加管理者の拒否、複数の観戦者が同時に参加していることをサーバーとクライアントの両方の証拠で確認します。人間が使用中のプレイヤー枠を勝手に試験に組み込まないよう、既存プレイヤーを使用する場合は `-AllowExistingPlayer` が必要です。試験用プレイヤーに自動射撃はさせません。
-
-```powershell
-.\Scripts\Test-DeviceRoles.ps1 -RunDirectory Saved\Validation\RoleTest-001 `
-  -Executable Artifacts\Packages\Windows\MRFPS.exe `
-  -Server 172.23.166.33 -Port 17780 -Container mrfps-cloud-example `
-  -Fingerprint <64桁の現在のDTLS指紋> -InspectorCount 2
-
-# 実行中の指定試験だけを終了（繰り返し実行可）
-.\Scripts\Test-DeviceRoles.ps1 -RunDirectory Saved\Validation\RoleTest-001 -Stop
-```
-
-試験ごとに新しい `-RunDirectory` を使います。同じディレクトリへの再実行は既存レポートを返すだけで、参加やコード交換を重複しません。各プロセスは同一のメモリガード下にあり、追加起動前にも空き RAM を確認します。余裕が不足した場合は `resource_limited` と途中のチェック結果を記録し、すべて成功したとは扱いません。通常は検証後に試験プロセスだけを終了します。`-HoldSeconds` を指定すると、検証後も指定時間か `-Stop` まで維持できます。コード・JWT は標準出力せず、交換済みの一時ファイルを後片付けします。
-
-各試験クライアントにはレポートの `instances[].controlName` が割り当てられ、維持中に [UE local control](../tools/automation/README.md) の `--name` で操作できます。
-
-メモリが足りず全役割を同時に起動できない場合、`-Scenario player-limit`、`admin-limit`、`inspector-multi`、`admin-inspector` をそれぞれ別の `-RunDirectory` で実行すると、必要な役割だけを段階的に検証できます。個別シナリオの成功は全役割同時接続の成功とは扱いません。頭のない試験クライアント自身のワーキングセットだけを追加起動前に整理し、10 GiB／75% のガードは維持します。
-
-ガードがメモリ不足などでプロセスを強制終了した場合、終了処理を実行できず保護済み一時資格情報が残ることがあります。その場合はレポートの `exchangeOperations` と `credentialStateDirectory` を使い、各操作 ID について `node Deploy/CloudflareAdmin/admin-cli.mjs exchange-clean --operation-id <ID> --state-dir <credentialStateDirectory>` を実行してください。この削除コマンドは再実行できます。
