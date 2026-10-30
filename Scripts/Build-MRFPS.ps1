@@ -113,6 +113,10 @@ try {
             # Keep Kotlin 2.2 dex transforms separate from the older UE 5.8
             # toolchain's shared Gradle cache. This is scoped to this build.
             $env:GRADLE_USER_HOME = Join-Path $root '.local\gradle-mrfps-mobits'
+            if (-not $DryRun) {
+                & $sdkPython (Join-Path $root 'tools\mobits\quest_ble_recovery.py') --android-home $sdk --java-home $java
+                if ($LASTEXITCODE -ne 0) { throw 'MoBits Quest BLE recovery adapter build failed.' }
+            }
             # Keep the editor/tools/Android dependency graphs in separate UBT
             # processes, as for LinuxServer. MaxParallelActions alone does not
             # bound the memory of a combined four-target UAT invocation.

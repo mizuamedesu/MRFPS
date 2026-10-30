@@ -145,11 +145,20 @@ def apply_unreal_compatibility(target: Path) -> None:
     text = upl.read_text(encoding="utf-8")
     original = "implementation files('libs/mobits-quest-standalone.aar')"
     corrected = "implementation files('src/main/libs/mobits-quest-standalone.aar')"
+    recovered = "implementation files('src/main/libs/mobits-quest-standalone-mrfps.aar')"
     if text.count(original) == 1 and corrected not in text:
         with upl.open("w", encoding="utf-8", newline="\n") as output:
             output.write(text.replace(original, corrected))
-    elif original in text or text.count(corrected) != 1:
+    elif original in text or (text.count(corrected) != 1 and text.count(recovered) != 1):
         raise RuntimeError("Unexpected MoBits Android UPL; compatibility patch was not applied")
+    text = upl.read_text(encoding="utf-8")
+    vendor_name = "mobits-quest-standalone.aar"
+    recovery_name = "mobits-quest-standalone-mrfps.aar"
+    if text.count(vendor_name) == 3 and recovery_name not in text:
+        with upl.open("w", encoding="utf-8", newline="\n") as output:
+            output.write(text.replace(vendor_name, recovery_name))
+    elif vendor_name in text or text.count(recovery_name) != 3:
+        raise RuntimeError("Unexpected MoBits Android AAR paths; recovery adapter was not selected")
     # Remove the old local init hook, if present. UE's legacy buildscript uses
     # the project Gradle file to place the compatible R8 before AGP's copy.
     text = upl.read_text(encoding="utf-8")
