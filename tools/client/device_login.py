@@ -391,14 +391,17 @@ def quest_locked(args: argparse.Namespace, address: str, state_path: Path) -> di
     submit_control(None)
     if quest_pid(args.adb, serial):
         raise RuntimeError("Quest app restarted before launch")
-    previous["pid"] = None
-    previous["pending"] = True
-    save_state(state_path, previous)
     cmdline = "/Game/Maps/MRFPSArena -vr -log"
     if glove is not None:
         cmdline += f" -MRFPSGloveSender={glove['sender']} -MRFPSGlovePort={glove['port']}"
         if glove["device"]:
             cmdline += f" -MRFPSGloveDevice={glove['device']}"
+    # Control-file provisioning can take several ADB round trips. Check again
+    # immediately before journalling the launch; never dismiss an OS prompt.
+    assert_quest_share_clear(args.adb, serial)
+    previous["pid"] = None
+    previous["pending"] = True
+    save_state(state_path, previous)
     run_adb(args.adb, serial, ["shell", "am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-n", PACKAGE + "/com.epicgames.unreal.GameActivity", "--es", "cmdline", "'" + cmdline + "'"])
     current_pid = ""
     for _ in range(12):

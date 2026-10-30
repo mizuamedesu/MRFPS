@@ -159,11 +159,13 @@ if (-not $DryRun) {
     $powerState = (& $adb @prefix shell dumpsys power | Out-String)
     if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Quest power state before launch.' }
     if ($powerState -match 'mWakefulness=Asleep') { $wakeKey = 'KEYCODE_POWER' }
+    Assert-QuestPermissionClear
 }
 Invoke-MRFPSCommand $adb ($prefix + @('shell','input','keyevent',$wakeKey)) -DryRun:$DryRun
 # Do not wait indefinitely for a resumed Activity while an unworn headset or
 # system dialog defers launch. The bounded observation below checks the actual
 # process and preserves activity/log evidence even when launch remains pending.
+if (-not $DryRun) { Assert-QuestPermissionClear }
 Invoke-MRFPSCommand $adb ($prefix + @('shell','am','start','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-n',"$Package/com.epicgames.unreal.GameActivity",'--es','cmdline',("'" + $commandLine + "'"))) -DryRun:$DryRun
 if ($DryRun) { return }
 Start-Sleep -Seconds ([Math]::Min($CaptureSeconds, 60))

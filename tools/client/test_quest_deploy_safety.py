@@ -27,12 +27,19 @@ class Fixture {
     static int Main(string[] a) {
         string log=Environment.GetEnvironmentVariable("MRFPS_TEST_ADB_LOG");
         int dumps=0;
-        if (File.Exists(log)) foreach (string line in File.ReadAllLines(log)) if (line.Contains(" shell dumpsys ")) ++dumps;
+        if (File.Exists(log)) foreach (string line in File.ReadAllLines(log)) if (line.Contains(" shell dumpsys activity activities")) ++dumps;
         File.AppendAllText(log,String.Join(" ",a)+"\n");
         if (a.Length>0 && a[0]=="devices") { Console.WriteLine("List of devices attached\nfixture device product:fake"); return 0; }
-        if (a.Length>=4 && a[2]=="shell" && a[3]=="dumpsys") {
-            string path=Environment.GetEnvironmentVariable(dumps==0?"MRFPS_TEST_ADB_DUMP1":"MRFPS_TEST_ADB_DUMP2");
+        if (a.Length>=5 && a[2]=="shell" && a[3]=="dumpsys" && a[4]=="activity") {
+            string path=Environment.GetEnvironmentVariable("MRFPS_TEST_ADB_DUMP"+(dumps+1));
             Console.Write(File.ReadAllText(path)); return 0;
+        }
+        if (a.Length>=5 && a[2]=="shell" && a[3]=="pidof") return 1;
+        if (a.Length>=6 && a[2]=="shell" && a[3]=="run-as" && a[5]=="pwd") {
+            Console.WriteLine("/data/user/0/"+a[4]); return 0;
+        }
+        if (a.Length>=5 && a[2]=="shell" && a[3]=="dumpsys" && a[4]=="power") {
+            Console.WriteLine("mWakefulness=Awake"); return 0;
         }
         return 0;
     }
@@ -51,11 +58,13 @@ class Fixture {
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def invoke(self,first,second):
+    def invoke(self,*dumps):
         with tempfile.TemporaryDirectory(prefix="mrfps-fake-adb-run-") as folder:
-            temp=Path(folder); first_path=temp/"first.txt"; second_path=temp/"second.txt"; log=temp/"calls.txt"
-            first_path.write_text(first,encoding="ascii"); second_path.write_text(second,encoding="ascii")
-            env={**os.environ,"MRFPS_TEST_ADB_LOG":str(log),"MRFPS_TEST_ADB_DUMP1":str(first_path),"MRFPS_TEST_ADB_DUMP2":str(second_path)}
+            temp=Path(folder); log=temp/"calls.txt"
+            env={**os.environ,"MRFPS_TEST_ADB_LOG":str(log)}
+            for i,dump in enumerate(dumps,1):
+                path=temp/("dump"+str(i)+".txt"); path.write_text(dump,encoding="ascii")
+                env["MRFPS_TEST_ADB_DUMP"+str(i)]=str(path)
             args=[str(POWERSHELL),"-NoProfile","-NonInteractive","-File",str(ROOT/"Scripts/Deploy-Quest.ps1"),
                   "-SdkRoot",str(self.sdk),"-Serial","fixture","-Server","127.0.0.1","-Apk",str(self.apk),
                   "-TokenFile",str(self.token),"-PublicKeyFile",str(self.public)]
@@ -81,6 +90,21 @@ class Fixture {
         self.assertTrue(calls[2].startswith("-s fixture install -r "))
         self.assertEqual(calls[3],"-s fixture shell dumpsys activity activities")
         self.assertEqual(len(calls),4)
+
+    def test_prompt_appearing_after_wakeup_blocks_activity_start(self):
+        result,calls=self.invoke(EMPTY,EMPTY,EMPTY,EMPTY,PROMPT)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn("screen-sharing or privacy permission prompt",(result.stdout+result.stderr).decode("utf-8",errors="replace"))
+        self.assertIn("-s fixture shell input keyevent KEYCODE_WAKEUP",calls)
+        self.assertEqual(calls[-1],"-s fixture shell dumpsys activity activities")
+        self.assertFalse(any(" shell am start " in call or " stack remove " in call for call in calls))
+
+    def test_prompt_appearing_during_provisioning_blocks_wakeup(self):
+        result,calls=self.invoke(EMPTY,EMPTY,EMPTY,PROMPT)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn("screen-sharing or privacy permission prompt",(result.stdout+result.stderr).decode("utf-8",errors="replace"))
+        self.assertEqual(calls[-1],"-s fixture shell dumpsys activity activities")
+        self.assertFalse(any(" shell input keyevent " in call or " shell am start " in call for call in calls))
 
 
 if __name__=="__main__":

@@ -636,6 +636,25 @@ class DeviceLoginControlTests(unittest.TestCase):
             self.assertIn(["shell","am","force-stop",module.PACKAGE],calls)
             self.assertFalse(any(cmd[:3]==["shell","am","start"] or cmd[:4]==["shell","am","stack","remove"] for cmd in calls))
 
+    def test_permission_prompt_after_provisioning_blocks_launch_without_pending_journal(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            args=argparse.Namespace(server=module.DEFAULT_SERVER,serial="fixture",role="player",
+                                    adb="adb",replace=False,code_file=None)
+            calls=[]; dumps=iter((EMPTY_ACTIVITY_DUMP,EMPTY_ACTIVITY_DUMP,ORPHAN_ACTIVITY_DUMP))
+            def fake_adb(_adb,_serial,cmd,**_kwargs):
+                calls.append(cmd)
+                return next(dumps) if cmd==["shell","dumpsys","activity","activities"] else ""
+            with mock.patch.object(module,"ROOT",root), mock.patch.object(module,"run_adb",fake_adb), \
+                 mock.patch.object(module,"quest_pid",return_value=""), \
+                 mock.patch.object(module,"quest_control") as control:
+                with self.assertRaisesRegex(RuntimeError,"permission prompt"): module.quest(args)
+                control.assert_called_once()
+            state=module.load_state(root/"Saved"/"DeviceAuth"/"quest-fixture.json")
+            self.assertFalse(state.get("pending",False))
+            self.assertFalse(any(cmd[:3]==["shell","am","start"] or cmd[:4]==["shell","am","stack","remove"] for cmd in calls))
+            self.assertEqual(calls,[["shell","dumpsys","activity","activities"]]*3)
+
     def test_stop_quest_targets_only_named_device_and_package_and_is_repeatable(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
