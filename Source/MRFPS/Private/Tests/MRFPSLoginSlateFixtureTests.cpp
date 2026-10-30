@@ -233,6 +233,26 @@ private:
         Test->TestEqual(TEXT("Neither unrelated cancel clicks the second button"),Clicks[1],0);
         Second->EndPointer();
         Test->TestEqual(TEXT("The untouched second button still clicks once"),Clicks[1],1);
+
+        // The real Slate targets are snapshotted by the input callback. A
+        // tap queued at A cannot be replayed against B at the next tick.
+        First->SetWorldLocation(FVector(0,-75,0)); First->RefreshPointer();
+        const auto TapAtA=First->HoveredTarget().Pin();
+        MRFPSLoginPointer::FEventQueue Queued;
+        Queued.Push(MRFPSLoginPointer::EInput::Button,1,1,true,false,reinterpret_cast<std::uintptr_t>(TapAtA.Get()),true);
+        Queued.Push(MRFPSLoginPointer::EInput::Button,0,1.01,true,false,reinterpret_cast<std::uintptr_t>(TapAtA.Get()),true);
+        First->SetWorldLocation(FVector(0,75,0)); First->RefreshPointer();
+        const auto AtB=First->HoveredTarget().Pin();
+        if (!Test->TestTrue(TEXT("Fixture can distinguish both actual Slate controls"),TapAtA && AtB && TapAtA!=AtB)) return true;
+        Test->TestFalse(TEXT("A queued tap cannot be routed to B"),MRFPSLoginPointer::ButtonTargetsMatch(Queued,AtB.Get()));
+        Test->TestEqual(TEXT("Queued tap on A did not click A again"),Clicks[0],5);
+        Test->TestEqual(TEXT("Queued tap on A did not click B"),Clicks[1],1);
+        Queued.Clear();
+        Queued.Push(MRFPSLoginPointer::EInput::Button,1,2,true,false,reinterpret_cast<std::uintptr_t>(AtB.Get()),true);
+        if (!Test->TestTrue(TEXT("An immediate press on B keeps its captured target"),
+            MRFPSLoginPointer::ButtonTargetsMatch(Queued,AtB.Get()) && First->BeginPointer())) return true;
+        First->EndPointer();
+        Test->TestEqual(TEXT("Immediate press on B clicks B once"),Clicks[1],2);
         return true;
     }
 

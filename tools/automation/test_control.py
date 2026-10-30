@@ -15,6 +15,27 @@ from control import archive_local_locked, atomic_write, encode, lock_directory, 
 
 
 class ControlQueueTests(unittest.TestCase):
+    def test_roster_and_participant_tab_cli_retries_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            for operation, parameters in (
+                ('menu.set', {'menu': 'session', 'open': True, 'tab': 'participants'}),
+                ('roster.list', {}),
+            ):
+                operation_id = str(uuid.uuid4())
+                arguments = ['control.py', '--name', 'MRFPS-Test', '--operation-id', operation_id,
+                             '--operation', operation, '--parameters', json.dumps(parameters), '--wait-seconds', '0']
+                with patch('control.root_directory', return_value=root), patch.object(sys, 'argv', arguments), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(), 2)
+                    self.assertEqual(main(), 2)
+                request_path = root / 'MRFPS-Test' / operation_id / 'request.json'
+                request = json.loads(request_path.read_text())
+                self.assertEqual(request['operation'], operation)
+                self.assertEqual(request['parameters'], parameters)
+                with self.assertRaises(ValueError):
+                    submit(root / 'MRFPS-Test', {**request, 'parameters': {'changed': True}})
+
     def test_repeated_submission_reuses_identical_request_and_rejects_conflict(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)

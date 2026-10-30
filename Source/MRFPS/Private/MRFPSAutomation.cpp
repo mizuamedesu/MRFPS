@@ -4,6 +4,7 @@
 #include "MRFPSLoginMenu.h"
 #include "MRFPSLocalPoseStatus.h"
 #include "MRFPSMenu.h"
+#include "MRFPSRoster.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -242,6 +243,8 @@ void AMRFPSPlayerController::TickAutomation()
             Data->SetBoolField(TEXT("mouse_released"),bInspectorMouseReleased); Data->SetBoolField(TEXT("build_mode"),bAdminWallPlacement);
             Data->SetNumberField(TEXT("player_window_mask"),PlayerVideoWindowMask()); Data->SetBoolField(TEXT("inspector_window"),InspectorWindowCamera!=nullptr);
             Data->SetBoolField(TEXT("session_menu"),SessionMenu&&SessionMenu->IsInViewport());
+            if (SessionMenu && SessionMenu->IsInViewport())
+                Data->SetStringField(TEXT("session_menu_tab"),SessionMenu->IsRosterVisible()?TEXT("participants"):TEXT("settings"));
             Data->SetBoolField(TEXT("admin_panel"),AdminPanel&&AdminPanel->IsInViewport());
             Data->SetBoolField(TEXT("login_panel"),DeviceLogin&&DeviceLogin->IsOpen());
             if(const auto* Fighter=GetPawn<AMRFPSPawn>(); Fighter && Fighter->IsLocallyControlled()) {
@@ -336,6 +339,24 @@ void AMRFPSPlayerController::TickAutomation()
                 Data->SetBoolField(TEXT("shared_floor_confirmed"),GS->bSharedFloorConfirmed); Data->SetBoolField(TEXT("layout_calibrated"),GS->Layout.bCalibrated);
                 Data->SetNumberField(TEXT("layout_revision"),GS->Layout.Revision); Data->SetNumberField(TEXT("control_revision"),GS->ControlRevision);
                 Data->SetNumberField(TEXT("width_cm"),GS->Layout.WidthCm); Data->SetNumberField(TEXT("length_cm"),GS->Layout.LengthCm); }
+        } else if(Operation==TEXT("roster.list")) {
+            if (!MRFPSRoster::CanView(this)) { Ok=false; Code=TEXT("INSPECTOR_REQUIRED"); }
+            else {
+                TArray<TSharedPtr<FJsonValue>> Participants;
+                for (const auto& Row:MRFPSRoster::Collect(this)) {
+                    auto Item=MakeShared<FJsonObject>();
+                    const TCHAR* Role=Row.Role==MRFPSRosterPolicy::ERole::Admin?TEXT("admin"):
+                        Row.Role==MRFPSRosterPolicy::ERole::Inspector?TEXT("inspector"):
+                        Row.Role==MRFPSRosterPolicy::ERole::Bot?TEXT("bot"):TEXT("player");
+                    Item->SetStringField(TEXT("name"),Row.Name); Item->SetStringField(TEXT("role"),Role);
+                    Item->SetNumberField(TEXT("id"),Row.Id); Item->SetNumberField(TEXT("slot"),Row.Slot);
+                    Item->SetBoolField(TEXT("self"),Row.Self);
+                    if (Row.Ping>=0) Item->SetNumberField(TEXT("ping_ms"),Row.Ping);
+                    else Item->SetField(TEXT("ping_ms"),MakeShared<FJsonValueNull>());
+                    Participants.Add(MakeShared<FJsonValueObject>(Item));
+                }
+                Data->SetArrayField(TEXT("participants"),Participants);
+            }
         } else if(Operation==TEXT("objects.list")) {
             if(!IsInspector()) { Ok=false; Code=TEXT("INSPECTOR_REQUIRED"); }
             else {
@@ -386,12 +407,19 @@ void AMRFPSPlayerController::TickAutomation()
                 if(Open&&!(PlayerVideoWindowMask()&(1u<<Slot))) { Ok=false; Code=TEXT("WINDOW_UNAVAILABLE"); }
             } else { Ok=false; Code=TEXT("INVALID_WINDOW"); }
         } else if(Operation==TEXT("menu.set")) {
-            FString Menu; bool Open=false;
-            if(!Params->TryGetStringField(TEXT("menu"),Menu)||!Params->TryGetBoolField(TEXT("open"),Open)) { Ok=false; Code=TEXT("INVALID_MENU"); }
+            FString Menu,Tab; bool Open=false;
+            const bool HasTab=Params->HasField(TEXT("tab"));
+            const bool TabValid=!HasTab || (Params->TryGetStringField(TEXT("tab"),Tab) && (Tab==TEXT("settings") || Tab==TEXT("participants")));
+            if(!Params->TryGetStringField(TEXT("menu"),Menu)||!Params->TryGetBoolField(TEXT("open"),Open)||!TabValid||
+                (HasTab && (Menu!=TEXT("session") || !Open))) { Ok=false; Code=TEXT("INVALID_MENU"); }
             else if(Menu==TEXT("session")) {
-                const bool Exists=SessionMenu&&SessionMenu->IsInViewport(); Already=Exists==Open;
-                if(!Already) ToggleMenu();
-                if((SessionMenu&&SessionMenu->IsInViewport())!=Open) { Ok=false; Code=TEXT("MENU_UNAVAILABLE"); }
+                const bool WantRoster=HasTab && Tab==TEXT("participants");
+                if (WantRoster && !MRFPSRoster::CanView(this)) { Ok=false; Code=TEXT("INSPECTOR_REQUIRED"); }
+                const bool Exists=SessionMenu&&SessionMenu->IsInViewport();
+                Already=Exists==Open && (!HasTab || (SessionMenu && SessionMenu->IsRosterVisible()==WantRoster));
+                if(Ok && Exists!=Open) ToggleMenu();
+                if(Ok && (SessionMenu&&SessionMenu->IsInViewport())!=Open) { Ok=false; Code=TEXT("MENU_UNAVAILABLE"); }
+                if (Ok && HasTab && (!SessionMenu || !SessionMenu->SetRosterVisible(WantRoster))) { Ok=false; Code=TEXT("MENU_UNAVAILABLE"); }
             } else if(Menu==TEXT("admin")) {
                 if(!IsAdmin()) { Ok=false; Code=TEXT("ADMIN_REQUIRED"); }
                 else { const bool Exists=AdminPanel&&AdminPanel->IsInViewport(); Already=Exists==Open; if(!Already) ToggleAdminPanel();

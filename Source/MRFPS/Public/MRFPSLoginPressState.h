@@ -16,7 +16,10 @@ enum class EMode : std::uint8_t { Auto, QuestButton, QuestAxis, GloveController,
 // first neutral sample keeps its timestamp so the required rest is measurable.
 struct FEventQueue
 {
-    struct FEvent { EInput Kind; float Value; double At; bool Valid=true, Flag=false; };
+    struct FEvent {
+        EInput Kind; float Value; double At; bool Valid=true, Flag=false;
+        std::uintptr_t Target=0; bool TargetCaptured=false;
+    };
     std::array<FEvent,32> Events{};
     std::size_t Count=0;
     bool Overflow=false;
@@ -31,12 +34,12 @@ struct FEventQueue
         if (E.Kind==EInput::Axis ? E.Value<=.3f : E.Value<.3f) return 0;
         return 1;
     }
-    void Push(EInput Kind,float Value,double At,bool Valid=true,bool Flag=false)
+    void Push(EInput Kind,float Value,double At,bool Valid=true,bool Flag=false,std::uintptr_t Target=0,bool TargetCaptured=false)
     {
         if (Overflow) return;
         if (!std::isfinite(At) || At<0 || (LastAt>=0 && At<LastAt)) { Count=0; Overflow=true; return; }
         LastAt=At;
-        const FEvent New{Kind,Value,At,Valid,Flag};
+        const FEvent New{Kind,Value,At,Valid,Flag,Target,TargetCaptured};
         // Interleaved events from other channels do not change this channel.
         for (std::size_t I=Count;I>0;--I) if (Events[I-1].Kind==Kind) {
             if (Category(Events[I-1])==Category(New)) return;
@@ -49,6 +52,18 @@ struct FEventQueue
 };
 
 inline bool SameHit(const void* Previous,const void* Current) { return Previous && Previous==Current; }
+inline bool CapturedTargetMatches(bool Captured,std::uintptr_t Target,const void* Current)
+{
+    return Captured && Target!=0 && Target==reinterpret_cast<std::uintptr_t>(Current);
+}
+inline bool ButtonTargetsMatch(const FEventQueue& Queue,const void* Current)
+{
+    for (std::size_t I=0;I<Queue.Count;++I) {
+        const auto& E=Queue.Events[I];
+        if (E.Kind==EInput::Button && !CapturedTargetMatches(E.TargetCaptured,E.Target,Current)) return false;
+    }
+    return true;
+}
 inline bool CancelForHitChange(bool Pressed,const void* Previous,const void* Current)
 {
     return Pressed && !SameHit(Previous,Current);

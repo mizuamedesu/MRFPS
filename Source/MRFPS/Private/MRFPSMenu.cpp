@@ -4,6 +4,7 @@
 #include "MRFPSGame.h"
 #include "MRFPSHapticsComponent.h"
 #include "MRFPSAuthClientSubsystem.h"
+#include "MRFPSRoster.h"
 #include "Blueprint/WidgetTree.h"
 #include "Brushes/SlateColorBrush.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
@@ -19,6 +20,7 @@
 #include "Components/TextBlock.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
+#include "Components/WidgetSwitcher.h"
 #include "Engine/World.h"
 #include "Input/Reply.h"
 #include "InputCoreTypes.h"
@@ -131,8 +133,8 @@ void UMRFPSMenu::NativeOnInitialized()
     Panel->SetPadding(FMargin(28, 24));
     Width->SetContent(Panel);
     auto* Body = WidgetTree->ConstructWidget<UVerticalBox>();
-    auto* Scroll=WidgetTree->ConstructWidget<UScrollBox>();
-    Panel->SetContent(Scroll); Scroll->AddChild(Body);
+    MenuScroll=WidgetTree->ConstructWidget<UScrollBox>();
+    Panel->SetContent(MenuScroll); MenuScroll->AddChild(Body);
 
     Body->AddChildToVerticalBox(Text(WidgetTree, TEXT("アリーナ"), 10, Highlight, true));
     Space(WidgetTree, Body, 4);
@@ -144,6 +146,23 @@ void UMRFPSMenu::NativeOnInitialized()
     CloseSlot->SetVerticalAlignment(VAlign_Center);
     CloseButton->OnClicked.AddDynamic(this, &UMRFPSMenu::Close);
     Space(WidgetTree, Body, 17);
+
+    auto* Tabs=WidgetTree->ConstructWidget<UHorizontalBox>();
+    auto* SettingsTab=Button(WidgetTree,TEXT("SessionTab"),TEXT("設定  Ctrl+1"),Secondary);
+    RosterTabButton=Button(WidgetTree,TEXT("RosterTab"),TEXT("参加者  Ctrl+2"),Secondary);
+    SettingsTab->OnClicked.AddDynamic(this,&UMRFPSMenu::ShowSettings);
+    RosterTabButton->OnClicked.AddDynamic(this,&UMRFPSMenu::ShowRoster);
+    RowButton(Tabs,SettingsTab); RowButton(Tabs,RosterTabButton,true);
+    Body->AddChildToVerticalBox(Tabs); Space(WidgetTree,Body,12);
+    Pages=WidgetTree->ConstructWidget<UWidgetSwitcher>(); Body->AddChildToVerticalBox(Pages);
+    auto* SettingsPage=WidgetTree->ConstructWidget<UVerticalBox>();
+    auto* RosterPage=WidgetTree->ConstructWidget<UVerticalBox>();
+    Pages->AddChild(SettingsPage); Pages->AddChild(RosterPage);
+    RosterPage->AddChildToVerticalBox(Text(WidgetTree,TEXT("参加者"),18,White,true));
+    Space(WidgetTree,RosterPage,10);
+    RosterText=Text(WidgetTree,TEXT("参加者なし"),14,White);
+    RosterText->SetAutoWrapText(true); RosterPage->AddChildToVerticalBox(RosterText);
+    Body=SettingsPage;
 
     auto* StatusPanel = WidgetTree->ConstructWidget<UBorder>();
     StatusPanel->SetBrush(FSlateRoundedBoxBrush(FLinearColor(.037f, .065f, .105f, 1.f), 7.f));
@@ -288,6 +307,7 @@ void UMRFPSMenu::ReleaseInput()
 
 void UMRFPSMenu::NativeDestruct()
 {
+    LastRosterText.Empty(); if (RosterText) RosterText->SetText(FText::GetEmpty());
     SaveAddress();
     ReleaseInput();
     Super::NativeDestruct();
@@ -300,8 +320,47 @@ void UMRFPSMenu::Close()
     RemoveFromParent();
 }
 
+bool UMRFPSMenu::SetRosterVisible(bool Visible)
+{
+    if (!Pages || (Visible && !MRFPSRoster::CanView(Controller()))) return false;
+    if (Visible==bRosterVisible) return true;
+    bRosterVisible=Visible;
+    Pages->SetActiveWidgetIndex(Visible?1:0);
+    if (MenuScroll) MenuScroll->ScrollToStart();
+    RosterElapsed=0;
+    if (Visible) RefreshRoster();
+    return true;
+}
+
+void UMRFPSMenu::ShowSettings() { SetRosterVisible(false); }
+void UMRFPSMenu::ShowRoster() { SetRosterVisible(true); }
+
+void UMRFPSMenu::RefreshRoster()
+{
+    if (!RosterText) return;
+    if (!MRFPSRoster::CanView(Controller())) {
+        LastRosterText.Empty(); RosterText->SetText(FText::GetEmpty()); return;
+    }
+    const auto Rows=MRFPSRoster::Collect(Controller());
+    FString Lines;
+    for (const auto& Row:Rows) {
+        if (!Lines.IsEmpty()) Lines+=TEXT("\n");
+        const TCHAR* Role=Row.Role==MRFPSRosterPolicy::ERole::Admin?TEXT("管理"):
+            Row.Role==MRFPSRosterPolicy::ERole::Inspector?TEXT("観戦"):
+            Row.Role==MRFPSRosterPolicy::ERole::Bot?TEXT("BOT"):TEXT("プレイヤー");
+        const FString Slot=Row.Slot>=0?FString::Printf(TEXT(" P%d"),Row.Slot+1):FString();
+        const FString Ping=Row.Ping>=0?FString::Printf(TEXT("%d ms"),Row.Ping):TEXT("不明");
+        const FString Name=Row.Role==MRFPSRosterPolicy::ERole::Bot?FString():Row.Name;
+        Lines+=FString::Printf(TEXT("%s%s  %s%s  #%d  %s"),Role,*Slot,*Name,Row.Self?TEXT("（自分）"):TEXT(""),Row.Id,*Ping);
+    }
+    if (Lines.IsEmpty()) Lines=TEXT("参加者なし");
+    if (Lines!=LastRosterText) { LastRosterText=Lines; RosterText->SetText(FText::FromString(Lines)); }
+}
+
 FReply UMRFPSMenu::NativeOnPreviewKeyDown(const FGeometry& Geometry, const FKeyEvent& Key)
 {
+    if (Key.IsControlDown() && Key.GetKey()==EKeys::One && SetRosterVisible(false)) return FReply::Handled();
+    if (Key.IsControlDown() && Key.GetKey()==EKeys::Two && SetRosterVisible(true)) return FReply::Handled();
     if (Key.GetKey() == EKeys::F1 || Key.GetKey() == EKeys::Escape)
     {
         if (Key.GetKey() == EKeys::Escape) if (auto* PC = Controller()) PC->StopHaptics();
@@ -319,6 +378,11 @@ void UMRFPSMenu::NativeTick(const FGeometry& Geometry, float DeltaTime)
     {
         RefreshElapsed = 0;
         RefreshStatus();
+    }
+    if (bRosterVisible && (RosterElapsed+=DeltaTime)>=.5f)
+    {
+        RosterElapsed=0;
+        RefreshRoster();
     }
 }
 
@@ -444,7 +508,17 @@ void UMRFPSMenu::AddressChanged(const FText& Value)
 
 void UMRFPSMenu::RefreshStatus()
 {
-    auto* PC=Controller();if(!PC||!RoleText) return;
+    auto* PC=Controller();
+    if (!PC || !RoleText) {
+        if (bRosterVisible) SetRosterVisible(false);
+        LastRosterText.Empty(); if (RosterText) RosterText->SetText(FText::GetEmpty());
+        if (RosterTabButton) RosterTabButton->SetVisibility(ESlateVisibility::Collapsed);
+        return;
+    }
+    const bool CanViewRoster=MRFPSRoster::CanView(PC);
+    if (RosterTabButton) RosterTabButton->SetVisibility(CanViewRoster?ESlateVisibility::Visible:ESlateVisibility::Collapsed);
+    if (!CanViewRoster && bRosterVisible) SetRosterVisible(false);
+    if (!CanViewRoster && !LastRosterText.IsEmpty()) { LastRosterText.Empty(); if (RosterText) RosterText->SetText(FText::GetEmpty()); }
     auto* Pawn=PC->GetPawn<AMRFPSPawn>();const auto* Player=PC->GetPlayerState<AMRFPSPlayerState>();
     const auto* State=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
     const bool Inspector=PC->IsInspector();

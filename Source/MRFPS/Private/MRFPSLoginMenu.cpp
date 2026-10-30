@@ -274,7 +274,7 @@ void UMRFPSLoginMenu::NativeTick(const FGeometry& Geometry,float DeltaTime)
             // Pose and focus continuity during a suspended frame are unknown.
             // Do not replay those edges against the current widget position.
             Interaction->CancelPointer(); PointerInput.CancelActive(); PointerInput.Disarm();
-            PendingPointerEvents.Clear(); LastPointerTick=Now; bGloveCursorInitialized=false; PreviousPointerHit.Reset();
+            PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=Now; bGloveCursorInitialized=false; PreviousPointerHit.Reset();
             UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_GAP cancelled=1"));
         }
         UpdateXRPointer(DeltaTime);
@@ -309,7 +309,7 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     if (!PointerInput.Focused || (UsesVRFocus && !HasVRFocus)) Source=MRFPSLoginPointer::ESource::None;
     if (!bPointerPoseReported || Source!=PointerInput.Source) {
         if (Source!=PointerInput.Source) {
-            Interaction->CancelPointer(); PointerInput.CancelActive(); PendingPointerEvents.Clear(); LastPointerTick=FPlatformTime::Seconds();
+            Interaction->CancelPointer(); PointerInput.CancelActive(); PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=FPlatformTime::Seconds();
             bGloveCursorInitialized=false; PreviousPointerHit.Reset(); bInputAnnounced=false;
         }
         PointerInput.SetSource(Source);
@@ -327,11 +327,14 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
         Interaction->SetWorldLocationAndRotation(Muzzle.GetLocation(),Muzzle.GetRotation());
         Interaction->RefreshPointer();
     } else if (Pawn) Pawn->SetLoginWeaponPose(nullptr);
-    const auto CurrentHit=Source!=MRFPSLoginPointer::ESource::None?Interaction->HoveredTarget():TWeakPtr<SWidget>();
-    const bool CancelForHit=MRFPSLoginPointer::CancelForHitChange(PointerInput.Sent,PreviousPointerHit.Pin().Get(),CurrentHit.Pin().Get());
     const FHitResult RawHit=Interaction->GetLastHitResult();
     const bool RawWidget=Source!=MRFPSLoginPointer::ESource::None && RawHit.bBlockingHit && RawHit.GetComponent()==WorldWidget.Get();
+    const auto CurrentHit=RawWidget && Interaction->IsOverHitTestVisibleWidget()?Interaction->HoveredTarget():TWeakPtr<SWidget>();
     const bool RawSlate=RawWidget && Interaction->IsOverHitTestVisibleWidget() && CurrentHit.IsValid();
+    const auto PreviousTarget=PreviousPointerHit.Pin();
+    const auto CurrentTarget=CurrentHit.Pin();
+    const bool TargetChanged=PreviousTarget!=CurrentTarget;
+    const bool CancelForHit=MRFPSLoginPointer::CancelForHitChange(PointerInput.Sent,PreviousTarget.Get(),CurrentTarget.Get());
     if (!bRawTraceReported || RawWidget!=bRawTraceWidget || RawSlate!=bRawTraceSlate) {
         bRawTraceReported=true; bRawTraceWidget=RawWidget; bRawTraceSlate=RawSlate;
         UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_RAW widget=%d slate=%d"),RawWidget,RawSlate);
@@ -341,7 +344,11 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
         // Only a held press must be cancelled on target changes. Neutral input
         // remains armed while the ray moves onto the next key.
         Interaction->CancelPointer(); PointerInput.CancelActive(); PointerInput.ClearArms();
-        PendingPointerEvents.Clear(); LastPointerTick=FPlatformTime::Seconds(); bGloveCursorInitialized=false;
+        // Preserve raw button up/down, even when its UI action must be dropped.
+        for (std::size_t I=0;I<PendingPointerEvents.Count;++I)
+            if (PendingPointerEvents.Events[I].Kind==MRFPSLoginPointer::EInput::Button)
+                PointerInput.SetButton(PendingPointerEvents.Events[I].Value!=0);
+        PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=FPlatformTime::Seconds(); bGloveCursorInitialized=false;
         if (Source!=MRFPSLoginPointer::ESource::None) Interaction->RefreshPointer();
     }
     // The journal retains right-hand transitions independently of gameplay's
@@ -361,8 +368,28 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
             Glove.bControllerValid,Glove.bTriggerPressed,Glove.Trigger,Glove.ControllerReceivedAt);
     const bool ControllerFresh=Glove.bControllerValid && FMath::IsFinite(Glove.Trigger);
     const bool FlexFresh=Glove.bFlexValid && Glove.FingerCurls.IsValidIndex(1) && FMath::IsFinite(Glove.FingerCurls[1]);
-    if (LastPointerTick<0) { PendingPointerEvents.Clear(); LastPointerTick=FPlatformTime::Seconds(); }
+    if (LastPointerTick<0) { PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=FPlatformTime::Seconds(); }
     const auto Queued=PendingPointerEvents; PendingPointerEvents.Clear();
+    auto QueuedTargets=MoveTemp(PendingPointerTargets);
+    const bool ButtonMismatch=!MRFPSLoginPointer::ButtonTargetsMatch(Queued,CurrentTarget.Get());
+    if (ButtonMismatch) {
+        if (PointerInput.Sent && PointerInput.Selected==MRFPSLoginPointer::EInput::Button) {
+            Interaction->CancelPointer(); PointerInput.CancelActive();
+            if (Source!=MRFPSLoginPointer::ESource::None) Interaction->RefreshPointer();
+        }
+        for (std::size_t I=0;I<Queued.Count;++I)
+            if (Queued.Events[I].Kind==MRFPSLoginPointer::EInput::Button) PointerInput.SetButton(Queued.Events[I].Value!=0);
+        PointerInput.ClearArm(MRFPSLoginPointer::EInput::Button);
+    }
+    if (TargetChanged) {
+        // OSC has no XR pose at packet receipt; never replay its old edges on
+        // a newly aimed control. Resume only after fresh neutral samples.
+        PointerInput.ClearArm(MRFPSLoginPointer::EInput::Axis);
+        PointerInput.ClearArm(MRFPSLoginPointer::EInput::GloveController);
+        PointerInput.ClearArm(MRFPSLoginPointer::EInput::GloveFlex);
+        for (std::size_t I=0;I<Queued.Count;++I)
+            if (Queued.Events[I].Kind==MRFPSLoginPointer::EInput::Axis) PointerInput.SetAxis(Queued.Events[I].Value);
+    }
     std::array<MRFPSGloveTrigger::FEvent,MRFPSGloveTrigger::FJournal::Capacity> GloveEvents;
     std::size_t GloveCount=0; bool JournalOk=true;
     if (Gloves) {
@@ -378,11 +405,16 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     TArray<MRFPSLoginPointer::FEventQueue::FEvent> Combined;
     if (!ControllerFresh || LateController) Combined.Add({MRFPSLoginPointer::EInput::GloveController,0,LastPointerTick,false,false});
     if (!FlexFresh || LateFlex) Combined.Add({MRFPSLoginPointer::EInput::GloveFlex,0,LastPointerTick,false,false});
-    for (std::size_t I=0;I<Queued.Count;++I) Combined.Add(Queued.Events[I]);
+    for (std::size_t I=0;I<Queued.Count;++I) {
+        const auto& E=Queued.Events[I];
+        if ((ButtonMismatch && E.Kind==MRFPSLoginPointer::EInput::Button) ||
+            (TargetChanged && E.Kind==MRFPSLoginPointer::EInput::Axis)) continue;
+        Combined.Add(E);
+    }
     for (std::size_t I=0;I<GloveCount;++I) {
         const auto& E=GloveEvents[I];
         const bool IsControllerEvent=E.Stream==MRFPSGloveTrigger::EStream::Controller;
-        if (E.At<LastPointerTick || (IsControllerEvent && !ControllerFresh) || (!IsControllerEvent && !FlexFresh)) continue;
+        if (TargetChanged || E.At<LastPointerTick || (IsControllerEvent && !ControllerFresh) || (!IsControllerEvent && !FlexFresh)) continue;
         Combined.Add({IsControllerEvent?MRFPSLoginPointer::EInput::GloveController:MRFPSLoginPointer::EInput::GloveFlex,
             E.Value,E.At,E.Valid,E.Button});
     }
@@ -391,7 +423,7 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
     Combined.StableSort([](const auto& A,const auto& B) { return A.At<B.At; });
     MRFPSLoginPointer::FEventQueue Events;
     if (!JournalOk || Queued.Overflow) Events.Overflow=true;
-    else for (const auto& E:Combined) Events.Push(E.Kind,E.Value,E.At,E.Valid,E.Flag);
+    else for (const auto& E:Combined) Events.Push(E.Kind,E.Value,E.At,E.Valid,E.Flag,E.Target,E.TargetCaptured);
     const double End=FPlatformTime::Seconds();
     const auto Preview=MRFPSLoginPointer::PreviewBatch(PointerInput,Events,LastPointerTick,End);
     if (!Preview.Valid) {
@@ -412,6 +444,7 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
                 UE_LOG(LogMRFPSLogin,VeryVerbose,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=%d valid=%d"),int(Event.Kind),Event.Valid);
             });
     }
+    QueuedTargets.Reset();
     LastPointerTick=End;
     if (!bOpen || !Interaction) return;
     if (!bInputAnnounced || AnnouncedInput!=PointerInput.Selected) {
@@ -468,14 +501,14 @@ void UMRFPSLoginMenu::HandleFocusLost()
 {
     if (!bOpen) return;
     if (Interaction) Interaction->CancelPointer();
-    PointerInput.CancelActive(); PointerInput.SetFocused(false); PendingPointerEvents.Clear(); LastPointerTick=-1; bGloveCursorInitialized=false; PreviousPointerHit.Reset();
+    PointerInput.CancelActive(); PointerInput.SetFocused(false); PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=-1; bGloveCursorInitialized=false; PreviousPointerHit.Reset();
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_FOCUS active=0"));
 }
 void UMRFPSLoginMenu::HandleFocusGained()
 {
     if (!bOpen) return;
     if (Interaction) Interaction->CancelPointer();
-    PointerInput.CancelActive(); PointerInput.SetFocused(true); PendingPointerEvents.Clear(); LastPointerTick=-1; bGloveCursorInitialized=false; PreviousPointerHit.Reset();
+    PointerInput.CancelActive(); PointerInput.SetFocused(true); PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); LastPointerTick=-1; bGloveCursorInitialized=false; PreviousPointerHit.Reset();
     UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_FOCUS active=1"));
 }
 void UMRFPSLoginMenu::ProcessControlFile()
@@ -528,7 +561,7 @@ void UMRFPSLoginMenu::CloseLogin()
     FCoreDelegates::ApplicationHasReactivatedDelegate.Remove(FocusGainedHandle);
     FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(BackgroundHandle);
     FCoreDelegates::ApplicationHasEnteredForegroundDelegate.Remove(ForegroundHandle);
-    if (Interaction) Interaction->CancelPointer(); PointerInput.CancelActive(); PendingPointerEvents.Clear();
+    if (Interaction) Interaction->CancelPointer(); PointerInput.CancelActive(); PendingPointerEvents.Clear(); PendingPointerTargets.Reset();
     if (auto* PC=Controller.Get()) if (auto* Pawn=PC->GetPawn<AMRFPSPawn>(); Pawn && Pawn->GetSlot()<0 && Pawn->GunVisual)
         Pawn->GunVisual->SetVisibility(false);
     if (PointerDot) { PointerDot->DestroyComponent(); PointerDot=nullptr; }
@@ -541,7 +574,27 @@ void UMRFPSLoginMenu::CloseLogin()
 void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
 {
     if (!Interaction || !bOpen) return;
-    PendingPointerEvents.Push(MRFPSLoginPointer::EInput::Button,Pressed?1.f:0.f,FPlatformTime::Seconds());
+    // Sample the actual muzzle and widget at the physical edge. The next
+    // frame must never replay an A tap onto B after the hand has moved.
+    TSharedPtr<SWidget> Target;
+    auto* PC=Controller.Get(); auto* Pawn=PC?PC->GetPawn<AMRFPSPawn>():nullptr;
+    FMRFPSWeaponPose Weapon;
+    bool UsesVRFocus=false,HasVRFocus=true;
+    UHeadMountedDisplayFunctionLibrary::GetVRFocusState(UsesVRFocus,HasVRFocus);
+    if (PointerInput.Focused && (!UsesVRFocus || HasVRFocus) && Pawn && Pawn->GetLocalWeaponPose(Weapon) &&
+        Weapon.Source==PointerInput.Source && Weapon.Source!=MRFPSLoginPointer::ESource::None) {
+        const FTransform Muzzle=MRFPSWeaponPose::Muzzle(Weapon.GripWorld);
+        Interaction->SetWorldLocationAndRotation(Muzzle.GetLocation(),Muzzle.GetRotation());
+        Interaction->RefreshPointer();
+        const auto& Hit=Interaction->GetLastHitResult();
+        if (Hit.bBlockingHit && Hit.GetComponent()==WorldWidget.Get() && Interaction->IsOverHitTestVisibleWidget())
+            Target=Interaction->HoveredTarget().Pin();
+    }
+    const std::size_t Before=PendingPointerEvents.Count;
+    PendingPointerEvents.Push(MRFPSLoginPointer::EInput::Button,Pressed?1.f:0.f,FPlatformTime::Seconds(),true,false,
+        reinterpret_cast<std::uintptr_t>(Target.Get()),true);
+    if (PendingPointerEvents.Overflow) PendingPointerTargets.Reset();
+    else if (Target && PendingPointerEvents.Count>Before) PendingPointerTargets.Add(Target);
 }
 void UMRFPSLoginMenu::SetPointerTriggerAxis(float Value)
 {

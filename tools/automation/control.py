@@ -23,7 +23,7 @@ SERIAL = re.compile(r'[A-Za-z0-9_.:-]{1,128}\Z')
 PACKAGE = 'org.mrfps.arena'
 OPERATIONS = {
     'status', 'view.set', 'multiview.set', 'reconstructed.set', 'focus.set',
-    'window.set', 'build-mode.set', 'admin.action', 'objects.list',
+    'window.set', 'build-mode.set', 'admin.action', 'objects.list', 'roster.list',
     'object.ensure', 'object.remove', 'wall.set',
     'player.calibrate', 'player.input.set', 'player.input.clear', 'player.reload', 'player.wall',
     'haptics.set', 'capture.set',

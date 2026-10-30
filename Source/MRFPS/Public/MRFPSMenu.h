@@ -7,7 +7,9 @@
 class AMRFPSPlayerController;
 class UButton;
 class UEditableTextBox;
+class UScrollBox;
 class UTextBlock;
+class UWidgetSwitcher;
 
 /** Desktop session controls. All actions go through the owning controller. */
 UCLASS()
@@ -19,6 +21,8 @@ public:
     static UMRFPSMenu* CreateFor(AMRFPSPlayerController* Controller);
 
     UFUNCTION(BlueprintCallable, Category="MRFPS") void Close();
+    bool SetRosterVisible(bool Visible);
+    bool IsRosterVisible() const { return bRosterVisible; }
 
 protected:
     virtual void NativeOnInitialized() override;
@@ -30,6 +34,7 @@ protected:
 private:
     AMRFPSPlayerController* Controller() const;
     void RefreshStatus();
+    void RefreshRoster();
     void ReleaseInput();
     void Join(bool bInspector);
     void JoinRole(const FString& Role);
@@ -48,6 +53,8 @@ private:
     UFUNCTION() void ViewPlayerTwo();
     UFUNCTION() void ViewFree();
     UFUNCTION() void AddressChanged(const FText& Text);
+    UFUNCTION() void ShowSettings();
+    UFUNCTION() void ShowRoster();
 
     UPROPERTY(Transient) TObjectPtr<UEditableTextBox> ServerBox;
     UPROPERTY(Transient) TObjectPtr<UEditableTextBox> AccessTokenBox;
@@ -63,7 +70,14 @@ private:
     UPROPERTY(Transient) TObjectPtr<UButton> PlayerOneButton;
     UPROPERTY(Transient) TObjectPtr<UButton> PlayerTwoButton;
     UPROPERTY(Transient) TObjectPtr<UButton> FreeButton;
+    UPROPERTY(Transient) TObjectPtr<UButton> RosterTabButton;
+    UPROPERTY(Transient) TObjectPtr<UWidgetSwitcher> Pages;
+    UPROPERTY(Transient) TObjectPtr<UScrollBox> MenuScroll;
+    UPROPERTY(Transient) TObjectPtr<UTextBlock> RosterText;
     FString ActionError;
+    FString LastRosterText;
     float RefreshElapsed = 0;
+    float RosterElapsed = 0;
     bool bInputCaptured = false;
+    bool bRosterVisible = false;
 };

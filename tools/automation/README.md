@@ -20,6 +20,8 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `multiview.set`, `reconstructed.set`, `focus.set`, `build-mode.set` | `{"enabled":true}` | Set tiles, reconstructed view, released mouse, or building mode |
 | `window.set` | `{"window":"player1|player2|inspector","open":true}` | Open or close one separate window |
 | `menu.set` | `{"menu":"session|admin|login","open":true}` | Open or close a UI panel; opening login while connected requests a disconnect |
+| `menu.set` | `{"menu":"session","open":true,"tab":"participants|settings"}` | Select the session-menu tab; participants requires an authenticated inspector/admin |
+| `roster.list` | `{}` | Read the authenticated inspector/admin roster; unknown, stale and bot ping is `null` |
 | `connection.set` | `{"connected":false}` | Request disconnection and the login screen; connect with `tools/client/device_login.py` and a new code |
 | `camera.set` | `{"camera":"main|inspector","position":[0,0,650],"rotation":[-30,0,0]}` | Set the free camera or the separate inspector window's camera; rotation is pitch/yaw/roll in degrees |
 | `admin.action` | `{"action":"pause", "layout_revision":1, "control_revision":1}` | `start`, `pause`, `resume`, `reset`, `confirm_floor`, `calibrate_floor`, `clear_objects`, or `set_dimensions`; the latter also takes `width_cm` and `length_cm` |
@@ -32,6 +34,8 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `player.reload`, `player.wall` | `{}` | Submit one desktop reload or deploy-wall input through the existing server RPC |
 | `haptics.set` | `{"state":"connected|armed|stopped|disconnected"}` | Submit local MoBits connection/arm/stop/disconnect; arming must be deliberate |
 | `capture.set` | `{"enabled":true}` | Request Quest view sharing or retire the current sharing session; the Quest OS consent still requires user approval |
+
+In the Windows session menu, click `参加者` or press Ctrl+2 to show the roster; click `設定` or press Ctrl+1 to return. The participants tab and `roster.list` require a connected, authenticated inspector or admin. Reported ping is the server's measured connection RTT and becomes unknown if the sample is unavailable or over five seconds old.
 
 `status` is a snapshot, so use a new operation UUID for a fresh snapshot. The layout/control revisions and expected wall shape must come from a recent result; a stale request is rejected rather than overwriting a concurrent change. For `object.ensure`, `surface` is the expected placement surface, while `origin` and the unit `direction` are the authoritative placement ray. World distances are centimetres. A matching existing object is reused; a new one uses the same placement limits as the GUI.
 

@@ -15,6 +15,7 @@ class UWidgetComponent;
 class UMRFPSLoginInteraction;
 class UStaticMeshComponent;
 class UMRFPSLoginMenu;
+class SWidget;
 
 /** An in-world keyboard key, so Quest input doesn't depend on an Android IME. */
 UCLASS()
@@ -97,6 +98,8 @@ private:
     bool bRawTraceReported=false,bRawTraceWidget=false,bRawTraceSlate=false;
     MRFPSLoginPointer::FPressState PointerInput;
     MRFPSLoginPointer::FEventQueue PendingPointerEvents;
+    // Keep sampled target identities alive until their queued edges are consumed.
+    TArray<TSharedPtr<SWidget>> PendingPointerTargets;
     TWeakPtr<SWidget> PreviousPointerHit;
     std::uint64_t GloveCursor=0;
     bool bGloveCursorInitialized=false;

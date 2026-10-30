@@ -86,28 +86,40 @@ int main()
     Gate.Observe(true,0,true,false,0); assert(!Gate.CanRearm(true,false));
     assert(!Gate.CanRearm(false,true) && Gate.CanRearm(false,false));
 
-    // The persistent game-instance gate survives replacing the login pawn.
-    // A held Quest trigger or either glove stream must be released after
-    // login; a cached neutral sample is not a post-transition observation.
+    // The game-instance gates survive replacing the login pawn. Each source
+    // independently waits for a genuine neutral after the transition.
     MRFPSFireRelease::FTransitionGate Travel;
     Travel.BeginLogin(); Travel.SetPhysical(true);
     Travel.Observe(true,.8f,10,true,true,.8f,10);
     Travel.SealForTravel();
-    assert(Travel.Locked && !Travel.TryRearm(false));
+    assert(!Travel.CanPhysical() && !Travel.CanFlex() && !Travel.CanController());
+    Travel.SetPhysical(true); assert(!Travel.CanPhysical()); // held through ClientTravel
     Travel.SetPhysical(false);
     Travel.Observe(false,0,11,false,false,0,11);
-    assert(!Travel.TryRearm(false)); // stale does not count as release
+    assert(Travel.CanPhysical() && !Travel.CanFlex() && !Travel.CanController()); // stale only blocks its own source
+    Travel.SetPhysical(true); assert(Travel.CanPhysical()); // independent physical shot
     Travel.Observe(true,0,10,true,false,0,10);
-    assert(!Travel.TryRearm(false)); // replayed cached samples do not count
+    assert(!Travel.CanFlex() && !Travel.CanController()); // cached samples do not count
     Travel.Observe(true,0,11,true,true,.8f,11);
-    assert(!Travel.TryRearm(false));
+    assert(Travel.CanFlex() && !Travel.CanController());
     Travel.Observe(true,0,12,true,false,0,12);
-    assert(!Travel.TryRearm(true)); // automation is independently held
-    assert(Travel.TryRearm(false) && !Travel.Locked);
+    assert(Travel.CanFlex() && Travel.CanController());
+    Travel.SetAutomation(true); assert(!Travel.CanAutomation());
+    Travel.SetAutomation(false); assert(Travel.CanAutomation());
+    Travel.Observe(false,0,13,false,false,0,13);
+    assert(!Travel.CanFlex() && !Travel.CanController() && Travel.CanPhysical());
+    Travel.Observe(true,.8f,14,true,true,.8f,14);
+    assert(!Travel.CanFlex() && !Travel.CanController()); // reconnect while held
+    Travel.Observe(true,0,15,true,false,0,15);
+    assert(Travel.CanFlex() && Travel.CanController());
     MRFPSFireRelease::FTransitionGate NoGlove;
     NoGlove.BeginLogin(); NoGlove.SetPhysical(true); NoGlove.SealForTravel();
-    assert(!NoGlove.TryRearm(false));
-    NoGlove.SetPhysical(false); assert(NoGlove.TryRearm(false));
+    assert(!NoGlove.CanPhysical() && !NoGlove.CanFlex() && !NoGlove.CanController());
+    NoGlove.SetPhysical(false); assert(NoGlove.CanPhysical());
+    NoGlove.Observe(true,.8f,20,true,true,.8f,20);
+    assert(!NoGlove.CanFlex() && !NoGlove.CanController()); // first appearance held
+    NoGlove.Observe(true,0,21,true,false,0,21);
+    assert(NoGlove.CanFlex() && NoGlove.CanController() && NoGlove.CanPhysical());
 
     FEventQueue Q; for(int I=0;I<1000;++I) Q.Push(EInput::Axis,0,10.+I*.001);
     assert(!Q.Overflow && Q.Count==1 && Q.Events[0].At==10.);
@@ -139,6 +151,19 @@ int main()
     int TargetA=0,TargetB=0;
     assert(SameHit(&TargetA,&TargetA));
     assert(!SameHit(&TargetA,&TargetB) && !SameHit(nullptr,&TargetA)); // never replay A's edge on B
+    FEventQueue Targeted;
+    Targeted.Push(EInput::Button,1,1,true,false,reinterpret_cast<std::uintptr_t>(&TargetA),true);
+    Targeted.Push(EInput::Button,0,1.01,true,false,reinterpret_cast<std::uintptr_t>(&TargetA),true);
+    assert(ButtonTargetsMatch(Targeted,&TargetA));
+    assert(!ButtonTargetsMatch(Targeted,&TargetB)); // tap A, move to B before frame
+    assert(!ButtonTargetsMatch(Targeted,nullptr));
+    Targeted.Clear();
+    Targeted.Push(EInput::Button,1,2,true,false,reinterpret_cast<std::uintptr_t>(&TargetB),true);
+    assert(ButtonTargetsMatch(Targeted,&TargetB)); // press immediately after entering B
+    Targeted.Push(EInput::Button,0,2.01,true,false,reinterpret_cast<std::uintptr_t>(&TargetA),true);
+    assert(!ButtonTargetsMatch(Targeted,&TargetB)); // release moved away from press
+    Targeted.Clear(); Targeted.Push(EInput::Button,1,3,true,false,0,true);
+    assert(!ButtonTargetsMatch(Targeted,&TargetB)); // no hit at input time
     FPressState Entry; Entry.SetSource(ESource::AimGrip); Entry.Step(.1);
     assert(!CancelForHitChange(Entry.Sent,nullptr,&TargetA));
     Entry.SetButton(true); assert(Entry.Next()==EAction::Press);

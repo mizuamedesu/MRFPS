@@ -496,7 +496,7 @@ void AMRFPSPawn::SetFiring(bool bPressed)
 {
     bPhysicalFireDown=bPressed;
     const auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance());
-    bFiring=bPressed && !bRequireFireRelease && !(IsLocallyControlled() && GI && GI->FireTransition.Locked);
+    bFiring=bPressed && !bRequireFireRelease && !(IsLocallyControlled() && GI && !GI->FireTransition.CanPhysical());
 }
 void AMRFPSPawn::DesktopWall() { if (!IsXR()) ServerDesktopWall(); }
 void AMRFPSPawn::ServerDesktopWall_Implementation()
@@ -634,9 +634,8 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             UE_LOG(LogMRFPS,Display,TEXT("MRFPS_GLOVE_LOCAL hand=right fresh=%d tracked_pose=%d source=%s"),Next.RightFingers.bValid,Next.bRightTracked,bRightPalmPose?TEXT("palm"):TEXT("controller_or_none"));
     }
     if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) InvalidateCalibration();
-    // The login pointer may use the same trigger or fingers as combat. While
-    // it is open, suppress firing and require all fire inputs to be released
-    // before gameplay can fire again after the menu closes.
+    // The login pointer shares combat inputs. The game-instance guard keeps
+    // each source blocked independently until that source returns to neutral.
     const bool LoginOpen=LocalController && LocalController->DeviceLogin && LocalController->DeviceLogin->IsOpen();
     auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance());
     if (GI && IsXR()) {
@@ -644,18 +643,20 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
         GI->FireTransition.Observe(RightGlove.bFlexValid && RightGlove.FingerCurls.IsValidIndex(1),IndexCurl,RightGlove.FlexReceivedAt,
             RightGlove.bControllerValid,bGloveTrigger,TriggerAnalog,RightGlove.ControllerReceivedAt);
     }
-    if (GI && !LoginOpen && GI->FireTransition.Locked) GI->FireTransition.TryRearm(AutomationFire);
-    const bool TransitionLocked=GI && GI->FireTransition.Locked;
-    if (LoginOpen || bRequireFireRelease) {
+    if (GI) GI->FireTransition.SetAutomation(AutomationFire);
+    const bool FlexAllowed=!GI || GI->FireTransition.CanFlex();
+    const bool GloveControllerAllowed=!GI || GI->FireTransition.CanController();
+    const bool AutomationAllowed=!GI || GI->FireTransition.CanAutomation();
+    if (bRequireFireRelease) {
         const auto& RightGlove=GloveFrames[1];
         GloveFireNeutral.Observe(RightGlove.bFlexValid && RightGlove.FingerCurls.IsValidIndex(1),IndexCurl,
             RightGlove.bControllerValid,bGloveTrigger,TriggerAnalog);
     }
-    if (LoginOpen || TransitionLocked) { bFiring=false; bFingerTriggerDown=false; bRequireFireRelease=true; }
+    if (LoginOpen) { bFiring=false; bFingerTriggerDown=false; if (!GI) bRequireFireRelease=true; }
     else {
         if (bRequireFireRelease && GloveFireNeutral.CanRearm(bPhysicalFireDown,AutomationFire)) bRequireFireRelease=false;
-        if (!bRequireFireRelease && (IndexCurl>.55f || TriggerAnalog>.55f || bGloveTrigger)) bFingerTriggerDown=true;
-        if (IndexCurl<.30f && TriggerAnalog<.30f && !bGloveTrigger) bFingerTriggerDown=false;
+        if (!bRequireFireRelease && ((FlexAllowed && IndexCurl>.55f) || (GloveControllerAllowed && (TriggerAnalog>.55f || bGloveTrigger)))) bFingerTriggerDown=true;
+        if ((!FlexAllowed || IndexCurl<.30f) && (!GloveControllerAllowed || (TriggerAnalog<.30f && !bGloveTrigger))) bFingerTriggerDown=false;
     }
     Next.Sequence = Pose.Sequence + 1;
     // Client pose remains responsive; only the server can change combat state.
@@ -665,7 +666,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     if (PoseAccumulator >= 1.f/30.f) { PoseAccumulator=0; ServerPose(Next); }
     const double Now=GetWorld()->GetTimeSeconds();
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
-    if (!LoginOpen && !TransitionLocked && !bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || AutomationFire || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
+    if (!LoginOpen && !bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || (AutomationAllowed && AutomationFire) || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
 }
 
 void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
