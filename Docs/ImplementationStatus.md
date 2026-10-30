@@ -14,7 +14,7 @@
 | 固定床・管理 | 既定X4.5m/Y7m。明示校正時だけ二人のXY中点・方向を反映し、床高さ・サイズ・追跡縮尺を維持。protocol4の実UIで壁の配置・他クライアント反映、幅変更と復元、Esc解放を確認 |
 | 実測ジオメトリ | 動的な表面送受信、鮮度・校正世代管理、サーバーの三角形弾遮蔽を実装。クライアントの足接地問い合わせも追加。8自動試験が合格。実障害物を使う確認は未完了 |
 | Mac | OpenXR依存の分離、MacのEnhancedInput依存、共通映像・認証経路、ビルド・起動スクリプトとメモリ監視を追加。Bash構文と軽量テスト10件合格。Mac実機でのビルド・表示は未確認 |
-| MoBits | Android向け公式アプリをQuest 3にビルド・導入し、起動とBluetooth権限を確認。機器の接続、Quest上のMRFPSとのアプリ間連携、実出力は未確認。PC上では実GUI SDK通信とRust SDK・UEの障害復旧結合試験が合格 |
+| MoBits | Quest用の単体Bluetooth SDKとゲーム内セットアップを組み込み。機器接続と装着者への物理出力は未確認。過去のPCアプリ経由の記録は下記参照 |
 
 最新の作業runは`Saved/Validation/MannyBuild-20261028-1745/`。protocol4の配布・ネットワーク・画面証拠は`Saved/Validation/AdminVideoRecovery-20261028-1518/`にあります。秘密鍵、JWT、部屋の画像はGitに含めません。実測した範囲と未検証の実機条件を分けて記録します。
 
@@ -77,7 +77,7 @@ generic `[Android]` profileの `r.Android.DisableVulkanSupport=1` を修正し�
 
 このrunはsleepを含み、継続session、装着者が見たMR alignment、実追跡・gesture・physical hapticsは未検証です。単一Quest playerのcold admissionから2人の実空間試合は推定しません。
 
-## MoBits実appとSDK通信
+## 過去のMoBitsアプリ経由のSDK通信
 
 旧rmeta破損を避けるfresh target・jobs1の本体再生成は `Saved/Validation/MoBitsBuild-20261028-032811/report.json` で **03:31:45Z、Exit0**です。`Saved/Validation/MoBitsSDK-20261028-033615/sdk-report.json` は実appに対するSDK診断の合格を記録しています。control/motion両HELLO、GET_DEVICES、65 motion frames、22 PONG、STOP応答を確認しました。
 
@@ -106,7 +106,7 @@ devices/connected_devicesは0、ARM0、PLAY0、physical_feedback_tested=falseで
 | Quest実表示の実写付きstream（追加要望） | capture・transport・Windows UE表示を追加作業中 | 実Quest表示と同時の実写／仮想物／HUDをinspectorで照合し、遅延・切替・認証を確認 | 未検証。既存3D head-view再描画や開発者overlay付きscreencapでは代替しない |
 | 3D情報投影 | 実poseの頭・体・手・銃・盾・情報ラベル | 描画と実プレイヤーposeの照合 | 描画確認待ち |
 | 約10m四方 | cm単位の床座標と1000cm境界、手動原点/yaw校正 | 実空間の床・向き・境界を測定して照合 | 実機校正確認待ち |
-| 発射/被弾MoBits | 公式SDK、アプリpreset、所有者event | SDK接続・receiptと、装着者による実際の発射/被弾フィードバック | 本体／host SDK診断とQuest native SDK両HELLO/Connected合格。devices0/ARM0/PLAY0、Quest motion frame数未測定、物理出力・UEイベント連動は未確認 |
+| 発射/被弾MoBits | Quest単体SDK、本人による校正と波形確認、所有者event | 端末への接続と物理出力 | Quest単体での実機接続・物理出力は未確認 |
 | Claude Code / Blender（追加指示） | Claude Opus 5.5 / xhighのgenerator、Blender5.2、6mesh・blend・FBX/GLB・board | 実manifest、render、UE再importとゲーム表示 | v2実生成5256tris・0errors/0warnings、head球内・board漏れなし。旧5meshの計測値は一致するがhash不一致で完全同一性は未証明。全6FBXのUE再import・寸法照合・Setup合格、ゲーム表示待ち |
 
 ## 確認できた前提

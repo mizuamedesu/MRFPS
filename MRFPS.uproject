@@ -4,6 +4,7 @@
   "EngineAssociation": "5.8",
   "Category": "Games",
   "Description": "Networked 1v1 mixed reality arena and independent multi-view inspectors.",
+  "AdditionalPluginDirectories": [".local/mobits-sdk/Plugins"],
   "Modules": [
     { "Name": "MRFPS", "Type": "Runtime", "LoadingPhase": "Default" },
     { "Name": "MRFPSEditor", "Type": "Editor", "LoadingPhase": "Default" }

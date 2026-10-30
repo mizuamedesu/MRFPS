@@ -19,6 +19,7 @@ build="$engine/Engine/Build/BatchFiles/Mac/Build.sh"
 uat="$engine/Engine/Build/BatchFiles/RunUAT.sh"
 [[ -x "$build" ]] || { echo 'UE_ROOTのMac Build.shを実行できません。' >&2; exit 2; }
 [[ "$target" != Client || -x "$uat" ]] || { echo 'UE_ROOTのRunUAT.shを実行できません。' >&2; exit 2; }
+python3 "$root/tools/mobits/ensure_sdk.py"
 export DOTNET_PROCESSOR_COUNT=2 DOTNET_GCHeapHardLimit=0x80000000 MSBUILDDISABLENODEREUSE=1
 project="$root/MRFPS.uproject"
 guard=(python3 "$root/tools/dev/mac_resource_guard.py")

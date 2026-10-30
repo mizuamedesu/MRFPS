@@ -13,6 +13,11 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MRFPS.Tools.psm1') -Force
 $root = Get-MRFPSRoot
 $engine = Resolve-MRFPSEngine $EngineRoot
+if (-not $DryRun) {
+    $sdkPython = Join-Path $engine 'Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
+    & $sdkPython (Join-Path $root 'tools\mobits\ensure_sdk.py')
+    if ($LASTEXITCODE -ne 0) { throw 'MoBits SDK setup failed. Check access to the private SDK repository.' }
+}
 $project = Join-Path $root 'MRFPS.uproject'
 if (-not (Test-Path -LiteralPath $project)) { throw "Missing project: $project" }
 if (-not $ArchiveDirectory) { $ArchiveDirectory = Join-Path $root 'Artifacts\Packages' }
@@ -97,12 +102,15 @@ try {
             foreach ($path in @((Join-Path $ndk 'source.properties'), (Join-Path $sdk ('build-tools\' + $required.'build-tools' + '\aapt2.exe')), (Join-Path $sdk ('platforms\' + $required.platforms + '\android.jar')))) {
                 if (-not (Test-Path -LiteralPath $path)) { throw "Missing Android requirement: $path. Run Scripts/Initialize-Android.ps1." }
             }
-            foreach ($name in @('ANDROID_HOME','ANDROID_SDK_ROOT','NDKROOT','NDK_ROOT','JAVA_HOME')) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+            foreach ($name in @('ANDROID_HOME','ANDROID_SDK_ROOT','NDKROOT','NDK_ROOT','JAVA_HOME','GRADLE_USER_HOME')) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
             $env:ANDROID_HOME = $sdk
             $env:ANDROID_SDK_ROOT = $sdk
             $env:NDKROOT = $ndk
             $env:NDK_ROOT = $ndk
             $env:JAVA_HOME = $java
+            # Keep Kotlin 2.2 dex transforms separate from the older UE 5.8
+            # toolchain's shared Gradle cache. This is scoped to this build.
+            $env:GRADLE_USER_HOME = Join-Path $root '.local\gradle-mrfps-mobits'
             # Keep the editor/tools/Android dependency graphs in separate UBT
             # processes, as for LinuxServer. MaxParallelActions alone does not
             # bound the memory of a combined four-target UAT invocation.

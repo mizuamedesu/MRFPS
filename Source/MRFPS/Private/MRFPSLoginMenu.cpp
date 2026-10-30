@@ -3,6 +3,7 @@
 #include "MRFPSLoginInteraction.h"
 #include "MRFPSLoginWidgetComponent.h"
 #include "MRFPSRetryAfter.h"
+#include "MRFPSMoBitsSetup.h"
 
 #include "MRFPSGame.h"
 #include "MRFPSAuthClientSubsystem.h"
@@ -209,6 +210,12 @@ void UMRFPSLoginMenu::NativeOnInitialized()
     AddressPage->AddChild(AddressBox); AddSpace(WidgetTree,AddressPage,8);
     auto* NextButton=Button(WidgetTree,TEXT("ServerNext"),TEXT("次へ"),Blue);
     NextButton->OnClicked.AddDynamic(this,&UMRFPSLoginMenu::Next); AddressPage->AddChild(NextButton);
+    auto* MoBitsButton=Button(WidgetTree,TEXT("MoBitsSetup"),TEXT("MoBits 設定"),FLinearColor(.058f,.092f,.145f,1));
+    MoBitsButton->OnClicked.AddDynamic(this,&UMRFPSLoginMenu::ShowMoBits);
+    AddressPage->AddChild(MoBitsButton);
+#if !PLATFORM_ANDROID
+    MoBitsButton->SetVisibility(ESlateVisibility::Collapsed);
+#endif
     AddSpace(WidgetTree,AddressPage,8);
     // Includes every character accepted by the endpoint validator; the full
     // keyboard also works when Quest's native virtual keyboard is unavailable.
@@ -242,6 +249,8 @@ void UMRFPSLoginMenu::NativeOnInitialized()
     for (auto* ButtonValue:{BackButton,LoginButton}) { auto* RowSlot=LoginRow->AddChildToHorizontalBox(ButtonValue); RowSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill)); RowSlot->SetPadding(FMargin(2)); }
     TrustButton=Button(WidgetTree,TEXT("ResetIssuerTrust"),TEXT("保存済みの公開鍵を解除"),FLinearColor(.31f,.04f,.065f,1));
     TrustButton->OnClicked.AddDynamic(this,&UMRFPSLoginMenu::ResetTrust); LoginPage->AddChild(TrustButton);
+    MoBitsPage=WidgetTree->ConstructWidget<UVerticalBox>(); Body->AddChild(MoBitsPage);
+    MoBitsSetup=NewObject<UMRFPSMoBitsSetup>(this); MoBitsSetup->Build(this,WidgetTree,MoBitsPage);
     TrustButton->SetVisibility(ESlateVisibility::Collapsed); SetStage(false);
 }
 
@@ -363,6 +372,7 @@ void UMRFPSLoginMenu::TickControlFile()
     const double Now=FPlatformTime::Seconds();
     if (Now<NextControlCheck) return;
     NextControlCheck=Now+.5;
+    if (bMoBitsPage && MoBitsSetup) MoBitsSetup->Refresh();
     ProcessControlFile();
 #endif
 }
@@ -680,11 +690,23 @@ void UMRFPSLoginMenu::SetStage(bool Login)
     if (auto* PC=Controller.Get()) if (auto* GI=Cast<UMRFPSGameInstance>(PC->GetGameInstance()))
         PointerInput.SetButton(GI->FireTransition.PhysicalDown);
     PendingPointerEvents.Clear(); PendingPointerTargets.Reset(); PreviousPointerHit.Reset();
-    bLoginPage=Login;
+    bLoginPage=Login; bMoBitsPage=false;
+    if (MoBitsPage) MoBitsPage->SetVisibility(ESlateVisibility::Collapsed);
     if (AddressPage) AddressPage->SetVisibility(Login?ESlateVisibility::Collapsed:ESlateVisibility::Visible);
     if (LoginPage) LoginPage->SetVisibility(Login?ESlateVisibility::Visible:ESlateVisibility::Collapsed);
     if (Heading) Heading->SetText(FText::FromString(Login?TEXT("デバイスログイン"):TEXT("サーバー設定")));
     SetStatus(Login?TEXT("管理パネルの6桁コードを入力"):TEXT("接続先を確認してください"));
+}
+void UMRFPSLoginMenu::ShowMoBits()
+{
+    if (!bOpen || bClosing || bExchanging || !bVR || !PLATFORM_ANDROID) return;
+    SetStage(false); bMoBitsPage=true;
+    if (AddressPage) AddressPage->SetVisibility(ESlateVisibility::Collapsed);
+    if (LoginPage) LoginPage->SetVisibility(ESlateVisibility::Collapsed);
+    if (MoBitsPage) MoBitsPage->SetVisibility(ESlateVisibility::Visible);
+    if (Heading) Heading->SetText(FText::FromString(TEXT("MoBits 設定")));
+    SetStatus(TEXT("Quest の Bluetooth で直接接続"));
+    if (MoBitsSetup) MoBitsSetup->Refresh();
 }
 bool UMRFPSLoginMenu::ReadAddress(FString& Out) const
 {

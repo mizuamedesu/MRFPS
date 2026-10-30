@@ -23,6 +23,7 @@
 #include "Serialization/JsonWriter.h"
 #include "MRFPSAuthClientSubsystem.h"
 #include "MRFPSHapticsComponent.h"
+#include "MoBitsQuestStandaloneComponent.h"
 #include "MRFPSIpConnection.h"
 #if !UE_SERVER
 #include "MRFPSViewCaptureSubsystem.h"
@@ -351,6 +352,22 @@ void AMRFPSPlayerController::TickAutomation()
             }
             if(const auto* Fighter=GetPawn<AMRFPSPawn>(); Fighter && Fighter->Haptics) {
                 Data->SetNumberField(TEXT("haptics_connection"),int32(Fighter->Haptics->GetConnectionState())); Data->SetBoolField(TEXT("haptics_armed"),Fighter->Haptics->IsHapticsArmed());
+                if (Fighter->QuestHaptics) {
+                    const auto State=Fighter->QuestHaptics->GetStatus();
+                    Data->SetBoolField(TEXT("haptics_armed"),State.Phase==TEXT("armed"));
+                    Data->SetStringField(TEXT("quest_mobits_phase"),State.Phase);
+                    Data->SetNumberField(TEXT("quest_mobits_code"),State.Code);
+                    Data->SetBoolField(TEXT("quest_mobits_has_session"),State.bHasSession);
+                    Data->SetNumberField(TEXT("quest_mobits_stop_unconfirmed"),State.StopUnconfirmedMask);
+                    TArray<TSharedPtr<FJsonValue>> Devices;
+                    for (const auto& Device:State.Devices) {
+                        auto Row=MakeShared<FJsonObject>(); Row->SetStringField(TEXT("id"),Device.Id);
+                        Row->SetNumberField(TEXT("model"),Device.Model); Row->SetBoolField(TEXT("connected"),Device.bConnected);
+                        Row->SetBoolField(TEXT("paired"),Device.bPaired); Row->SetBoolField(TEXT("pairing"),Device.bPairing);
+                        Devices.Add(MakeShared<FJsonValueObject>(Row));
+                    }
+                    Data->SetArrayField(TEXT("quest_mobits_devices"),Devices);
+                }
             }
             if(GS) { Data->SetNumberField(TEXT("phase"),int32(GS->Phase)); Data->SetBoolField(TEXT("paused"),GS->bCombatPaused);
                 Data->SetBoolField(TEXT("solo_bot"),GS->bSoloBotSession); Data->SetBoolField(TEXT("solo_geometry_ready"),GS->bSoloGeometryReady);
@@ -471,6 +488,15 @@ void AMRFPSPlayerController::TickAutomation()
                 if(!Already) { if(Open) OpenDeviceLogin(); else if(DeviceLogin) DeviceLogin->CloseLogin(); }
 #endif
                 if((DeviceLogin&&DeviceLogin->IsOpen())!=Open) { Ok=false; Code=TEXT("MENU_UNAVAILABLE"); }
+            } else if(Menu==TEXT("mobits")) {
+#if PLATFORM_ANDROID
+                const bool Exists=DeviceLogin && DeviceLogin->IsMoBitsOpen(); Already=Exists==Open;
+                if (!Already && Open) { SetQuestDeviceLoginVisible(true); if (DeviceLogin) DeviceLogin->ShowMoBits(); }
+                else if (!Already && DeviceLogin) DeviceLogin->CloseLogin();
+                if ((DeviceLogin && DeviceLogin->IsMoBitsOpen())!=Open) { Ok=false; Code=TEXT("MENU_UNAVAILABLE"); }
+#else
+                Ok=false; Code=TEXT("MENU_UNAVAILABLE");
+#endif
             } else { Ok=false; Code=TEXT("INVALID_MENU"); }
         } else if(Operation==TEXT("connection.set")) {
             bool Connected=false;
@@ -538,6 +564,14 @@ void AMRFPSPlayerController::TickAutomation()
         } else if(Operation==TEXT("haptics.set")) {
             FString State; auto* Fighter=GetPawn<AMRFPSPawn>(); auto* Haptics=Fighter?Fighter->Haptics.Get():nullptr;
             if(IsInspector()||!Haptics||!Params->TryGetStringField(TEXT("state"),State)) { Ok=false; Code=TEXT("HAPTICS_UNAVAILABLE"); }
+            else if (Fighter->QuestHaptics) {
+                if (State==TEXT("stopped")) { Fighter->QuestHaptics->StopAll(); Submitted=true; Code=TEXT("HAPTICS_STOP_SUBMITTED"); }
+                else if (State==TEXT("disconnected")) {
+                    if (!Fighter->QuestHaptics->GetStatus().bHasSession) Already=true;
+                    else if (Fighter->QuestHaptics->CloseSession()) { Submitted=true; Code=TEXT("HAPTICS_DISCONNECT_SUBMITTED"); }
+                    else { Ok=false; Code=TEXT("HAPTICS_DISCONNECT_FAILED"); }
+                } else { Ok=false; Code=TEXT("USE_MOBITS_SETUP"); }
+            }
             else if(State==TEXT("connected")) {
                 if(Haptics->GetConnectionState()==EMoBitsConnectionState::Connected) Already=true;
                 else if(Haptics->GetConnectionState()==EMoBitsConnectionState::Connecting) { Submitted=true; Code=TEXT("HAPTICS_CONNECTING"); }

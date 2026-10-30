@@ -40,4 +40,4 @@ NullRHI通信テストはpose・状態・視点変更要求の伝播を検証し
 
 発射・ダメージ・復活はauthorityから所有者へのClient RPCで通知し、所有者だけがMoBitsへ送信します。spectator pawnにMoBits componentはありません。ゲームイベントでARMしません。手動ARM、STOP、アプリ側校正、認証・heartbeatは公式SDKに従います。デスクトップ／smokeでは自動接続を無効にします。
 
-QuestはPC上のMoBitsアプリへ、ADB reverseしたloopback WebSocketで接続します。認証ファイルは端末のアプリ固有領域へ転送し、サーバーやリポジトリには保存しません。
+QuestはMoBits SDKのスタンドアローン実装をゲームに組み込み、内蔵Bluetoothで左右の機器に接続します。機器登録と校正はゲーム内で行い、別アプリ・PC・ADB中継は不要です。

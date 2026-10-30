@@ -20,7 +20,7 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `view.set` | `{"view":"free|player1|player2"}` | Select a spectator view |
 | `multiview.set`, `reconstructed.set`, `focus.set`, `build-mode.set` | `{"enabled":true}` | Set tiles, reconstructed view, released mouse, or building mode |
 | `window.set` | `{"window":"player1|player2|inspector","open":true}` | Open or close one separate window |
-| `menu.set` | `{"menu":"session|admin|login","open":true}` | Open or close a UI panel; Quest keeps its connection, while desktop opening login requests a disconnect |
+| `menu.set` | `{"menu":"session|admin|login|mobits","open":true}` | Open or close a UI panel; Quest keeps its connection, while desktop opening login requests a disconnect |
 | `menu.set` | `{"menu":"session","open":true,"tab":"participants|settings"}` | Select the session-menu tab; participants requires an authenticated inspector/admin |
 | `roster.list` | `{}` | Read the authenticated inspector/admin roster; unknown, stale and bot ping is `null` |
 | `connection.set` | `{"connected":false}` | Request disconnection and the login screen; connect with `tools/client/device_login.py` and a new code |
@@ -34,7 +34,7 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `player.input.set` | `{"fire":false,"shield":false,"move":[1,0],"look_degrees_per_second":[0,0],"duration_seconds":0.5}` | Hold the specified desktop inputs for 0.05–1 second |
 | `player.input.clear` | `{}` | Immediately clear the automation input lease |
 | `player.reload`, `player.wall` | `{}` | Submit a two-second desktop reload hold or deploy-wall input through the existing server RPC |
-| `haptics.set` | `{"state":"connected|armed|stopped|disconnected"}` | Submit local MoBits connection/arm/stop/disconnect; arming must be deliberate |
+| `haptics.set` | `{"state":"connected|armed|stopped|disconnected"}` | Desktop MoBits control; Quest standalone accepts `stopped` and `disconnected` only |
 | `capture.set` | `{"enabled":true}` | Request Quest view sharing or retire the current sharing session; the Quest OS consent still requires user approval |
 
 In the Windows session menu, click `参加者` or press Ctrl+2 to show the roster; click `設定` or press Ctrl+1 to return. The participants tab and `roster.list` require a connected, authenticated inspector or admin. Reported ping is the server's measured connection RTT and becomes unknown if the sample is unavailable or over five seconds old.
@@ -44,11 +44,15 @@ operation for `login` explicitly sets open or closed without leaving the current
 session, and can be repeated with a new UUID without toggling. Submitting a new
 device login starts a new connection; `connection.set` with `connected:false`
 explicitly disconnects. The right A button is held for two seconds to reload;
-after closing the panel, explicitly press the right thumbstick to request
-MoBits haptics. The request is ignored while login is open and never issued
-automatically on close. If tracking is not connected yet, the first press can
-start connection; press again once connected. Right B stop and `haptics.set`
-remain available.
+press the right thumbstick to open the Quest standalone MoBits setup. Device
+selection, calibration, preset confirmation and arming are performed by the
+wearer in the panel. Right B immediately requests STOP. `menu.set` with
+`{"menu":"mobits","open":true}` explicitly opens that page; setting `open`
+to `false` closes it. The normal `status` response reports
+`quest_mobits_phase`, `quest_mobits_code`, `quest_mobits_has_session`,
+`quest_mobits_stop_unconfirmed`, and the device list. Setup actions that emit
+stimulation or confirm the wearer's sensation are deliberately not synthesized
+by remote automation.
 
 Explicit disconnect also cancels a pending device exchange or connection. A
 repeat while return travel is scheduled reports `submitted` with

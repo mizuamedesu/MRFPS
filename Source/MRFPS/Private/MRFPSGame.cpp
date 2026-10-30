@@ -39,6 +39,7 @@
 #include "MotionControllerComponent.h"
 #include "VRNotificationsComponent.h"
 #include "MRFPSHapticsComponent.h"
+#include "MoBitsQuestStandaloneComponent.h"
 #include "MRFPSMenu.h"
 #include "MRFPSAdminPanel.h"
 #include "MRFPSVideoReceiver.h"
@@ -398,12 +399,15 @@ AMRFPSPawn::AMRFPSPawn()
     EnemyHealthBar->SetCollisionEnabled(ECollisionEnabled::NoCollision); EnemyHealthBar->SetVisibility(false);
 #endif
     Haptics = CreateDefaultSubobject<UMRFPSHapticsComponent>(TEXT("MoBits"));
+#if PLATFORM_ANDROID
+    QuestHaptics = CreateDefaultSubobject<UMoBitsQuestStandaloneComponent>(TEXT("MoBitsQuest"));
+#endif
     XRNotifications=CreateDefaultSubobject<UVRNotificationsComponent>(TEXT("XRNotifications"));
 }
 void AMRFPSPawn::BeginPlay()
 {
     // Desktop clients do not consume the one official MoBits session.
-    if (MRFPS::HasDesktopFlag()) Haptics->bAutoConnectTracking = false;
+    if (MRFPS::HasDesktopFlag() || PLATFORM_ANDROID) Haptics->bAutoConnectTracking = false;
     Super::BeginPlay(); MRFPS::Material(ShieldVisual, TEXT("Shield"));
     XRNotifications->HMDRecenteredDelegate.AddDynamic(this,&AMRFPSPawn::OnXRSpaceChanged);
     XRNotifications->XRTrackingOriginChangedDelegate.AddDynamic(this,&AMRFPSPawn::OnXRSpaceChanged);
@@ -545,6 +549,7 @@ void AMRFPSPawn::InvalidateCalibration()
     (void)MRFPSGeometryWire::AdvanceCalibrationFence(GeometryCalibrationFence,GeometryCalibrationGeneration);
     bLocalReady=false; GeometryCalibratedEpoch=0; bFiring=false; ServerCalibrate(false);
     if (Haptics) Haptics->StopHaptics();
+    if (QuestHaptics) QuestHaptics->StopAll();
 }
 void AMRFPSPawn::OnXRSpaceChanged()
 {
@@ -1152,18 +1157,17 @@ void AMRFPSPlayerController::ArmHaptics()
 }
 void AMRFPSPlayerController::QuestArmHaptics()
 {
-    // Closing the overlay never arms automatically. Require a fresh, explicit
-    // right-stick click, and keep haptics stopped while login is displayed.
-    if (!IsLocalController() || (DeviceLogin && DeviceLogin->IsOpen())) return;
-    const auto* Fighter=GetPawn<AMRFPSPawn>();
-    if (!Fighter || !Fighter->Haptics) return;
-    const bool Connected=Fighter->Haptics->GetConnectionState()==EMoBitsConnectionState::Connected;
-    ArmHaptics();
-    // This records an attempt only. The SDK's asynchronous receipt confirms
-    // an actual arm; an unavailable connection may require a second click.
-    UE_LOG(LogMRFPS,Display,TEXT("MRFPS_QUEST_HAPTICS_ARM attempted=1 connected=%d"),Connected);
+    if (!IsLocalController()) return;
+    if (!(DeviceLogin && DeviceLogin->IsOpen())) SetQuestDeviceLoginVisible(true);
+    if (DeviceLogin && DeviceLogin->IsOpen()) DeviceLogin->ShowMoBits();
 }
-void AMRFPSPlayerController::StopHaptics() { if (auto* P=GetPawn<AMRFPSPawn>(); P && P->Haptics) P->Haptics->StopHaptics(); }
+void AMRFPSPlayerController::StopHaptics()
+{
+    if (auto* P=GetPawn<AMRFPSPawn>()) {
+        if (P->Haptics) P->Haptics->StopHaptics();
+        if (P->QuestHaptics && IsLocalController()) P->QuestHaptics->StopAll();
+    }
+}
 void AMRFPSPlayerController::ToggleMenu()
 {
     MoveAxes=FVector::ZeroVector; bConsumeInspectorCaptureClick=false;
@@ -2008,9 +2012,20 @@ void AMRFPSPawn::Respawn()
 void AMRFPSPawn::ClientFeedback_Implementation(uint8 Kind, float Damage)
 {
     if (!IsLocallyControlled() || !Haptics) return;
+#if PLATFORM_ANDROID
+    // Gameplay never performs calibration or arms EMS. Only a previously
+    // confirmed, armed local Quest session can receive the accepted event.
+    const auto* PC=Cast<AMRFPSPlayerController>(Controller);
+    if (QuestHaptics && (!PC || !PC->DeviceLogin || !PC->DeviceLogin->IsOpen()) &&
+        QuestHaptics->GetStatus().Phase==TEXT("armed")) {
+        if (Kind==0) QuestHaptics->PlayPreset(true,EMoBitsHapticWave::GunRecoil);
+        else if (Kind==1 || Kind==2) QuestHaptics->PlayPreset(false,EMoBitsHapticWave::Damage);
+    }
+#else
     if (Kind==0) Haptics->NotifyShotFired();
     else if (Kind==3) Haptics->NotifyRespawn();
     else Haptics->NotifyDamage(Damage,Kind==2);
+#endif
 }
 void AMRFPSPawn::ClientDamageNumber_Implementation(FVector_NetQuantize10 HitLocation,float Damage,uint8 Style)
 {
@@ -2127,6 +2142,17 @@ void AMRFPSPawn::Tick(float Dt)
     if (IsLocallyControlled() && !MRFPSBot::IsServerBot(this)) SampleLocalPose(Dt);
     if (IsLocallyControlled() && bLocalGrenadeHeld && (!Pose.bHeadTracked || !Pose.bRightTracked)) CancelGrenade();
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
+    if (IsLocallyControlled() && QuestHaptics) {
+        const bool Paused=CombatState && CombatState->bCombatPaused;
+        if (Paused && !bQuestPauseStopIssued) QuestHaptics->StopAll();
+        bQuestPauseStopIssued=Paused;
+        if (CombatState) {
+            const uint8 Phase=static_cast<uint8>(CombatState->Phase);
+            if (LastQuestMatchPhase!=MAX_uint8 && LastQuestMatchPhase!=Phase &&
+                CombatState->Phase==EMRFPSMatchPhase::Waiting) QuestHaptics->StopAll();
+            LastQuestMatchPhase=Phase;
+        }
+    }
     if (HasAuthority() && (!CombatState || !CombatState->bCombatPaused)) {
         const double Now=GetWorld()->GetTimeSeconds();
         if (bServerReloadHeld && !bGrenadeEquipped && ServerReloadStartedAt>=0 && CanAct() && Pose.bRightTracked &&

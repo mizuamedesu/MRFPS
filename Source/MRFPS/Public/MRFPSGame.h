@@ -37,6 +37,7 @@ class UFloatingPawnMovement;
 class USceneCaptureComponent2D;
 class UTextureRenderTarget2D;
 class UMRFPSHapticsComponent;
+class UMoBitsQuestStandaloneComponent;
 class UVRNotificationsComponent;
 class UMRFPSMenu;
 class UMRFPSLoginMenu;
@@ -355,6 +356,7 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> FlashHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> EnemyHealthBar;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSHapticsComponent> Haptics;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UMoBitsQuestStandaloneComponent> QuestHaptics;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UVRNotificationsComponent> XRNotifications;
     FString TrackingDescription;
     double LastPoseReceived = -100;
@@ -392,6 +394,8 @@ private:
     float LocalFlashDuration = 0;
     float LocalFlashStrength = 0;
     bool bDesktopShield = false;
+    bool bQuestPauseStopIssued = false;
+    uint8 LastQuestMatchPhase = MAX_uint8;
     bool bShieldExhausted = false;
     bool bRequireFireRelease=false;
     int32 VisualTeam = -99;

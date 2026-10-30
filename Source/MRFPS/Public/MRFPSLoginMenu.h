@@ -18,6 +18,7 @@ class UWidgetComponent;
 class UMRFPSLoginInteraction;
 class UStaticMeshComponent;
 class UMRFPSLoginMenu;
+class UMRFPSMoBitsSetup;
 class SWidget;
 
 /** An in-world keyboard key, so Quest input doesn't depend on an Android IME. */
@@ -47,11 +48,13 @@ public:
     void InsertKey(const FString& Key);
     void CloseLogin();
     void ShowConnectionFailure();
+    UFUNCTION() void ShowMoBits();
     bool IsCurrentExchange(uint64 Generation) const { return bOpen && !bClosing && bExchanging && ExchangeGeneration==Generation; }
     /** Poll on the owning player's game tick, even when Slate is not painting. */
     void TickControlFile();
     void TickXRPointerAfterPaint(UWidgetComponent* PaintedComponent,float DeltaTime);
     bool IsOpen() const { return bOpen; }
+    bool IsMoBitsOpen() const { return bOpen && bMoBitsPage; }
     bool IsExchanging() const { return bOpen && bExchanging; }
     UFUNCTION() void Next();
     UFUNCTION() void Back();
@@ -92,6 +95,8 @@ private:
     UPROPERTY(Transient) TObjectPtr<UTextBlock> RoleLabel;
     UPROPERTY(Transient) TObjectPtr<UVerticalBox> AddressPage;
     UPROPERTY(Transient) TObjectPtr<UVerticalBox> LoginPage;
+    UPROPERTY(Transient) TObjectPtr<UVerticalBox> MoBitsPage;
+    UPROPERTY(Transient) TObjectPtr<UMRFPSMoBitsSetup> MoBitsSetup;
     UPROPERTY(Transient) TObjectPtr<UButton> TrustButton;
     UPROPERTY(Transient) TObjectPtr<UWidgetComponent> WorldWidget;
     UPROPERTY(Transient) TObjectPtr<UMRFPSLoginInteraction> Interaction;
@@ -102,7 +107,7 @@ private:
     uint64 ExchangeGeneration=0;
     FString Role=TEXT("player");
     FString Destination;
-    bool bVR=false,bOpen=false,bLoginPage=false,bExchanging=false,bClosing=false;
+    bool bVR=false,bOpen=false,bLoginPage=false,bMoBitsPage=false,bExchanging=false,bClosing=false;
     bool bPointerHit=false,bPointerPoseReported=false,bPointerHitReported=false;
     bool bPointerGridReady=false;
     bool bRawTraceReported=false,bRawTraceWidget=false,bRawTraceSlate=false;

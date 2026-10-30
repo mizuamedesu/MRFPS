@@ -1,0 +1,20 @@
+// Kotlin 2.2 in the Quest MoBits library needs D8/R8 8.10.21 or newer.
+// Put it first so AGP's older embedded R8 does not win class loading.
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies {
+        classpath 'com.android.tools:r8:8.10.21'
+        classpath project.hasProperty('ANDROID_TOOLS_BUILD_GRADLE_VERSION') ? project.property('ANDROID_TOOLS_BUILD_GRADLE_VERSION') : 'com.android.tools.build:gradle:8.6.1'
+    }
+    apply from: 'buildscriptAdditions.gradle', to: buildscript
+}
+
+def mrfpsR8Version = com.android.tools.r8.Version.getVersionString()
+println("MRFPS Android D8/R8: ${mrfpsR8Version}")
+if (!mrfpsR8Version.startsWith('8.10.21')) {
+    throw new GradleException("Kotlin 2.2 requires D8/R8 8.10.21; found ${mrfpsR8Version}")
+}
+
+apply from: 'baseBuildAdditions.gradle'
+allprojects { repositories { google(); mavenCentral() } }
+task clean(type: Delete) { delete rootProject.buildDir }

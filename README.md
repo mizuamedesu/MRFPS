@@ -116,7 +116,7 @@ $playerToken = Join-Path $PWD '.local\access\player-two.jwt'
 - 認証接続後の待機中は床合わせ前でも射撃・盾・壁を練習できます。対人ダメージには校正済みの共有床が必要です。追跡消失、死亡中、戦闘の一時停止中は攻撃できません。
 - 管理者の一時停止は戦闘だけを止め、追跡・映像・通信・認証期限の処理は続けます。Bで壁編集、壁のマスをクリックして開口・復元、ホイールで高さを変更、Rで回転、Delで削除します。
 - 初期マップに壁2枚と木箱2個を配置します。木箱は弾を遮り、建築モードで指してDelを押すと個別に削除できます。
-- MoBitsはアプリ側で装着者の校正を済ませ、右スティック押込／H／メニューで明示的にARMします。右B／EscapeでSTOPします。
+- Quest の MoBits は右スティック押込でゲーム内設定を開き、左右の登録・装着者の校正・波形確認後に有効化します。右Bで停止します。
 
 キーボード、観戦カメラ、接続メニューの操作は [Controls](Docs/Controls.md) に記載しています。
 
@@ -126,7 +126,7 @@ $playerToken = Join-Path $PWD '.local\access\player-two.jwt'
 
 ## デバイス連携
 
-- [MoBits](Docs/MoBits.md)：公式UE SDK 0.5.0、認証付きloopback WebSocket、Quest用ADBトンネル、手動ARM／STOP。発射・被弾・復活のサーバー確定イベントを所有者だけに出力します。
+- [MoBits](Docs/MoBits.md)：Quest内蔵Bluetoothによる単体接続とゲーム内校正。所有者の発射・被弾を反動・被弾波形に結び付けます。
 - [Passthrough](Docs/Passthrough.md)：`XR_FB_passthrough` のnative underlay。Meta XRプラグインには依存しません。
 - [壁の編集](Docs/WallEditing.md)：管理者による壁の配置、開口、高さ調整。
 - [認証の運用](Docs/Auth.md)、[native検証仕様と証拠](Docs/Authentication.md)：全接続の署名JWT、公開鍵env、単回使用、DTLS証明書pin、資格情報の非表示。
