@@ -355,6 +355,7 @@ public:
     void ViewPlayerOne();
     void ViewPlayerTwo();
     void ToggleMultiView();
+    void MenuPointerTrigger(float Value);
     void Calibrate();
     void ArmHaptics();
     void StopHaptics();

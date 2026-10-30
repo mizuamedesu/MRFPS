@@ -4,6 +4,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Components/Button.h"
 #include "Interfaces/IHttpRequest.h"
+#include "MRFPSLoginPointer.h"
 #include "MRFPSLoginMenu.generated.h"
 
 class AMRFPSPlayerController;
@@ -36,6 +37,7 @@ public:
     /** Named local control channel; Android uses internal app-private files. */
     static FString ControlPath();
     void SetPointerPressed(bool bPressed);
+    void SetPointerTriggerAxis(float Value);
     void SetEndpoint(const FString& Address);
     void LoginCodeFromFile(const FString& File, const FString& Role);
     void InsertKey(const FString& Key);
@@ -63,6 +65,8 @@ private:
     void HandleExchange(FHttpRequestPtr Request,FHttpResponsePtr Response,bool bSucceeded);
     void ConnectAfterLogin();
     void ProcessControlFile();
+    void UpdateXRPointer(float DeltaTime);
+    void ApplyPointerInput();
     TWeakObjectPtr<AMRFPSPlayerController> Controller;
     UPROPERTY(Transient) TObjectPtr<UEditableTextBox> AddressBox;
     UPROPERTY(Transient) TObjectPtr<UEditableTextBox> CodeBox;
@@ -80,5 +84,7 @@ private:
     FString Role=TEXT("player");
     FString Destination;
     bool bVR=false,bOpen=false,bLoginPage=false,bExchanging=false,bClosing=false;
+    bool bPointerHit=false,bPointerPoseReported=false,bPointerHitReported=false;
+    MRFPSLoginPointer::FPressState PointerInput;
     double NextControlCheck=0;
 };

@@ -575,10 +575,16 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
             UE_LOG(LogMRFPS,Display,TEXT("MRFPS_GLOVE_LOCAL hand=right fresh=%d tracked_pose=%d source=%s"),Next.RightFingers.bValid,Next.bRightTracked,bRightPalmPose?TEXT("palm"):TEXT("controller_or_none"));
     }
     if (bLocalReady && Pose.bHeadTracked && !Next.bHeadTracked) InvalidateCalibration();
-    // A bent right index or vendor trigger fires; hysteresis prevents chatter.
-    if (bRequireFireRelease && !bFiring && !AutomationFire && !bGloveTrigger && IndexCurl<.30f && TriggerAnalog<.30f) bRequireFireRelease=false;
-    if (!bRequireFireRelease && (IndexCurl>.55f || TriggerAnalog>.55f || bGloveTrigger)) bFingerTriggerDown=true;
-    if (IndexCurl<.30f && TriggerAnalog<.30f && !bGloveTrigger) bFingerTriggerDown=false;
+    // The login pointer may use the same trigger or fingers as combat. While
+    // it is open, suppress firing and require all fire inputs to be released
+    // before gameplay can fire again after the menu closes.
+    const bool LoginOpen=LocalController && LocalController->DeviceLogin && LocalController->DeviceLogin->IsOpen();
+    if (LoginOpen) { bFiring=false; bFingerTriggerDown=false; bRequireFireRelease=true; }
+    else {
+        if (bRequireFireRelease && !bFiring && !AutomationFire && !bGloveTrigger && IndexCurl<.30f && TriggerAnalog<.30f) bRequireFireRelease=false;
+        if (!bRequireFireRelease && (IndexCurl>.55f || TriggerAnalog>.55f || bGloveTrigger)) bFingerTriggerDown=true;
+        if (IndexCurl<.30f && TriggerAnalog<.30f && !bGloveTrigger) bFingerTriggerDown=false;
+    }
     Next.Sequence = Pose.Sequence + 1;
     // Client pose remains responsive; only the server can change combat state.
     Pose = Next;
@@ -587,7 +593,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     if (PoseAccumulator >= 1.f/30.f) { PoseAccumulator=0; ServerPose(Next); }
     const double Now=GetWorld()->GetTimeSeconds();
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
-    if (!bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || AutomationFire || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
+    if (!LoginOpen && !bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || AutomationFire || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
 }
 
 void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
@@ -737,6 +743,7 @@ void AMRFPSPlayerController::SetupInputComponent()
     InputComponent->BindAxis(TEXT("Up"),this,&AMRFPSPlayerController::MoveUp);
     InputComponent->BindAxis(TEXT("LookX"),this,&AMRFPSPlayerController::LookX);
     InputComponent->BindAxis(TEXT("LookY"),this,&AMRFPSPlayerController::LookY);
+    InputComponent->BindAxis(TEXT("MenuPointerTrigger"),this,&AMRFPSPlayerController::MenuPointerTrigger);
     InputComponent->BindKey(EKeys::One,IE_Pressed,this,&AMRFPSPlayerController::ViewPlayerOne);
     InputComponent->BindKey(EKeys::Two,IE_Pressed,this,&AMRFPSPlayerController::ViewPlayerTwo);
     InputComponent->BindKey(EKeys::F1,IE_Pressed,this,&AMRFPSPlayerController::ToggleMenu);
@@ -889,8 +896,20 @@ void AMRFPSPlayerController::ToggleMultiView()
     if (bAdminWallPlacement) { SetAdminWallPlacement(false); return; }
     bMultiView=!bMultiView;
 }
-void AMRFPSPlayerController::FirePressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetFiring(true); }
-void AMRFPSPlayerController::FireReleased() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetFiring(false); }
+void AMRFPSPlayerController::MenuPointerTrigger(float Value)
+{
+    if (DeviceLogin && DeviceLogin->IsOpen()) DeviceLogin->SetPointerTriggerAxis(Value);
+}
+void AMRFPSPlayerController::FirePressed()
+{
+    if (DeviceLogin && DeviceLogin->IsOpen()) { DeviceLogin->SetPointerPressed(true); return; }
+    if (auto* P=GetPawn<AMRFPSPawn>()) P->SetFiring(true);
+}
+void AMRFPSPlayerController::FireReleased()
+{
+    if (DeviceLogin && DeviceLogin->IsOpen()) { DeviceLogin->SetPointerPressed(false); return; }
+    if (auto* P=GetPawn<AMRFPSPawn>()) P->SetFiring(false);
+}
 void AMRFPSPlayerController::ReloadPressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopReload(); }
 void AMRFPSPlayerController::WallPressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->DesktopWall(); }
 void AMRFPSPlayerController::ShieldPressed() { if (auto* P=GetPawn<AMRFPSPawn>()) P->SetDesktopShield(true); }

@@ -36,6 +36,7 @@
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "MotionControllerComponent.h"
+#include "Materials/MaterialInterface.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Styling/CoreStyle.h"
@@ -104,7 +105,7 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
 #endif
     if (Menu->bVR) {
         auto* Pawn=Owner->GetPawn<AMRFPSPawn>();
-        if (!Pawn || !Pawn->Camera || !Pawn->RightController) { Menu->bOpen=false; return nullptr; }
+        if (!Pawn || !Pawn->Camera || !Pawn->XROrigin) { Menu->bOpen=false; return nullptr; }
         auto* Component=NewObject<UWidgetComponent>(Pawn);
         Component->SetWidgetSpace(EWidgetSpace::World); Component->SetDrawSize(FVector2D(900,720));
         Component->SetPivot(FVector2D(.5f,.5f)); Component->SetTwoSided(true);
@@ -114,7 +115,7 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         Component->SetRelativeRotation(FRotator(0,180,0)); Component->SetRelativeScale3D(FVector(.1));
         Component->RegisterComponent(); Menu->WorldWidget=Component; Component->SetWidget(Menu);
         auto* Pointer=NewObject<UWidgetInteractionComponent>(Pawn);
-        Pointer->SetupAttachment(Pawn->RightController); Pointer->InteractionDistance=400;
+        Pointer->SetupAttachment(Pawn->XROrigin); Pointer->InteractionDistance=400;
         Pointer->TraceChannel=ECC_Visibility;
         Pointer->RegisterComponent(); Menu->Interaction=Pointer;
         // Engine debug lines are compiled out in Shipping. These tiny,
@@ -122,17 +123,22 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         // Development and Shipping builds and do not affect widget hit tests.
         if (auto* Cylinder=LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Cylinder.Cylinder"))) {
             auto* Ray=NewObject<UStaticMeshComponent>(Pawn); Ray->SetStaticMesh(Cylinder);
-            Ray->SetupAttachment(Pawn->RightController); Ray->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-            Ray->SetOnlyOwnerSee(true); Ray->SetCastShadow(false); Ray->SetRelativeRotation(FRotator(90,0,0));
-            Ray->SetRelativeLocation(FVector(200,0,0)); Ray->SetRelativeScale3D(FVector(.005,.005,4));
+            Ray->SetupAttachment(Pointer); Ray->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Ray->SetCastShadow(false); Ray->SetRelativeRotation(FRotator(90,0,0));
+            if (auto* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Tracer.M_Tracer"))) Ray->SetMaterial(0,Material);
+            Ray->SetRelativeLocation(FVector(200,0,0)); Ray->SetRelativeScale3D(FVector(.014,.014,4));
+            Ray->SetVisibility(false);
             Ray->RegisterComponent(); Menu->PointerRay=Ray;
         }
         if (auto* Sphere=LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Sphere.Sphere"))) {
             auto* Dot=NewObject<UStaticMeshComponent>(Pawn); Dot->SetStaticMesh(Sphere);
-            Dot->SetupAttachment(Pawn->RightController); Dot->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-            Dot->SetOnlyOwnerSee(true); Dot->SetCastShadow(false); Dot->SetWorldScale3D(FVector(.025));
+            Dot->SetupAttachment(Pointer); Dot->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Dot->SetCastShadow(false); Dot->SetRelativeScale3D(FVector(.035));
+            if (auto* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Tracer.M_Tracer"))) Dot->SetMaterial(0,Material);
             Dot->SetVisibility(false); Dot->RegisterComponent(); Menu->PointerDot=Dot;
         }
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INIT interaction=%d ray=%d dot=%d"),
+            Menu->Interaction!=nullptr,Menu->PointerRay!=nullptr,Menu->PointerDot!=nullptr);
     } else Menu->AddToViewport(120);
     return Menu;
 }
@@ -237,17 +243,61 @@ void UMRFPSLoginMenu::NativeTick(const FGeometry& Geometry,float DeltaTime)
 {
     Super::NativeTick(Geometry,DeltaTime);
 #if !UE_SERVER
-    if (bVR && Interaction && PointerRay) {
-        const FHitResult& Hit=Interaction->GetLastHitResult();
-        const bool OnWidget=Interaction->IsOverHitTestVisibleWidget() && Hit.bBlockingHit;
-        const float Length=OnWidget?FMath::Clamp(static_cast<float>(FVector::Distance(Interaction->GetComponentLocation(),Hit.ImpactPoint)),1.f,400.f):400.f;
-        PointerRay->SetRelativeLocation(FVector(Length*.5f,0,0)); PointerRay->SetRelativeScale3D(FVector(.005,.005,Length/100.f));
-        if (PointerDot) { PointerDot->SetVisibility(OnWidget); if (OnWidget) PointerDot->SetWorldLocation(Hit.ImpactPoint+Hit.ImpactNormal*.2f); }
-    }
+    if (bVR && bOpen && Interaction) UpdateXRPointer(DeltaTime);
     if (!bOpen || bExchanging || FPlatformTime::Seconds()<NextControlCheck) return;
     NextControlCheck=FPlatformTime::Seconds()+.5;
     ProcessControlFile();
 #endif
+}
+void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
+{
+#if !UE_SERVER
+    auto* PC=Controller.Get(); auto* Pawn=PC?PC->GetPawn<AMRFPSPawn>():nullptr;
+    FXRMotionControllerState Aim,Grip; FXRHandTrackingState Hand;
+    if (Pawn && Pawn->XROrigin) {
+        UHeadMountedDisplayFunctionLibrary::GetMotionControllerState(Pawn,EXRSpaceType::XRTrackingSpace,EControllerHand::Right,EXRControllerPoseType::Aim,Aim);
+        UHeadMountedDisplayFunctionLibrary::GetMotionControllerState(Pawn,EXRSpaceType::XRTrackingSpace,EControllerHand::Right,EXRControllerPoseType::Grip,Grip);
+        UHeadMountedDisplayFunctionLibrary::GetHandTrackingState(Pawn,EXRSpaceType::UnrealWorldSpace,EControllerHand::Right,Hand);
+    }
+    const bool AimValid=MRFPSLoginPointer::ValidPose(Aim),GripValid=MRFPSLoginPointer::ValidPose(Grip);
+    const bool HandValid=MRFPSLoginPointer::ValidHandPose(Hand);
+    auto Source=MRFPSLoginPointer::Select(AimValid,GripValid,HandValid);
+    FTransform Pose;
+    if (Source!=MRFPSLoginPointer::ESource::None && Pawn && Pawn->XROrigin) {
+        const FTransform Origin=Pawn->XROrigin->GetComponentTransform();
+        if (Source==MRFPSLoginPointer::ESource::Hand) {
+            const FTransform EngineToTracking=UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(Pawn).Inverse();
+            Pose=MRFPSLoginPointer::HandWorldPose(Hand,EngineToTracking,Origin);
+        } else Pose=MRFPSLoginPointer::ControllerWorldPose(Source==MRFPSLoginPointer::ESource::Aim?Aim:Grip,Origin);
+        if (Pose.ContainsNaN()) Source=MRFPSLoginPointer::ESource::None;
+    } else Source=MRFPSLoginPointer::ESource::None;
+    if (!bPointerPoseReported || Source!=PointerInput.Source) {
+        PointerInput.SetSource(Source);
+        bPointerPoseReported=true;
+        UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_POSE source=%s aim=%d grip=%d hand=%d"),
+            MRFPSLoginPointer::SourceName(Source),AimValid,GripValid,HandValid);
+    }
+    if (Source!=MRFPSLoginPointer::ESource::None) Interaction->SetWorldLocationAndRotation(Pose.GetLocation(),Pose.GetRotation());
+    PointerInput.Step(DeltaTime); ApplyPointerInput();
+    const FHitResult& Hit=Interaction->GetLastHitResult();
+    const bool OnWidget=Source!=MRFPSLoginPointer::ESource::None && Interaction->IsOverHitTestVisibleWidget() && Hit.bBlockingHit;
+    if (!bPointerHitReported || OnWidget!=bPointerHit) { bPointerHit=OnWidget; bPointerHitReported=true; UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_HIT value=%d"),OnWidget); }
+    if (PointerRay) {
+        PointerRay->SetVisibility(Source!=MRFPSLoginPointer::ESource::None);
+        const float Length=OnWidget?FMath::Clamp(static_cast<float>(FVector::Distance(Interaction->GetComponentLocation(),Hit.ImpactPoint)),1.f,400.f):400.f;
+        PointerRay->SetRelativeLocation(FVector(Length*.5f,0,0)); PointerRay->SetRelativeScale3D(FVector(.014,.014,Length/100.f));
+    }
+    if (PointerDot) { PointerDot->SetVisibility(OnWidget); if (OnWidget) PointerDot->SetWorldLocation(Hit.ImpactPoint+Hit.ImpactNormal*.2f); }
+#endif
+}
+void UMRFPSLoginMenu::ApplyPointerInput()
+{
+    if (!Interaction) return;
+    const bool Desired=bOpen && PointerInput.Desired();
+    if (Desired==PointerInput.Sent) return;
+    if (Desired) Interaction->PressPointerKey(EKeys::LeftMouseButton); else Interaction->ReleasePointerKey(EKeys::LeftMouseButton);
+    PointerInput.Sent=Desired;
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS value=%d source=%s"),Desired,MRFPSLoginPointer::SourceName(PointerInput.Source));
 }
 void UMRFPSLoginMenu::ProcessControlFile()
 {
@@ -281,6 +331,7 @@ void UMRFPSLoginMenu::CloseLogin()
 {
     if (bClosing) return; bClosing=true; bOpen=false;
     if (PendingRequest) { PendingRequest->OnProcessRequestComplete().Unbind(); PendingRequest->CancelRequest(); PendingRequest.Reset(); }
+    if (Interaction && PointerInput.Sent) { Interaction->ReleasePointerKey(EKeys::LeftMouseButton); PointerInput.Sent=false; }
     if (PointerDot) { PointerDot->DestroyComponent(); PointerDot=nullptr; }
     if (PointerRay) { PointerRay->DestroyComponent(); PointerRay=nullptr; }
     if (Interaction) { Interaction->DestroyComponent(); Interaction=nullptr; }
@@ -291,7 +342,15 @@ void UMRFPSLoginMenu::CloseLogin()
 void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
 {
     if (!Interaction || !bOpen) return;
-    if (Pressed) Interaction->PressPointerKey(EKeys::LeftMouseButton); else Interaction->ReleasePointerKey(EKeys::LeftMouseButton);
+    if (Pressed!=PointerInput.Button) UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=button value=%d"),Pressed);
+    PointerInput.SetButton(Pressed); ApplyPointerInput();
+}
+void UMRFPSLoginMenu::SetPointerTriggerAxis(float Value)
+{
+    if (!Interaction || !bOpen) return;
+    const bool Before=PointerInput.Axis; PointerInput.SetAxis(Value);
+    if (Before!=PointerInput.Axis) UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=axis value=%d"),PointerInput.Axis);
+    ApplyPointerInput();
 }
 void UMRFPSLoginMenu::SetEndpoint(const FString& Address) { if (AddressBox && !bExchanging) AddressBox->SetText(FText::FromString(Address.Left(255))); }
 void UMRFPSLoginMenu::InsertKey(const FString& Key)
