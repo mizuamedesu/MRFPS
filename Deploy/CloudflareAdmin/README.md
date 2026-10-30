@@ -117,7 +117,7 @@ node Deploy/CloudflareAdmin/admin-cli.mjs roster-restore --state-dir "$env:LOCAL
 
 Worker secret はこのファイルから標準入力で `wrangler secret put MRFPS_ROSTER_HMAC_KEY` に渡す。Flash 側は既存 direct service と UDP port を維持し、同じ鍵を環境変数に渡す。HTTP 送信のため Cloudflare 宛ての egress が必要。Worker と Linux 専用サーバーの両方を更新し、実環境で確認するまでは本番動作を保証しない。鍵を変更する場合は両側を同じ値に更新する。
 
-本番の確認では同じ service state と image digest を使う。`flash-runtime` は所有する service・稼働中 Pod・PID・process start・健康状態・DTLS 指紋を二重に確認し、二回の確認で現在の PID に紐付く送信成功 instance が一致した場合だけ `roster_instance` を返す。一致しない場合や送信成功前は null であり、完了とはみなさない。`participants` の `instance` がその値と一致し、各対象の `ping_ms` が null でないことを別途確認する。これは参加者側の実接続と Ping の確認であり、Flash の外向け UDP 到達性をそれだけで保証しない。
+本番の確認では同じ service state と image digest を使う。`flash-runtime` は所有する service・public direct・UDP container port 7777 と割当 service port・稼働中 Pod・唯一の PID・process start・健康状態・DTLS 指紋を二重に確認し、二回の確認で現在の PID に紐付く送信成功 instance が一致した場合だけ `roster_instance` を返す。割当 service port は必ずしも 7777 ではない。一致しない場合や送信成功前は null であり、完了とはみなさない。`participants` の `instance` がその値と一致し、各対象の `ping_ms` が null でないことを別途確認する。これは参加者側の実接続と Ping の確認であり、Flash の外向け UDP 到達性をそれだけで保証しない。
 
 ```powershell
 node Deploy/CloudflareAdmin/flash-runtime.mjs --state Saved/Deployments/Flash/service.json --expected-image ghcr.io/<owner>/<server>@sha256:<digest>

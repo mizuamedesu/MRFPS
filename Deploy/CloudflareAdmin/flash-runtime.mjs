@@ -19,7 +19,7 @@ const SHELL_COMMAND = [
   'stty -echo 2>/dev/null || true',
   'export PS1= PS2=',
   '/usr/local/bin/mrfps-flash-healthcheck >/dev/null 2>&1; rc=$?; printf "\\n__MRFPS_HEALTH__%s\\n" "$rc"',
-  'p="$(pidof MRFPSServer MRFPSServer-Linux-Shipping 2>/dev/null | awk \'{print $1}\')"',
+  'p="$(pidof MRFPSServer MRFPSServer-Linux-Shipping 2>/dev/null | awk \'NF == 1 {print $1}\')"',
   'if [ -n "$p" ]; then awk -v n="$p" \'{printf "__MRFPS_START__%s:%s\\n",n,$22}\' "/proc/$p/stat"; fi',
   'grep -oE \'MRFPS_AUTH_TRANSPORT_READY fingerprint=[0-9a-f]{64}\' /opt/mrfps/MRFPS/Saved/Logs/MRFPS.log | tail -n 1 | sed \'s/^MRFPS_AUTH_TRANSPORT_READY fingerprint=/__MRFPS_FP__/\'',
   `if [ -n "$p" ]; then grep -oE 'MRFPS_ROSTER_PUBLISH_OK instance=[a-f0-9]{32} pid=[0-9]+' /opt/mrfps/MRFPS/Saved/Logs/MRFPS.log | awk -v p="$p" '$3 == "pid=" p {sub("instance=", "", $2); print "__MRFPS_ROSTER__" $2 ":" p}' | tail -n 1; fi`,
@@ -54,10 +54,27 @@ export function ownedReadyService(state, service, expectedImage) {
       metadata.managed_by !== 'MRFPS-cloud-deploy' || metadata.deployment_id !== state.deployment_id ||
       metadata.service_name !== state.service_name || service?.spec?.image !== expectedImage ||
       specDigest(service.spec) !== state.observed_spec_sha256) throw Error('OWNERSHIP_OR_SPEC_MISMATCH');
+  const ports=Array.isArray(service.spec.ports) ? service.spec.ports.filter(port => port?.protocol === 'udp' && port?.container_port === 7777) : [];
+  if (service.spec.exposure?.type !== 'public' || service.spec.exposure?.traffic_mode !== 'direct' ||
+      ports.length !== 1 || typeof ports[0].name !== 'string' || !/^[a-z0-9-]{1,63}$/.test(ports[0].name) ||
+      !Number.isInteger(ports[0].service_port) || ports[0].service_port < 1 || ports[0].service_port > 65535)
+    throw Error('DIRECT_UDP_GAME_PORT_UNVERIFIED');
   if (service.state !== 'ready' || !Number.isSafeInteger(service.generation) ||
       live.observed_generation !== service.generation || live.live_status_unavailable === true ||
       live.ready_replicas !== 1 || live.serving_replicas !== 1) throw Error('SERVICE_NOT_READY');
-  return { generation: service.generation, endpoints: live.endpoints || [] };
+  const endpoints=Array.isArray(live.endpoints)?live.endpoints:[];
+  const game_endpoints=endpoints.filter(endpoint=>endpoint?.name===ports[0].name).map(endpoint=>({
+    name:endpoint.name,host:endpoint.host,port:endpoint.port,protocol:endpoint.protocol
+  }));
+  if (!game_endpoints.length || game_endpoints.some(endpoint=>typeof endpoint.host !== 'string' ||
+      !/^[a-zA-Z0-9.:-]{1,253}$/.test(endpoint.host) || endpoint.port!==ports[0].service_port || endpoint.protocol!=='udp'))
+    throw Error('DIRECT_UDP_ENDPOINT_UNVERIFIED');
+  game_endpoints.sort((a,b)=>a.host.localeCompare(b.host) || a.port-b.port);
+  return { generation: service.generation, endpoints, game_endpoints, udp_service_port:ports[0].service_port };
+}
+
+export function sameDirectEndpoints(first,second) {
+  return first.udp_service_port===second.udp_service_port && canonical(first.game_endpoints)===canonical(second.game_endpoints);
 }
 
 export function oneReadyPod(collection) {
@@ -156,12 +173,13 @@ async function main() {
   const after = await snapshot();
   if (before.generation !== middle.generation || before.generation !== after.generation ||
       before.pod !== middle.pod || before.pod !== after.pod ||
+      !sameDirectEndpoints(before,middle) || !sameDirectEndpoints(before,after) ||
       first.fingerprint !== second.fingerprint || first.pid !== second.pid || first.start_ticks !== second.start_ticks ||
       first.health_exit_code !== second.health_exit_code) {
     throw Error('RUNTIME_CHANGED_DURING_VERIFICATION');
   }
   process.stdout.write(JSON.stringify({ service_id: state.service_id, generation: after.generation, pod: after.pod,
-    image: options['--expected-image'], fingerprint: second.fingerprint,
+    image: options['--expected-image'], fingerprint: second.fingerprint, traffic_mode:'direct', udp_container_port:7777, udp_service_port:after.udp_service_port,
     udp_socket_health_verified: second.health_exit_code === 0, health_exit_code: second.health_exit_code,
     roster_instance: stableRosterInstance(first,second),
     endpoints: after.endpoints, internet_udp_verified: false }) + '\n');

@@ -53,9 +53,9 @@ void FMRFPSRosterPublisher::Tick(UWorld* World, double Now)
     if (Pending.IsValid()) {
         if (Pending->GetStatus()==EHttpRequestStatus::Processing) return;
         const auto Response=Pending->GetResponse();
-        if (Pending->GetStatus()!=EHttpRequestStatus::Succeeded || !Response.IsValid() || Response->GetResponseCode()!=200)
+        if (Pending->GetStatus()!=EHttpRequestStatus::Succeeded || !Response.IsValid() || Response->GetResponseCode()!=200) {
             UE_LOG(LogMRFPSRoster,Warning,TEXT("MRFPS_ROSTER_PUBLISH_FAILED http=%d"),Response.IsValid()?Response->GetResponseCode():0);
-        else if (!bLoggedSuccess) {
+        } else if (!bLoggedSuccess) {
             bLoggedSuccess=true;
             UE_LOG(LogMRFPSRoster,Display,TEXT("MRFPS_ROSTER_PUBLISH_OK instance=%s pid=%u"),*Instance,FPlatformProcess::GetCurrentProcessId());
         }
