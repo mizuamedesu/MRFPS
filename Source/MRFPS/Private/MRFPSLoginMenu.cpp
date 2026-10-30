@@ -1,6 +1,7 @@
 #include "MRFPSLoginMenu.h"
 #include "MRFPSDeviceAuthUrl.h"
 #include "MRFPSConnectionSettings.h"
+#include "MRFPSLoginInteraction.h"
 #include "MRFPSRetryAfter.h"
 
 #include "MRFPSGame.h"
@@ -31,6 +32,7 @@
 #include "Interfaces/IHttpResponse.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Parse.h"
@@ -114,10 +116,10 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         Component->SetupAttachment(Pawn->Camera); Component->SetRelativeLocation(FVector(115,0,-5));
         Component->SetRelativeRotation(FRotator(0,180,0)); Component->SetRelativeScale3D(FVector(.1));
         Component->RegisterComponent(); Menu->WorldWidget=Component; Component->SetWidget(Menu);
-        auto* Pointer=NewObject<UWidgetInteractionComponent>(Pawn);
+        auto* Pointer=NewObject<UMRFPSLoginInteraction>(Pawn);
         Pointer->SetupAttachment(Pawn->XROrigin); Pointer->InteractionDistance=400;
         Pointer->TraceChannel=ECC_Visibility;
-        Pointer->RegisterComponent(); Menu->Interaction=Pointer;
+        Pointer->RegisterComponent(); Pointer->SetComponentTickEnabled(false); Menu->Interaction=Pointer;
         // Engine debug lines are compiled out in Shipping. These tiny,
         // collision-free meshes remain visible to the local user in both
         // Development and Shipping builds and do not affect widget hit tests.
@@ -179,6 +181,7 @@ void UMRFPSLoginMenu::NativeOnInitialized()
     auto* Body=WidgetTree->ConstructWidget<UVerticalBox>(); Outer->AddChild(Body);
     Heading=Text(WidgetTree,TEXT("サーバー設定"),28,White); Body->AddChild(Heading); AddSpace(WidgetTree,Body,12);
     Status=Text(WidgetTree,TEXT("接続先を確認してください"),16,Muted); Body->AddChild(Status); AddSpace(WidgetTree,Body,8);
+    PointerHint=Text(WidgetTree,TEXT("コントローラーを確認"),14,Muted); Body->AddChild(PointerHint);
     AddressPage=WidgetTree->ConstructWidget<UVerticalBox>(); Body->AddChild(AddressPage);
     auto Field=FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
     Field.SetFont(FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),20));
@@ -233,6 +236,13 @@ void UMRFPSLoginMenu::NativeConstruct()
         if (bVR) { PC->bShowMouseCursor=false; PC->SetInputMode(FInputModeGameOnly()); }
         else { PC->bShowMouseCursor=true; FInputModeUIOnly Mode; Mode.SetWidgetToFocus(TakeWidget()); Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); PC->SetInputMode(Mode); }
     }
+    if (PointerHint) PointerHint->SetVisibility(bVR?ESlateVisibility::HitTestInvisible:ESlateVisibility::Collapsed);
+    if (bVR) {
+        FocusLostHandle=FCoreDelegates::ApplicationWillDeactivateDelegate.AddUObject(this,&UMRFPSLoginMenu::HandleFocusLost);
+        FocusGainedHandle=FCoreDelegates::ApplicationHasReactivatedDelegate.AddUObject(this,&UMRFPSLoginMenu::HandleFocusGained);
+        BackgroundHandle=FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddUObject(this,&UMRFPSLoginMenu::HandleFocusLost);
+        ForegroundHandle=FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddUObject(this,&UMRFPSLoginMenu::HandleFocusGained);
+    }
 }
 void UMRFPSLoginMenu::NativeDestruct()
 {
@@ -243,7 +253,15 @@ void UMRFPSLoginMenu::NativeTick(const FGeometry& Geometry,float DeltaTime)
 {
     Super::NativeTick(Geometry,DeltaTime);
 #if !UE_SERVER
-    if (bVR && bOpen && Interaction) UpdateXRPointer(DeltaTime);
+    if (bVR && bOpen && Interaction) {
+        const double Now=FPlatformTime::Seconds();
+        if (LastPointerTick>=0 && Now-LastPointerTick>=.75) {
+            Interaction->CancelPointer(); PointerInput.CancelActive(); PointerInput.Disarm(); PendingPointerEvents.Clear();
+            UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_GAP cancelled=1"));
+        }
+        LastPointerTick=Now;
+        UpdateXRPointer(DeltaTime);
+    }
     if (!bOpen || bExchanging || FPlatformTime::Seconds()<NextControlCheck) return;
     NextControlCheck=FPlatformTime::Seconds()+.5;
     ProcessControlFile();
@@ -271,14 +289,45 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
         } else Pose=MRFPSLoginPointer::ControllerWorldPose(Source==MRFPSLoginPointer::ESource::Aim?Aim:Grip,Origin);
         if (Pose.ContainsNaN()) Source=MRFPSLoginPointer::ESource::None;
     } else Source=MRFPSLoginPointer::ESource::None;
+    bool UsesVRFocus=false,HasVRFocus=true;
+    UHeadMountedDisplayFunctionLibrary::GetVRFocusState(UsesVRFocus,HasVRFocus);
+    if (!PointerInput.Focused || (UsesVRFocus && !HasVRFocus)) Source=MRFPSLoginPointer::ESource::None;
     if (!bPointerPoseReported || Source!=PointerInput.Source) {
+        if (Source!=PointerInput.Source) { Interaction->CancelPointer(); PointerInput.CancelActive(); PendingPointerEvents.Clear(); }
         PointerInput.SetSource(Source);
         bPointerPoseReported=true;
+        if (PointerHint) PointerHint->SetText(FText::FromString(
+            Source==MRFPSLoginPointer::ESource::Aim?TEXT("右コントローラー・トリガーで選択"):
+            Source==MRFPSLoginPointer::ESource::Grip?TEXT("右コントローラー・仮の向き"):
+            Source==MRFPSLoginPointer::ESource::Hand?TEXT("右手追跡中・コントローラーを確認"):TEXT("コントローラーを確認")));
         UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_POSE source=%s aim=%d grip=%d hand=%d"),
             MRFPSLoginPointer::SourceName(Source),AimValid,GripValid,HandValid);
     }
-    if (Source!=MRFPSLoginPointer::ESource::None) Interaction->SetWorldLocationAndRotation(Pose.GetLocation(),Pose.GetRotation());
+    if (Source!=MRFPSLoginPointer::ESource::None) {
+        Interaction->SetWorldLocationAndRotation(Pose.GetLocation(),Pose.GetRotation());
+        Interaction->RefreshPointer();
+    }
     PointerInput.Step(DeltaTime); ApplyPointerInput();
+    if (!bOpen || !Interaction) return;
+    if (PendingPointerEvents.Overflow) {
+        Interaction->CancelPointer(); PointerInput.FailClosed(); PendingPointerEvents.Clear();
+        UE_LOG(LogMRFPSLogin,Warning,TEXT("MRFPS_LOGIN_POINTER_INPUT_OVERFLOW"));
+    } else {
+        const auto Events=PendingPointerEvents; PendingPointerEvents.Clear();
+        for (std::size_t I=0;I<Events.Count && bOpen && Interaction;++I) {
+            const auto& Event=Events.Events[I];
+            if (Event.Kind==MRFPSLoginPointer::EInput::Button) {
+                const bool Pressed=Event.Value!=0;
+                if (Pressed!=PointerInput.Button) UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=button value=%d"),Pressed);
+                PointerInput.SetButton(Pressed);
+            } else {
+                const bool Before=PointerInput.Axis; PointerInput.SetAxis(Event.Value);
+                if (Before!=PointerInput.Axis) UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=axis value=%d"),PointerInput.Axis);
+            }
+            ApplyPointerInput();
+        }
+    }
+    if (!bOpen || !Interaction) return;
     const FHitResult& Hit=Interaction->GetLastHitResult();
     const bool OnWidget=Source!=MRFPSLoginPointer::ESource::None && Interaction->IsOverHitTestVisibleWidget() && Hit.bBlockingHit;
     if (!bPointerHitReported || OnWidget!=bPointerHit) { bPointerHit=OnWidget; bPointerHitReported=true; UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_HIT value=%d"),OnWidget); }
@@ -293,11 +342,33 @@ void UMRFPSLoginMenu::UpdateXRPointer(float DeltaTime)
 void UMRFPSLoginMenu::ApplyPointerInput()
 {
     if (!Interaction) return;
-    const bool Desired=bOpen && PointerInput.Desired();
-    if (Desired==PointerInput.Sent) return;
-    if (Desired) Interaction->PressPointerKey(EKeys::LeftMouseButton); else Interaction->ReleasePointerKey(EKeys::LeftMouseButton);
-    PointerInput.Sent=Desired;
-    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS value=%d source=%s"),Desired,MRFPSLoginPointer::SourceName(PointerInput.Source));
+    const auto Action=PointerInput.Next();
+    if (Action==MRFPSLoginPointer::EAction::None) return;
+    if (Action==MRFPSLoginPointer::EAction::Press) {
+        if (!Interaction->BeginPointer()) {
+            PointerInput.CancelActive(); PointerInput.Disarm();
+            UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS action=unavailable source=%s"),MRFPSLoginPointer::SourceName(PointerInput.Source));
+            return;
+        }
+    } else if (Action==MRFPSLoginPointer::EAction::Release) Interaction->EndPointer();
+    else Interaction->CancelPointer();
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_PRESS action=%s source=%s"),
+        Action==MRFPSLoginPointer::EAction::Press?TEXT("press"):Action==MRFPSLoginPointer::EAction::Release?TEXT("release"):TEXT("cancel"),
+        MRFPSLoginPointer::SourceName(PointerInput.Source));
+}
+void UMRFPSLoginMenu::HandleFocusLost()
+{
+    if (!bOpen) return;
+    if (Interaction) Interaction->CancelPointer();
+    PointerInput.CancelActive(); PointerInput.SetFocused(false); PendingPointerEvents.Clear(); LastPointerTick=-1;
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_FOCUS active=0"));
+}
+void UMRFPSLoginMenu::HandleFocusGained()
+{
+    if (!bOpen) return;
+    if (Interaction) Interaction->CancelPointer();
+    PointerInput.CancelActive(); PointerInput.SetFocused(true); PendingPointerEvents.Clear(); LastPointerTick=-1;
+    UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_FOCUS active=1"));
 }
 void UMRFPSLoginMenu::ProcessControlFile()
 {
@@ -331,7 +402,11 @@ void UMRFPSLoginMenu::CloseLogin()
 {
     if (bClosing) return; bClosing=true; bOpen=false;
     if (PendingRequest) { PendingRequest->OnProcessRequestComplete().Unbind(); PendingRequest->CancelRequest(); PendingRequest.Reset(); }
-    if (Interaction && PointerInput.Sent) { Interaction->ReleasePointerKey(EKeys::LeftMouseButton); PointerInput.Sent=false; }
+    FCoreDelegates::ApplicationWillDeactivateDelegate.Remove(FocusLostHandle);
+    FCoreDelegates::ApplicationHasReactivatedDelegate.Remove(FocusGainedHandle);
+    FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(BackgroundHandle);
+    FCoreDelegates::ApplicationHasEnteredForegroundDelegate.Remove(ForegroundHandle);
+    if (Interaction) Interaction->CancelPointer(); PointerInput.CancelActive(); PendingPointerEvents.Clear();
     if (PointerDot) { PointerDot->DestroyComponent(); PointerDot=nullptr; }
     if (PointerRay) { PointerRay->DestroyComponent(); PointerRay=nullptr; }
     if (Interaction) { Interaction->DestroyComponent(); Interaction=nullptr; }
@@ -342,15 +417,12 @@ void UMRFPSLoginMenu::CloseLogin()
 void UMRFPSLoginMenu::SetPointerPressed(bool Pressed)
 {
     if (!Interaction || !bOpen) return;
-    if (Pressed!=PointerInput.Button) UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=button value=%d"),Pressed);
-    PointerInput.SetButton(Pressed); ApplyPointerInput();
+    PendingPointerEvents.Push(MRFPSLoginPointer::EInput::Button,Pressed?1.f:0.f);
 }
 void UMRFPSLoginMenu::SetPointerTriggerAxis(float Value)
 {
     if (!Interaction || !bOpen) return;
-    const bool Before=PointerInput.Axis; PointerInput.SetAxis(Value);
-    if (Before!=PointerInput.Axis) UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INPUT kind=axis value=%d"),PointerInput.Axis);
-    ApplyPointerInput();
+    PendingPointerEvents.Push(MRFPSLoginPointer::EInput::Axis,Value);
 }
 void UMRFPSLoginMenu::SetEndpoint(const FString& Address) { if (AddressBox && !bExchanging) AddressBox->SetText(FText::FromString(Address.Left(255))); }
 void UMRFPSLoginMenu::InsertKey(const FString& Key)
