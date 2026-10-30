@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -79,6 +80,13 @@ class DeviceLoginControlTests(unittest.TestCase):
                 launch.return_value.pid=os.getpid()  # Verify an existing process without spawning UE.
                 self.assertEqual(module.windows(args)["status"],"launching")
                 self.assertEqual(module.windows(args)["status"],"already_running")
+                # A changed file with a restored mtime is still the previously
+                # submitted marker; it must never trigger another publication.
+                timestamp=first.stat()
+                first.write_text("000789",encoding="ascii")
+                os.utime(first,ns=(timestamp.st_atime_ns,timestamp.st_mtime_ns))
+                self.assertEqual(module.windows(args)["status"],"already_running")
+                self.assertEqual(control.call_count,1)
                 args.replace=True
                 with self.assertRaisesRegex(RuntimeError,"already submitted"):
                     module.windows(args)  # Must refuse before opening a handle to terminate.
@@ -101,6 +109,7 @@ class DeviceLoginControlTests(unittest.TestCase):
             self.assertEqual(len(saved["submission_history"]),2)
             self.assertNotIn("000123",json.dumps(saved))
             self.assertNotIn("000456",json.dumps(saved))
+            self.assertNotIn("000789",json.dumps(saved))
 
     @unittest.skipUnless(os.name == "nt", "the client launcher uses Windows process handles")
     def test_windows_interrupted_code_transfer_never_retries_that_marker(self):
@@ -265,6 +274,65 @@ class DeviceLoginControlTests(unittest.TestCase):
                  mock.patch.object(Path,"stat",changed_path_identity):
                 with self.assertRaisesRegex(RuntimeError,"changed while reading"):
                     module.submission(code)
+
+    @unittest.skipUnless(os.name == "nt", "Windows exposes different fstat/stat ctime semantics")
+    def test_windows_same_file_accepts_distinct_handle_and_path_ctime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            code=Path(folder)/"code.txt"; code.write_bytes(b"000123")
+            expected=code.resolve(strict=True); real_fstat=os.fstat; real_stat=Path.stat; calls=0
+            def count_fstat(fd):
+                nonlocal calls
+                value=real_fstat(fd); calls+=1; return value
+            def distinct_path_ctime(path,*args,**kwargs):
+                value=real_stat(path,*args,**kwargs)
+                if calls>=2 and str(path)==str(expected):
+                    from types import SimpleNamespace
+                    fields={name:getattr(value,name) for name in ("st_dev","st_ino","st_mtime_ns","st_size")}
+                    fields["st_ctime_ns"]=value.st_ctime_ns+1
+                    if hasattr(value,"st_birthtime_ns"): fields["st_birthtime_ns"]=value.st_birthtime_ns
+                    return SimpleNamespace(**fields)
+                return value
+            with mock.patch.object(module.os,"fstat",side_effect=count_fstat), \
+                 mock.patch.object(Path,"stat",distinct_path_ctime):
+                marker,value=module.submission(code)
+            self.assertEqual(marker["path"],str(expected))
+            self.assertEqual(value,"000123")
+
+    def test_same_mtime_rewrite_during_handle_read_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            code=Path(folder)/"code.txt"; code.write_bytes(b"000123")
+            real_fstat=os.fstat; calls=0
+            def mutate(fd):
+                nonlocal calls
+                value=real_fstat(fd); calls+=1
+                if calls==1:
+                    time.sleep(.01)
+                    code.write_bytes(b"000456")
+                    os.utime(code,ns=(value.st_atime_ns,value.st_mtime_ns))
+                return value
+            with mock.patch.object(module.os,"fstat",side_effect=mutate):
+                with self.assertRaisesRegex(RuntimeError,"changed while reading"): module.submission(code)
+
+    def test_same_mtime_rewrite_after_path_check_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            code=Path(folder)/"code.txt"; code.write_bytes(b"000123")
+            expected=code.resolve(strict=True); real_fstat=os.fstat; real_stat=Path.stat; calls=0; changed=False
+            def count_fstat(fd):
+                nonlocal calls
+                value=real_fstat(fd); calls+=1; return value
+            def mutate_after_stat(path,*args,**kwargs):
+                nonlocal changed
+                value=real_stat(path,*args,**kwargs)
+                if not changed and calls>=2 and str(path)==str(expected):
+                    changed=True
+                    time.sleep(.01)
+                    code.write_bytes(b"000456")
+                    os.utime(code,ns=(value.st_atime_ns,value.st_mtime_ns))
+                return value
+            with mock.patch.object(module.os,"fstat",side_effect=count_fstat), \
+                 mock.patch.object(Path,"stat",mutate_after_stat):
+                with self.assertRaisesRegex(RuntimeError,"changed while reading"): module.submission(code)
+            self.assertTrue(changed)
 
     def test_debug_auth_url_cannot_escape_loopback(self):
         self.assertTrue(module.test_auth_url("http://127.0.0.1:18787/api/device/exchange"))

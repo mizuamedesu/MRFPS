@@ -311,9 +311,24 @@ def submission(code_file: Path | None) -> tuple[dict | None, str | None]:
         data = source.read(65)
         after = os.fstat(source.fileno())
         current = resolved.stat()
+        # Verify the same handle again after looking up the path; a rewrite
+        # that restores mtime/size must not evade the consistency check.
+        source.seek(0)
+        confirmed = source.read(65)
+        final = os.fstat(source.fileno())
     def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
         return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size)
-    if identity(before) != identity(after) or identity(after) != identity(current):
+    def path_identity(info: os.stat_result) -> tuple[int, int, int, int]:
+        return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
+    # CPython on Windows may expose change time through fstat().st_ctime_ns
+    # but creation time through stat().st_ctime_ns. Compare ctime between
+    # observations of the same handle, and compare the stable path identity
+    # separately. POSIX still requires the path's ctime to agree as well.
+    same_path = path_identity(final) == path_identity(current)
+    if os.name != "nt": same_path = same_path and final.st_ctime_ns == current.st_ctime_ns
+    elif hasattr(final, "st_birthtime_ns") and hasattr(current, "st_birthtime_ns"):
+        same_path = same_path and final.st_birthtime_ns == current.st_birthtime_ns
+    if data != confirmed or identity(before) != identity(after) or identity(after) != identity(final) or not same_path:
         raise RuntimeError("code file changed while reading; no code was sent")
     marker = {"path": str(resolved), "modified_ns": after.st_mtime_ns}
     return marker, validate_code(data).decode("ascii")
