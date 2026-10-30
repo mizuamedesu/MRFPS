@@ -114,6 +114,26 @@ struct FMRFPSRiseGesture
     bool bLatched = false;
 };
 
+USTRUCT(BlueprintType)
+struct FMRFPSRosterPing
+{
+    GENERATED_BODY()
+    UPROPERTY(BlueprintReadOnly) int32 Milliseconds = -1;
+    UPROPERTY(BlueprintReadOnly) float SampleServerTime = -1.f;
+    // Keep the value and its freshness timestamp in the same replicated field.
+    bool NetSerialize(FArchive& Ar, UPackageMap*, bool& bOutSuccess)
+    {
+        Ar << Milliseconds;
+        Ar << SampleServerTime;
+        bOutSuccess = !Ar.IsError();
+        return bOutSuccess;
+    }
+};
+template<> struct TStructOpsTypeTraits<FMRFPSRosterPing> : TStructOpsTypeTraitsBase2<FMRFPSRosterPing>
+{
+    enum { WithNetSerializer = true };
+};
+
 UCLASS()
 class MRFPS_API AMRFPSPlayerState : public APlayerState
 {
@@ -121,6 +141,10 @@ class MRFPS_API AMRFPSPlayerState : public APlayerState
 public:
     AMRFPSPlayerState();
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
+    virtual void UpdatePing(float InPing) override;
+    // Server ticks expiration separately from the engine's ACK-based measurements.
+    void RefreshRosterPing(double Now);
+    UPROPERTY(Replicated, BlueprintReadOnly) FMRFPSRosterPing RosterPing;
     UPROPERTY(Replicated, BlueprintReadOnly) int32 Slot = -1;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bInspector = false;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bAdmin = false;
@@ -131,6 +155,10 @@ public:
     UPROPERTY(Replicated, BlueprintReadOnly) int64 AuthExpiresAt = 0;
     UPROPERTY(Replicated) uint32 VideoStreamId = 0;
     UPROPERTY(Replicated) uint32 GeometryStreamId = 0;
+private:
+    double LastRosterPingAt = -1;
+    int32 LastRosterPingMs = -1;
+    float LastRosterPingServerTime = -1.f;
 };
 
 UCLASS()

@@ -130,6 +130,29 @@ bool FMRFPSRoleCapacityTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSRosterPingTest,"MRFPS.Admin.RosterPing",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSRosterPingTest::RunTest(const FString& Parameters)
+{
+    FAdminWorld F; if (!TestTrue(TEXT("Authority fixture starts"),F.Create())) return false;
+    auto* PS=F.Observer->GetPlayerState<AMRFPSPlayerState>();
+    TestEqual(TEXT("Initial ping is unknown"),PS->RosterPing.Milliseconds,-1);
+    PS->UpdatePing(.042f);
+    PS->RefreshRosterPing(FPlatformTime::Seconds());
+    TestEqual(TEXT("An engine ping sample is recorded in milliseconds"),PS->RosterPing.Milliseconds,42);
+    TestTrue(TEXT("A measured ping includes server time"),PS->RosterPing.SampleServerTime>=0.f);
+    PS->RefreshRosterPing(FPlatformTime::Seconds()+5.1);
+    TestEqual(TEXT("An old sample expires"),PS->RosterPing.Milliseconds,-1);
+    TestEqual(TEXT("An old timestamp expires with its value"),PS->RosterPing.SampleServerTime,-1.f);
+    PS->UpdatePing(0.f);
+    PS->RefreshRosterPing(FPlatformTime::Seconds());
+    TestEqual(TEXT("A measured zero is distinct from no measurement"),PS->RosterPing.Milliseconds,0);
+    PS->UpdatePing(std::numeric_limits<float>::quiet_NaN());
+    PS->RefreshRosterPing(FPlatformTime::Seconds()+5.1);
+    TestEqual(TEXT("Invalid samples cannot keep ping fresh"),PS->RosterPing.Milliseconds,-1);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSAdminAuthorityTest,"MRFPS.Admin.AuthorityAndFixedCalibration",
     EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
 bool FMRFPSAdminAuthorityTest::RunTest(const FString& Parameters)

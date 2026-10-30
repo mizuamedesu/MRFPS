@@ -167,6 +167,28 @@ bool FMRFPSRiseGesture::Update(float Z, double Time, bool bTracked)
 }
 
 AMRFPSPlayerState::AMRFPSPlayerState() { bAlwaysRelevant = true; }
+void AMRFPSPlayerState::UpdatePing(float InPing)
+{
+    if (!FMath::IsFinite(InPing) || InPing<0.f || InPing>60.f) return;
+    Super::UpdatePing(InPing);
+    // The engine invokes this on a network ACK. Do not infer a measurement
+    // from ExactPing/CompressedPing, whose initial zero is ambiguous.
+    if (HasAuthority() && !IsABot()) {
+        LastRosterPingMs=FMath::RoundToInt(InPing*1000.f);
+        LastRosterPingAt=FPlatformTime::Seconds();
+        LastRosterPingServerTime=GetWorld()?GetWorld()->GetTimeSeconds():-1.f;
+    }
+}
+void AMRFPSPlayerState::RefreshRosterPing(double Now)
+{
+    if (!HasAuthority()) return;
+    const bool bFresh=!IsABot() && LastRosterPingAt>=0 && LastRosterPingServerTime>=0 && Now>=LastRosterPingAt && Now-LastRosterPingAt<=5.0;
+    const int32 Value=bFresh ? LastRosterPingMs : -1;
+    const float Timestamp=bFresh ? LastRosterPingServerTime : -1.f;
+    if (RosterPing.Milliseconds!=Value || RosterPing.SampleServerTime!=Timestamp) {
+        RosterPing.Milliseconds=Value; RosterPing.SampleServerTime=Timestamp; ForceNetUpdate();
+    }
+}
 void AMRFPSPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -176,6 +198,7 @@ void AMRFPSPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Ou
     DOREPLIFETIME(AMRFPSPlayerState,bAuthenticated); DOREPLIFETIME(AMRFPSPlayerState,AuthSubject); DOREPLIFETIME(AMRFPSPlayerState,AuthExpiresAt);
     DOREPLIFETIME(AMRFPSPlayerState,VideoStreamId);
     DOREPLIFETIME(AMRFPSPlayerState,GeometryStreamId);
+    DOREPLIFETIME(AMRFPSPlayerState,RosterPing);
 }
 void AMRFPSGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
@@ -1450,7 +1473,10 @@ void AMRFPSGameMode::Tick(float Dt)
         TArray<APlayerController*> Expired;
         const int64 Utc=FDateTime::UtcNow().ToUnixTimestamp();
         for (FConstPlayerControllerIterator It=GetWorld()->GetPlayerControllerIterator();It;++It) if (auto* PC=It->Get()) {
-            if (auto* PS=PC->GetPlayerState<AMRFPSPlayerState>(); PS && PS->bAuthenticated && Utc>=PS->AuthExpiresAt) { PS->bAuthenticated=false; PS->ForceNetUpdate(); Expired.Add(PC); }
+            if (auto* PS=PC->GetPlayerState<AMRFPSPlayerState>()) {
+                PS->RefreshRosterPing(FPlatformTime::Seconds());
+                if (PS->bAuthenticated && Utc>=PS->AuthExpiresAt) { PS->bAuthenticated=false; PS->ForceNetUpdate(); Expired.Add(PC); }
+            }
         }
         for (auto* PC:Expired) if (GameSession) { UE_LOG(LogMRFPS,Display,TEXT("MRFPS_AUTH_SESSION_EXPIRED")); GameSession->KickPlayer(PC,FText::FromString(TEXT("AUTH_EXPIRED"))); }
     }
