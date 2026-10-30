@@ -1170,14 +1170,14 @@ void AMRFPSPlayerController::ReportConnectionAttemptFailure()
         }
     }
 }
-void AMRFPSPlayerController::BeginDeviceConnection(const FString& Address,const FString& Role,UMRFPSLoginMenu* Owner,uint64 Generation)
+void AMRFPSPlayerController::BeginDeviceConnection(const FString& Address,const FString& ChosenRole,UMRFPSLoginMenu* LoginOwner,uint64 Generation)
 {
-    if (!Owner || !Owner->IsCurrentExchange(Generation)) return;
-    ConnectWithRole(Address,Role,Owner,Generation);
+    if (!LoginOwner || !LoginOwner->IsCurrentExchange(Generation)) return;
+    ConnectWithRole(Address,ChosenRole,LoginOwner,Generation);
 }
-void AMRFPSPlayerController::CancelPendingDeviceConnection(UMRFPSLoginMenu* Owner,uint64 Generation)
+void AMRFPSPlayerController::CancelPendingDeviceConnection(UMRFPSLoginMenu* LoginOwner,uint64 Generation)
 {
-    if (PendingDeviceOwner.Get()!=Owner || PendingDeviceGeneration!=Generation) return;
+    if (PendingDeviceOwner.Get()!=LoginOwner || PendingDeviceGeneration!=Generation) return;
     if (GetWorld()) GetWorldTimerManager().ClearTimer(PendingConnectionTimer);
     PendingDeviceOwner.Reset(); PendingDeviceGeneration=0;
     if (auto* Instance=GetGameInstance<UMRFPSGameInstance>()) Instance->CancelNextDeviceConnection();
