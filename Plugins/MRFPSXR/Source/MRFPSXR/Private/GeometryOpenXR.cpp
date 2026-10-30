@@ -290,6 +290,11 @@ public:
         {
             if (StartProvider(Provider) != XR_SUCCESS) { bFaulted = true; SetState(TEXT("Cannot start real environment depth.")); return; }
             bStarted = true;
+            // The provider was started after this frame's xrBeginFrame. Some
+            // runtimes do not consider it part of that already-begun frame;
+            // acquire only after the next xrBeginFrame reaches the provider.
+            SetState(TEXT("Waiting for the next environment depth frame."));
+            return;
         }
         const double Now = FPlatformTime::Seconds();
         if (GPU.HasPending() || Now < NextAcquireAt) return;
@@ -305,7 +310,11 @@ public:
         // NOT_AVAILABLE is a positive success code with UNCHANGED output. Only
         // XR_SUCCESS supplies a real image; XR_SUCCEEDED alone is insufficient.
         if (Result != XR_SUCCESS || Image.swapchainIndex >= uint32(Images.Num()))
-        { bFaulted = true; SetState(TEXT("Real environment depth acquisition failed.")); return; }
+        {
+            UE_LOG(LogMRFPSGeometry, Warning, TEXT("MRFPS_GEOMETRY_ACQUIRE_FAILED result=%d image=%u image_count=%d"),
+                int32(Result), Image.swapchainIndex, Images.Num());
+            bFaulted = true; SetState(TEXT("Real environment depth acquisition failed.")); return;
+        }
         const auto& View = Image.views[0];
         if (!FinitePose(View.pose) || !MRFPSGeometryMath::ValidPlanes(Image.nearZ, Image.farZ) || Sequence == MAX_uint32)
         { SetState(TEXT("Environment depth metadata is invalid.")); return; }
