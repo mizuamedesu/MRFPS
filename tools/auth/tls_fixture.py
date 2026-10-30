@@ -125,9 +125,12 @@ def require_guard(path: Path) -> None:
         raise ValueError('RESOURCE_GUARD_REPORT_INVALID')
     report=json.loads(path.read_text(encoding='utf-8-sig')); sample=report.get('lastSample') or {}
     free,commit=sample.get('availablePhysicalGB'),sample.get('commitPercent')
+    minimum,maximum=report.get('minimumFreeGB'),report.get('maximumCommitPercent')
     if (report.get('status')!='running' or report.get('jobAssigned') is not True or sample.get('pressureReason') or
         type(free) not in (int,float) or type(commit) not in (int,float) or
-        not math.isfinite(free) or not math.isfinite(commit) or free<10 or commit<0 or commit>75):
+        type(minimum) not in (int,float) or type(maximum) not in (int,float) or
+        not all(math.isfinite(value) for value in (free,commit,minimum,maximum)) or
+        minimum<10 or maximum<0 or maximum>75 or free<10 or commit<0 or commit>75):
         raise ValueError('RESOURCE_GUARD_NOT_RUNNING')
 
 
