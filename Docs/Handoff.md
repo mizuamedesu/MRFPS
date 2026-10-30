@@ -1,6 +1,14 @@
 # 開発の引き継ぎ
 
-## 現在の状態（protocol 14、2026-10-30）
+## 最新の Flash・実機確認（2026-10-30）
+
+- Flash `mrfps-server` は `direct`、`163.220.236.61:30000/UDP` で稼働し、実 Pod のヘルスチェックに成功しました。`mrfps.mizuame.app` はまだ解決せず、DNS only の A レコードが必要です。DNS ではポート 30000 を 7777 に変えられません。[CloudDeployment.md](CloudDeployment.md) に正確なイメージと制約を記載しています。
+- Windows 観戦者と Quest プレイヤーは、この Flash の実サーバーにそれぞれコード交換・DTLS・認証を経て参加しました。Quest からの視点フレームは Windows の更新中テクスチャに到着し、generation 4 では起床中の約10.9秒間で平均25.5fps、未完成フレームの増加0を計測しました。新世代の実画面の目視確認と長時間試験は未実施です。Quest のスリープ中は映像更新が止まります。
+- 導入中の Quest APK は `Artifacts/Packages-QuestPointer-20261030-03/Android_ASTC/MRFPS-arm64.apk`（SHA-256 `71f9d413bf785b909618fcc6a1ef0fd76e236c32b2f0999bd4aac963e97e39c1`）。Windows は `Artifacts/Packages-Windows-FlashDirect-20261030-01/Windows/MRFPS/Binaries/Win64/MRFPS.exe`（SHA-256 `2f0829d642107566b510629435051576098a00fcc9cdbcb7df1ae15851b31eee`）。ポインターの生成と右コントローラーの Aim 追跡、両グローブの fresh な入力を確認しましたが、実機でボタンを指して押す操作は未検証です。
+- ログイン制御は最小化中でも処理され、実際に Windows のコード投入から Flash 参加まで成功しました。ログインポインターの入力元は単一選択で、fresh なグローブ指を優先します。Quest の UI 操作と OS の共有許可は人が確認してください。
+- 現在の実機接続には CLI 発行者で Flash の実指紋を指定しました。専用ブラウザの管理画面に保存された指紋はこの更新後に確認していません。画面から発行する前に [CloudDeployment.md](CloudDeployment.md) の方法で現在の指紋を取得し、管理画面に保存してください。サーバー再起動ごとに指紋が変わります。
+
+## 以前の記録（protocol 14、2026-10-30）
 
 - 1ラウンド180秒、最大3ラウンド、先に2勝した側が勝利します。1人の場合は本人の校正と追跡が有効になると Bot が入り、管理者操作を待たずに開始します。操作と停止条件は [Rounds.md](Rounds.md) を参照してください。
 - 実 Linux コンテナと Windows 配布版の1人用テストでは、2ラウンドがそれぞれ180.026秒・180.007秒で終了し、Bot の2勝で試合が終了しました。実 Quest の姿勢・校正・障害物スキャンの確認には代わりません。証拠はローカルの `Saved/Validation/RoundBot-p14/packaged-player-qa-report.json` と `qa-server/observations.log` です。
