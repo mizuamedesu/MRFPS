@@ -911,7 +911,11 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
 bool AMRFPSPlayerController::HandleQuestLoginButton(const FInputKeyEventArgs& Params,bool bAndroid)
 {
     if (!bAndroid || !IsLocalController() || Params.Key!=EKeys::OculusTouch_Right_A_Click) return false;
-    if (Params.Event==IE_Pressed) SetQuestDeviceLoginVisible(!(DeviceLogin && DeviceLogin->IsOpen()));
+    if (Params.Event==IE_Pressed) {
+        SetQuestDeviceLoginVisible(!(DeviceLogin && DeviceLogin->IsOpen()));
+        UE_LOG(LogMRFPS,Display,TEXT("MRFPS_QUEST_LOGIN_TOGGLE open=%d connected=%d"),
+            DeviceLogin && DeviceLogin->IsOpen(),GetNetMode()==NM_Client);
+    }
     return true;
 }
 void AMRFPSPlayerController::ApplyInspectorMouseMode()
