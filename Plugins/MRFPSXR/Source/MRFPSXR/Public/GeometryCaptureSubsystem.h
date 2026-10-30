@@ -37,7 +37,7 @@ public:
 
     // Caller is responsible for authenticated, calibrated local-player policy.
     // Requests the normal OS Spatial Data permission if necessary; never grants it.
-    UFUNCTION(BlueprintCallable, Category="MRFPS|Environment Geometry") void RequestCapture();
+    UFUNCTION(BlueprintCallable, Category="MRFPS|Environment Geometry") bool RequestCapture();
     UFUNCTION(BlueprintCallable, Category="MRFPS|Environment Geometry") void StopCapture();
     UFUNCTION(BlueprintPure, Category="MRFPS|Environment Geometry") bool IsCapturing() const;
     UFUNCTION(BlueprintPure, Category="MRFPS|Environment Geometry") FString GetSafeStatus() const;

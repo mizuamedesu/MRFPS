@@ -27,6 +27,7 @@
 #if !UE_SERVER
 #include "MRFPSGloveSubsystem.h"
 #include "MRFPSViewCaptureSubsystem.h"
+#include "GeometryCaptureSubsystem.h"
 #endif
 
 namespace
@@ -293,6 +294,20 @@ void AMRFPSPlayerController::TickAutomation()
                 PlayerInfo->SetBoolField(TEXT("automation_shield_requested"),LeaseActive && AutomationInput.Shield);
                 Data->SetObjectField(TEXT("player"),PlayerInfo);
             }
+            if (const auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSGeometryCaptureSubsystem>()) {
+                auto Geometry=MakeShared<FJsonObject>();
+                const auto* Fighter=GetPawn<AMRFPSPawn>(); FTransform Transform; double Since=0;
+                Geometry->SetBoolField(TEXT("publisher_session_valid"),IsGeometrySessionValid(true));
+                Geometry->SetBoolField(TEXT("capture_requested"),bGeometryCaptureRequested);
+                Geometry->SetBoolField(TEXT("capture_fresh"),Capture->IsCapturing());
+                Geometry->SetBoolField(TEXT("calibration_acknowledged"),Fighter && Fighter->GetGeometryCalibration(Transform,Since));
+                Geometry->SetNumberField(TEXT("capture_tracking_epoch"),double(Capture->GetTrackingSpaceEpoch()));
+                Geometry->SetNumberField(TEXT("calibrated_tracking_epoch"),Fighter?double(Fighter->GetGeometryCalibrationEpoch()):0);
+                Geometry->SetNumberField(TEXT("native_sequence"),GeometryNativeSequence);
+                Geometry->SetNumberField(TEXT("published_sequence"),GeometrySequence);
+                Geometry->SetStringField(TEXT("status"),Capture->GetSafeStatus());
+                Data->SetObjectField(TEXT("geometry_capture"),Geometry);
+            }
             if (auto* Capture=GetGameInstance()->GetSubsystem<UMRFPSViewCaptureSubsystem>()) {
                 auto Video=MakeShared<FJsonObject>();
                 const auto CaptureState=CaptureControlState(Capture,FPlatformTime::Seconds(),true);
@@ -347,6 +362,11 @@ void AMRFPSPlayerController::TickAutomation()
                 Data->SetNumberField(TEXT("round_wins_0"),GS->RoundWinsSlot0); Data->SetNumberField(TEXT("round_wins_1"),GS->RoundWinsSlot1);
                 Data->SetNumberField(TEXT("last_round_winner_slot"),GS->LastRoundWinnerSlot); Data->SetBoolField(TEXT("last_round_draw"),GS->CompletedRounds>0 && GS->LastRoundWinnerSlot<0);
                 Data->SetNumberField(TEXT("match_winner_slot"),GS->WinnerSlot); Data->SetBoolField(TEXT("match_draw"),GS->Phase==EMRFPSMatchPhase::Finished && GS->WinnerSlot<0);
+                const auto* NoticePawn=GetPawn<AMRFPSPawn>(); const auto Notice=GS->RoundNotice(NoticePawn?NoticePawn->GetSlot():-1);
+                auto RoundNotice=MakeShared<FJsonObject>(); RoundNotice->SetBoolField(TEXT("visible"),Notice.bVisible);
+                RoundNotice->SetNumberField(TEXT("countdown"),Notice.Countdown); RoundNotice->SetNumberField(TEXT("progress"),Notice.Progress);
+                RoundNotice->SetStringField(TEXT("main"),Notice.Main); RoundNotice->SetStringField(TEXT("detail"),Notice.Detail);
+                Data->SetObjectField(TEXT("round_notice"),RoundNotice);
                 Data->SetBoolField(TEXT("shared_floor_confirmed"),GS->bSharedFloorConfirmed); Data->SetBoolField(TEXT("layout_calibrated"),GS->Layout.bCalibrated);
                 Data->SetNumberField(TEXT("layout_revision"),GS->Layout.Revision); Data->SetNumberField(TEXT("control_revision"),GS->ControlRevision);
                 Data->SetNumberField(TEXT("width_cm"),GS->Layout.WidthCm); Data->SetNumberField(TEXT("length_cm"),GS->Layout.LengthCm); }

@@ -5,9 +5,11 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/WidgetComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/Engine.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Materials/MaterialInterface.h"
@@ -388,9 +390,13 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     FAdminWorld F; if (!TestTrue(TEXT("Round rules use actual authoritative game actors"),F.Create())) return false;
     TestTrue(TEXT("Quest round HUD is attached above the player camera"),F.Players[0]->RoundHud &&
         F.Players[0]->RoundHud->GetAttachParent()==F.Players[0]->Camera && F.Players[0]->RoundHud->GetRelativeLocation().Z>0);
+    TestTrue(TEXT("The round announcement is centered on the Quest camera"),F.Players[0]->RoundNoticeHud &&
+        F.Players[0]->RoundNoticeHud->GetAttachParent()==F.Players[0]->Camera && F.Players[0]->RoundNoticeHud->GetRelativeLocation().Z==0);
     FString Error;
     TestTrue(TEXT("Administrator starts the match"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
     TestTrue(TEXT("The first round begins with a three-second countdown"),F.State->Phase==EMRFPSMatchPhase::BetweenRounds && F.State->RoundNumber==0 && F.State->RoundEndsAt==0 && F.State->RoundHeaderText().Contains(TEXT("3")));
+    TestTrue(TEXT("Countdown presentation starts at three with a full gauge"),F.State->RoundNotice(0).bVisible &&
+        F.State->RoundNotice(0).Countdown==3 && FMath::IsNearlyEqual(F.State->RoundNotice(0).Progress,1.f,.01f));
     const int32 CountdownShots=F.Players[0]->AcceptedShots,CountdownAmmo=F.Players[0]->MagazineRounds;
     F.Players[0]->Pose.LeftOpenness=1;
     F.Players[0]->ServerFire(); F.Players[0]->DeployWall(); F.Players[0]->Tick(.1f);
@@ -411,6 +417,7 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("The HUD uses the same full timer"),F.State->RoundHeaderText().Contains(TEXT("03:00")));
     const double FirstDeadline=F.State->RoundEndsAt;
     TestTrue(TEXT("The admin can pause the round"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));
+    TestTrue(TEXT("A paused match clearly displays a central pause notice"),F.State->RoundNotice(0).bVisible && F.State->RoundNotice(0).Main==TEXT("一時停止"));
     const int32 Frozen=F.State->RoundSecondsRemaining();
     F.World->Tick(LEVELTICK_All,.2f); F.World->Tick(LEVELTICK_All,.2f);
     TestEqual(TEXT("Paused client clock retains the same remaining seconds"),F.State->RoundSecondsRemaining(),Frozen);
@@ -422,6 +429,16 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     F.Mode->OnElimination(F.Players[1],F.Players[0]);
     TestTrue(TEXT("The first kill immediately awards player zero the round"),F.State->RoundWinsSlot0==1 && F.State->RoundWinsSlot1==0 && F.State->CompletedRounds==1 && F.State->LastRoundWinnerSlot==0);
     TestEqual(TEXT("A nonfinal round enters a break"),int32(F.State->Phase),int32(EMRFPSMatchPhase::BetweenRounds));
+    const double Restart=F.State->RestartAt,NoticeNow=F.State->GetServerWorldTimeSeconds();
+    TestTrue(TEXT("The winner and loser see opposite round results before the countdown"),
+        F.State->RoundNotice(0).Main==TEXT("勝利") && F.State->RoundNotice(1).Main==TEXT("敗北") && F.State->RoundNotice(1).bDefeat &&
+        Restart-NoticeNow>AMRFPSGameState::CountdownSeconds);
+    F.State->RestartAt=NoticeNow+2.25;
+    TestTrue(TEXT("The countdown gauge decreases while three is shown"),F.State->RoundNotice(0).Countdown==3 &&
+        FMath::IsNearlyEqual(F.State->RoundNotice(0).Progress,.75f,.01f));
+    F.State->RestartAt=NoticeNow+1.25; TestEqual(TEXT("Countdown advances to two"),F.State->RoundNotice(0).Countdown,2);
+    F.State->RestartAt=NoticeNow+.25; TestEqual(TEXT("Countdown advances to one"),F.State->RoundNotice(0).Countdown,1);
+    F.State->RestartAt=Restart;
     F.Mode->OnElimination(F.Players[1],F.Players[0]);
     TestEqual(TEXT("A duplicate kill during the break cannot change the score"),F.Players[0]->GetPlayerState<AMRFPSPlayerState>()->Kills,1);
     TestTrue(TEXT("The round break also accepts admin pause"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Pause,FVector2D::ZeroVector,Error));
@@ -444,6 +461,8 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     F.Mode->OnElimination(F.Players[1],F.Players[0]); Next();
     F.Mode->OnElimination(F.Players[1],F.Players[0]);
     TestTrue(TEXT("Two round wins finish the match without a third round"),F.State->Phase==EMRFPSMatchPhase::Finished && F.State->RoundNumber==2 && F.State->RoundWinsSlot0==2 && F.State->WinnerSlot==0);
+    TestTrue(TEXT("Final result remains visible with the correct player outcome"),F.State->RoundNotice(0).Main==TEXT("勝利") &&
+        F.State->RoundNotice(1).Main==TEXT("敗北") && F.State->RoundNotice(1).Detail==TEXT("試合終了"));
     TestTrue(TEXT("The losing player's HUD uses their own result"),F.State->RoundScoreText(1).Contains(TEXT("敗北")));
     F.Mode->bRequireAdminStart=false;
     F.Move(0,FVector(0,300,170)); F.Move(1,FVector(0,-300,170));
@@ -452,6 +471,35 @@ bool FMRFPSRoundRulesTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("An explicit admin start begins a new match after completion"),F.Mode->HandleAdminAction(F.Admin,EMRFPSAdminAction::Start,FVector2D::ZeroVector,Error));
     F.FinishCountdown();
     TestTrue(TEXT("The new match has one fresh round and no old wins"),F.State->Phase==EMRFPSMatchPhase::Playing && F.State->RoundNumber==1 && F.State->RoundWinsSlot0==0 && F.State->RoundWinsSlot1==0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSDamageNumberTest,"MRFPS.Weapon.HitDamageNumber",
+    EAutomationTestFlags::EditorContext|EAutomationTestFlags::EngineFilter)
+bool FMRFPSDamageNumberTest::RunTest(const FString& Parameters)
+{
+    FAdminWorld F; if (!TestTrue(TEXT("Damage feedback fixture starts"),F.Create())) return false;
+    auto* ViewerState=F.Admin->GetPlayerState<AMRFPSPlayerState>();
+    ViewerState->Slot=0; ViewerState->bInspector=false; ViewerState->bAdmin=false;
+    auto* Local=NewObject<ULocalPlayer>(GEngine);
+    if (!TestNotNull(TEXT("A local viewing player exists"),Local)) return false;
+    F.Admin->Player=Local; Local->PlayerController=F.Admin;
+    F.Admin->Possess(F.Players[0]);
+    if (!F.Admin->PlayerCameraManager) F.Admin->PlayerCameraManager=F.World->SpawnActor<APlayerCameraManager>();
+    auto* Shooter=F.Players[0]; auto* Target=F.Players[1];
+    F.State->Phase=EMRFPSMatchPhase::Playing; F.State->bNominalDesktopSession=true; F.State->RoundEndsAt=F.World->GetTimeSeconds()+180;
+    const FVector Impact(40,50,100);
+    Target->ApplyShot(20,Shooter,false,Impact);
+    if (!TestEqual(TEXT("An authoritative hit creates one local damage label"),Shooter->DamageNumberLabels.Num(),1)) return false;
+    auto* Label=Shooter->DamageNumberLabels[0].Get();
+    TestTrue(TEXT("The label displays actual damage at the impact"),Label && Label->IsVisible() &&
+        Label->Text.ToString()==TEXT("20") && Shooter->DamageNumberStates[0].Location.Equals(Impact));
+    Target->ApplyShot(-20,Shooter,false,Impact);
+    TestEqual(TEXT("Rejected damage produces no extra label"),Shooter->DamageNumberLabels.Num(),1);
+    Shooter->DamageNumberStates[0].StartedAt=FPlatformTime::Seconds()-2.; Shooter->UpdateDamageNumbers();
+    TestFalse(TEXT("The label expires locally"),Label->IsVisible());
+    Shooter->ClientDamageNumber(Impact,30,1);
+    TestTrue(TEXT("A later hit reuses the bounded label pool"),Shooter->DamageNumberLabels.Num()==1 && Label->IsVisible() && Label->Text.ToString()==TEXT("30"));
     return true;
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Submit retry-safe local UE control requests without keyboard/mouse automation.
 
-The matching protocol-15 client reads its user-local control directory while
+The matching protocol-16 client reads its user-local control directory while
 running. A request ID identifies immutable intent; reuse it after a timeout.
 """
 from __future__ import annotations

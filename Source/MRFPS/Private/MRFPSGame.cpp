@@ -355,6 +355,12 @@ AMRFPSPawn::AMRFPSPawn()
     RoundHud->SetRelativeLocation(FVector(85,0,30)); RoundHud->SetRelativeRotation(FRotator(0,180,0));
     RoundHud->SetCollisionEnabled(ECollisionEnabled::NoCollision); RoundHud->SetOnlyOwnerSee(true);
     RoundHud->SetVisibility(false);
+    RoundNoticeHud=CreateDefaultSubobject<UWidgetComponent>(TEXT("RoundNoticeHud"));
+    RoundNoticeHud->SetupAttachment(Camera); RoundNoticeHud->SetWidgetSpace(EWidgetSpace::World);
+    RoundNoticeHud->SetDrawSize(FVector2D(600,280)); RoundNoticeHud->SetPivot(FVector2D(.5,.5));
+    RoundNoticeHud->SetRelativeScale3D(FVector(.11)); RoundNoticeHud->SetRelativeLocation(FVector(85,0,0));
+    RoundNoticeHud->SetRelativeRotation(FRotator(0,180,0)); RoundNoticeHud->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    RoundNoticeHud->SetOnlyOwnerSee(true); RoundNoticeHud->SetBackgroundColor(FLinearColor::Transparent); RoundNoticeHud->SetVisibility(false);
     EnemyHealthBar=CreateDefaultSubobject<UWidgetComponent>(TEXT("EnemyHealthBar"));
     EnemyHealthBar->SetupAttachment(RootComponent); EnemyHealthBar->SetWidgetSpace(EWidgetSpace::World);
     EnemyHealthBar->SetDrawSize(FVector2D(200,24)); EnemyHealthBar->SetPivot(FVector2D(.5,.5));
@@ -797,19 +803,27 @@ void AMRFPSPawn::ServerFire_Implementation()
         if (auto* Target=Cast<AMRFPSPawn>(Hit.GetActor())) {
             const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
             if (Hit.GetComponent()==Target->MiniShield && Target->bShieldActive && GS && GS->Phase==EMRFPSMatchPhase::Playing && Target->CanAct()) {
+                const float Blocked=FMath::Min(Target->ShieldEnergy,22.f);
                 Target->ShieldEnergy=FMath::Max(0.f,Target->ShieldEnergy-22.f); Target->LastShieldUse=Now;
+                if (Blocked>0 && Cast<APlayerController>(Controller)) ClientDamageNumber(Hit.ImpactPoint+Hit.ImpactNormal*3,Blocked,2);
                 UE_LOG(LogMRFPS,Display,TEXT("MRFPS_BLOCK shooter=%d target=%d shield=%.1f"),GetSlot(),Target->GetSlot(),Target->ShieldEnergy);
-            } else Target->ApplyShot(Hit.GetComponent()==Target->HeadHitbox ? 30.f : 20.f,this,Hit.GetComponent()==Target->HeadHitbox);
-        } else if (auto* Wall=Cast<AMRFPSBarrier>(Hit.GetActor())) Wall->ApplyShot(20);
+            } else Target->ApplyShot(Hit.GetComponent()==Target->HeadHitbox ? 30.f : 20.f,this,Hit.GetComponent()==Target->HeadHitbox,Hit.ImpactPoint+Hit.ImpactNormal*3);
+        } else if (auto* Wall=Cast<AMRFPSBarrier>(Hit.GetActor())) {
+            const float Applied=FMath::Min(FMath::Max(0.f,Wall->Health),20.f);
+            Wall->ApplyShot(20); if (Applied>0 && Cast<APlayerController>(Controller)) ClientDamageNumber(Hit.ImpactPoint+Hit.ImpactNormal*3,Applied,3);
+        }
     }
     ClientFeedback(0,0); MulticastShot(Start,bGeometryHit ? GeometryHit : bHit ? Hit.ImpactPoint : End,bHit || bGeometryHit);
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_SHOT slot=%d count=%d"),GetSlot(),AcceptedShots);
 }
-void AMRFPSPawn::ApplyShot(float Damage, AMRFPSPawn* Shooter, bool bHeadshot)
+void AMRFPSPawn::ApplyShot(float Damage, AMRFPSPawn* Shooter, bool bHeadshot,const FVector& HitLocation)
 {
     const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
     if (!HasAuthority() || !GS || GS->Phase!=EMRFPSMatchPhase::Playing || !CanAct() || !Shooter || !Shooter->CanAct() || Shooter==this || !FMath::IsFinite(Damage) || Damage<=0) return;
-    Health=FMath::Max(0.f,Health-Damage); ClientFeedback(Health<=0 ? 2 : 1,Damage);
+    const float Applied=FMath::Min(Health,Damage);
+    Health=FMath::Max(0.f,Health-Damage); ClientFeedback(Health<=0 ? 2 : 1,Applied);
+    if (Applied>0 && !HitLocation.ContainsNaN() && Cast<APlayerController>(Shooter->GetController()))
+        Shooter->ClientDamageNumber(HitLocation,Applied,bHeadshot?1:0);
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_DAMAGE target=%d shooter=%d health=%.1f headshot=%d"),GetSlot(),Shooter->GetSlot(),Health,bHeadshot);
     if (Health<=0) {
         bShieldActive=false; RespawnAt=GetWorld()->GetTimeSeconds()+3;
@@ -1483,6 +1497,28 @@ void AMRFPSHUD::DrawHUD()
         Centered(GS->RoundScoreText(Inspector?-1:HUDPawn->GetSlot()),52,16,FLinearColor(.55f,.8f,.9f));
         if (MissingScan) Centered(TEXT("障害物スキャン未受信"),75,13,FLinearColor(1.f,.68f,.2f));
     }
+    if (GS && (Inspector || DesktopPlayer)) {
+        const auto Notice=GS->RoundNotice(Inspector?-1:HUDPawn->GetSlot());
+        if (Notice.bVisible) {
+            const float W=FMath::Min(460.f,float(Canvas->SizeX)-32.f),H=210.f;
+            const float X=(Canvas->SizeX-W)*.5f,Y=(Canvas->SizeY-H)*.5f;
+            const FLinearColor Edge=Notice.bDefeat?FLinearColor(1.f,.32f,.27f,.95f):FLinearColor(.19f,.82f,1.f,.95f);
+            DrawRect(FLinearColor(.008f,.025f,.045f,.82f),X,Y,W,H);
+            DrawLine(X+3,Y+3,X+W-3,Y+3,Edge,2.f); DrawLine(X+3,Y+H-3,X+W-3,Y+H-3,Edge,2.f);
+            const auto CenteredNotice=[this,X,W](const FString& Value,float LineY,int32 Size,FLinearColor Color) {
+                FCanvasTextItem Item(FVector2D(X+W*.5f,LineY),FText::FromString(Value),
+                    FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size),Color);
+                Item.Font=GEngine?GEngine->GetSmallFont():nullptr; Item.bCentreX=true;
+                Item.EnableShadow(FLinearColor(0,0,0,.6)); Canvas->DrawItem(Item);
+            };
+            CenteredNotice(Notice.Detail,Y+20,22,FLinearColor(.55f,.8f,.9f));
+            CenteredNotice(Notice.Main,Y+54,80,Notice.bDefeat?FLinearColor(1.f,.38f,.32f):FLinearColor(.75f,1.f,.96f));
+            if (Notice.Countdown>0) {
+                DrawRect(FLinearColor(.12f,.27f,.34f,.9f),X+35,Y+H-28,W-70,6);
+                DrawRect(Edge,X+35,Y+H-28,(W-70)*Notice.Progress,6);
+            }
+        }
+    }
     if (DesktopPlayer) {
         const auto* P=HUDPawn;
         const float W=FMath::Min(440.f,FMath::Max(120.f,float(Canvas->SizeX)-32.f));
@@ -1720,7 +1756,7 @@ void AMRFPSGameMode::ResetMatch()
     GS->RoundNumber=GS->CompletedRounds=GS->RoundWinsSlot0=GS->RoundWinsSlot1=0;
     GS->LastRoundWinnerSlot=GS->WinnerSlot=-1; GS->RoundEndsAt=GS->RoundPausedAt=GS->RestartAt=0;
     GS->Phase=EMRFPSMatchPhase::BetweenRounds;
-    GS->RestartAt=GetWorld()->GetTimeSeconds()+3.; GS->ForceNetUpdate();
+    GS->RestartAt=GetWorld()->GetTimeSeconds()+AMRFPSGameState::CountdownSeconds; GS->ForceNetUpdate();
     UE_LOG(LogMRFPS,Display,TEXT("MRFPS_MATCH countdown"));
 }
 void AMRFPSGameMode::Tick(float Dt)
@@ -1776,7 +1812,7 @@ void AMRFPSGameMode::Tick(float Dt)
 
 void UMRFPSGameInstance::Init()
 {
-    FNetworkVersion::SetGameNetworkProtocolVersion(15);
+    FNetworkVersion::SetGameNetworkProtocolVersion(16);
     Super::Init();
 #if !UE_SERVER && (PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_LINUX)
     // This CVar is marked Cheat in UE 5.8, so setting it in Engine.ini causes
@@ -1955,6 +1991,44 @@ void AMRFPSPawn::ClientFeedback_Implementation(uint8 Kind, float Damage)
     else if (Kind==3) Haptics->NotifyRespawn();
     else Haptics->NotifyDamage(Damage,Kind==2);
 }
+void AMRFPSPawn::ClientDamageNumber_Implementation(FVector_NetQuantize10 HitLocation,float Damage,uint8 Style)
+{
+#if !UE_SERVER
+    if (!IsLocallyControlled() || HitLocation.ContainsNaN() || !FMath::IsFinite(Damage) || Damage<=0 || Damage>1000 || Style>3) return;
+    const double Now=FPlatformTime::Seconds(); int32 Index=INDEX_NONE;
+    for (int32 I=0;I<DamageNumberStates.Num();++I) if (Now-DamageNumberStates[I].StartedAt>=1.2) { Index=I; break; }
+    if (Index==INDEX_NONE && DamageNumberLabels.Num()<8) {
+        auto* DamageLabel=NewObject<UTextRenderComponent>(this);
+        if (!DamageLabel) return;
+        AddInstanceComponent(DamageLabel); DamageLabel->SetupAttachment(RootComponent); DamageLabel->SetHorizontalAlignment(EHTA_Center);
+        DamageLabel->SetVerticalAlignment(EVRTA_TextCenter); DamageLabel->SetWorldSize(16); DamageLabel->SetVisibility(false); DamageLabel->RegisterComponent();
+        Index=DamageNumberLabels.Add(DamageLabel); DamageNumberStates.AddDefaulted();
+    }
+    if (Index==INDEX_NONE) {
+        Index=0; for (int32 I=1;I<DamageNumberStates.Num();++I) if (DamageNumberStates[I].StartedAt<DamageNumberStates[Index].StartedAt) Index=I;
+    }
+    auto* DamageLabel=DamageNumberLabels[Index].Get(); if (!DamageLabel) return;
+    DamageLabel->SetText(FText::AsNumber(FMath::RoundToInt(Damage)));
+    DamageLabel->SetTextRenderColor(Style==1?FColor(255,203,83):Style==2?FColor(90,178,255):FColor(225,255,250));
+    DamageNumberStates[Index].Location=FVector(HitLocation)+FVector(0,0,(Index%3)*3);
+    DamageNumberStates[Index].StartedAt=Now; DamageLabel->SetVisibility(true); UpdateDamageNumbers();
+#endif
+}
+void AMRFPSPawn::UpdateDamageNumbers()
+{
+#if !UE_SERVER
+    if (!IsLocallyControlled() || DamageNumberLabels.IsEmpty()) return;
+    const auto* PC=Cast<APlayerController>(Controller); if (!PC || !PC->PlayerCameraManager) return;
+    const double Now=FPlatformTime::Seconds();
+    for (int32 I=0;I<DamageNumberLabels.Num() && I<DamageNumberStates.Num();++I) {
+        auto* DamageLabel=DamageNumberLabels[I].Get(); if (!DamageLabel || !DamageLabel->IsVisible()) continue;
+        const double Age=FMath::Max(0.,Now-DamageNumberStates[I].StartedAt);
+        if (Age>=1.2) { DamageLabel->SetVisibility(false); continue; }
+        const FVector Position=DamageNumberStates[I].Location+FVector(0,0,Age*22.);
+        DamageLabel->SetWorldLocationAndRotation(Position,(PC->PlayerCameraManager->GetCameraLocation()-Position).Rotation());
+    }
+#endif
+}
 void AMRFPSPawn::MulticastShot_Implementation(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit)
 {
     if (GetNetMode()==NM_DedicatedServer) return;
@@ -2037,7 +2111,7 @@ void AMRFPSPawn::Tick(float Dt)
         if (ShowAvatar && Health>0 && Avatar->IsAvatarReady()) Avatar->UpdateTracking(Pose,MRFPS::Layout(GetWorld()),GeometryCalibrationGeneration,Dt,false);
         else Avatar->SetVisibility(false);
     }
-    UpdateVisuals();UpdatePlayerHud();UpdateEnemyHealthBar();
+    UpdateVisuals();UpdatePlayerHud();UpdateEnemyHealthBar();UpdateDamageNumbers();
     if (APlayerController* PC=GetWorld()->GetFirstPlayerController(); PC && PC->PlayerCameraManager) {
         Label->SetWorldRotation((PC->PlayerCameraManager->GetCameraLocation()-Label->GetComponentLocation()).Rotation());
     }

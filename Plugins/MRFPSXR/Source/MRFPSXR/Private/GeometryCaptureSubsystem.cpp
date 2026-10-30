@@ -15,15 +15,21 @@ void UMRFPSGeometryCaptureSubsystem::Deinitialize()
     Super::Deinitialize();
 }
 
-void UMRFPSGeometryCaptureSubsystem::RequestCapture()
+bool UMRFPSGeometryCaptureSubsystem::RequestCapture()
 {
 #if PLATFORM_ANDROID && !UE_SERVER
-    if (!IsInGameThread() || bWaitingForPermission || !MRFPSGeometryRuntime::CanRequest()) return;
+    if (!IsInGameThread()) return false;
+    // A denied permission is not retried automatically; a pending request also
+    // counts as accepted so the controller does not open multiple dialogs.
+    if (bWaitingForPermission || bPermissionDeclined) return true;
+    // The OpenXR session may not have finished starting yet. Let the caller
+    // retry rather than recording a request that was never actually submitted.
+    if (!MRFPSGeometryRuntime::CanRequest()) return false;
     if (UAndroidPermissionFunctionLibrary::CheckPermission(SpatialPermission))
     {
         bPermissionDeclined = false;
         MRFPSGeometryRuntime::SetRequested(true);
-        return;
+        return true;
     }
     bWaitingForPermission = true;
     bPermissionDeclined = false;
@@ -32,6 +38,9 @@ void UMRFPSGeometryCaptureSubsystem::RequestCapture()
     PermissionRequest = Proxy;
     Proxy->OnPermissionsGrantedDynamicDelegate.AddUniqueDynamic(this, &UMRFPSGeometryCaptureSubsystem::OnSpatialPermission);
     UAndroidPermissionFunctionLibrary::AcquirePermissions({SpatialPermission});
+    return true;
+#else
+    return false;
 #endif
 }
 

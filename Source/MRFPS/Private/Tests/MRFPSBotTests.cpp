@@ -30,7 +30,7 @@ public:
         Human->LastPoseReceived=World->GetTimeSeconds();
         World->Tick(LEVELTICK_All,.05f);
         const double Now=World->GetTimeSeconds();
-        if (Now>30) { Test->AddError(TEXT("Bot scenario exceeded its simulated deadline")); return true; }
+        if (Now>35) { Test->AddError(TEXT("Bot scenario exceeded its simulated deadline")); return true; }
         if (Stage==0) return AwaitCombat(Now);
         if (Stage==1) return AwaitRespawn(Now);
         if (Stage==2) return AwaitTrackingRecovery(Now);
@@ -104,7 +104,7 @@ private:
     bool AwaitRespawn(double Now)
     {
         if (!IsValid(Bot) || !IsValid(Fighter)) { Test->AddError(TEXT("Bot disappeared during respawn")); return true; }
-        if (Fighter->Health<=0 && Now-StageStarted<4) return false;
+        if (Fighter->Health<=0 && Now-StageStarted<6) return false;
         if (!Test->TestTrue(TEXT("Bot respawns for the second round with the first win retained"),Fighter->Health==100.f &&
             GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundNumber==2 && GS->RoundWinsSlot0==1)) return true;
         Human->Health=100; Human->LastPoseReceived=Fighter->LastPoseReceived=Now;
@@ -116,7 +116,7 @@ private:
     bool AwaitHumanRespawn(double Now)
     {
         if (!IsValid(Bot) || !IsValid(Fighter)) { Test->AddError(TEXT("Bot disappeared before the third round")); return true; }
-        if (Human->Health<=0 && Now-StageStarted<4) return false;
+        if (Human->Health<=0 && Now-StageStarted<6) return false;
         // The behavior tree can fire on the same tick the countdown ends.
         if (!Test->TestTrue(TEXT("The player respawns for the third round with both scores retained"),Human->Health>0.f &&
             GS->Phase==EMRFPSMatchPhase::Playing && GS->RoundNumber==3 && GS->RoundWinsSlot0==1 && GS->RoundWinsSlot1==1)) return true;

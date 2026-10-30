@@ -84,6 +84,39 @@ public:
 private:
     TWeakObjectPtr<AMRFPSPawn> Pawn;
 };
+
+class SMRFPSRoundNoticeFrame final : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SMRFPSRoundNoticeFrame) {}
+        SLATE_ARGUMENT(TWeakObjectPtr<AMRFPSPawn>, Pawn)
+    SLATE_END_ARGS()
+    void Construct(const FArguments& Args) { Pawn=Args._Pawn; }
+    virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(600,280); }
+    virtual int32 OnPaint(const FPaintArgs&,const FGeometry& Geometry,const FSlateRect&,
+        FSlateWindowElementList& Elements,int32 Layer,const FWidgetStyle&,bool) const override
+    {
+        const auto* State=Pawn.IsValid() && Pawn->GetWorld()?Pawn->GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+        if (!State) return Layer;
+        const FMRFPSRoundNotice Notice=State->RoundNotice(Pawn->GetSlot());
+        if (!Notice.bVisible) return Layer;
+        const FVector2D Size=Geometry.GetLocalSize(); const float W=float(Size.X),H=float(Size.Y);
+        const FLinearColor Edge=Notice.bDefeat?FLinearColor(1.f,.32f,.27f,.95f):FLinearColor(.19f,.82f,1.f,.95f);
+        FSlateDrawElement::MakeBox(Elements,Layer,Geometry.ToPaintGeometry(),
+            FCoreStyle::Get().GetBrush("WhiteBrush"),ESlateDrawEffect::None,FLinearColor(.008f,.025f,.045f,.82f));
+        const auto Line=[&](TArray<FVector2f> Points,FLinearColor Color,float Thickness) {
+            FSlateDrawElement::MakeLines(Elements,Layer+1,Geometry.ToPaintGeometry(),MoveTemp(Points),ESlateDrawEffect::None,Color,true,Thickness);
+        };
+        Line({{4,26},{26,4},{W-26,4},{W-4,26},{W-4,H-26},{W-26,H-4},{26,H-4},{4,H-26},{4,26}},Edge,2.f);
+        if (Notice.Countdown>0) {
+            Line({{45,H-30},{W-45,H-30}},FLinearColor(.12f,.27f,.34f,.9f),7.f);
+            Line({{45,H-30},{45+(W-90)*Notice.Progress,H-30}},Edge,7.f);
+        }
+        return Layer+1;
+    }
+private:
+    TWeakObjectPtr<AMRFPSPawn> Pawn;
+};
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogMRFPSWeapon,Log,All);
@@ -134,9 +167,30 @@ void AMRFPSPawn::UpdatePlayerHud()
     const bool Show=IsLocallyControlled() && IsXR();
     PlayerHud->SetVisibility(Show);
     if (RoundHud) RoundHud->SetVisibility(Show);
+    const auto* NoticeState=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+    if (RoundNoticeHud) RoundNoticeHud->SetVisibility(Show && NoticeState && NoticeState->RoundNotice(GetSlot()).bVisible);
     if (!Show) return;
     const TWeakObjectPtr<AMRFPSPawn> Weak(this);
     const auto Font=[](int32 Size) { return FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size); };
+    if (RoundNoticeHud && !RoundNoticeSlate.IsValid()) {
+        const auto Notice=[Weak]() {
+            const auto* GS=Weak.IsValid() && Weak->GetWorld()?Weak->GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
+            return GS?GS->RoundNotice(Weak->GetSlot()):FMRFPSRoundNotice();
+        };
+        RoundNoticeSlate=SNew(SOverlay)
+            +SOverlay::Slot()[SNew(SMRFPSRoundNoticeFrame).Pawn(Weak)]
+            +SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(FMargin(0,0,0,18))
+            [SNew(SVerticalBox)
+                +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+                [SNew(STextBlock).Font(Font(25)).ColorAndOpacity(FSlateColor(FLinearColor(.55f,.8f,.9f)))
+                    .Text_Lambda([Notice]() { return FText::FromString(Notice().Detail); })]
+                +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+                [SNew(STextBlock).Font(Font(86)).ColorAndOpacity_Lambda([Notice]() {
+                    return FSlateColor(Notice().bDefeat?FLinearColor(1.f,.38f,.32f):FLinearColor(.75f,1.f,.96f)); })
+                    .Text_Lambda([Notice]() { return FText::FromString(Notice().Main); })]
+            ];
+        RoundNoticeHud->SetSlateWidget(RoundNoticeSlate);
+    }
     if (RoundHud && !RoundHudSlate.IsValid()) {
         RoundHudSlate=SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
             .BorderBackgroundColor(FLinearColor(.008f,.025f,.045f,.78f)).Padding(FMargin(12,5))

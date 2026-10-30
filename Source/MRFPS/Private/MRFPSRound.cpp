@@ -16,12 +16,43 @@ FString AMRFPSGameState::RoundHeaderText() const
     if (Phase==EMRFPSMatchPhase::Waiting) return TEXT("対戦待ち");
     if (Phase==EMRFPSMatchPhase::BetweenRounds) {
         const double Now=bCombatPaused ? RoundPausedAt : GetServerWorldTimeSeconds();
-        const int32 Seconds=FMath::CeilToInt32(FMath::Clamp(RestartAt-Now,0.,3.));
+        if (CompletedRounds>0 && RestartAt-Now>CountdownSeconds) return bCombatPaused?TEXT("ラウンド終了  一時停止"):TEXT("ラウンド終了");
+        const int32 Seconds=FMath::CeilToInt32(FMath::Clamp(RestartAt-Now,0.,CountdownSeconds));
         return FString::Printf(TEXT("開始まで %d%s"),Seconds,bCombatPaused?TEXT("  一時停止"):TEXT(""));
     }
     if (Phase==EMRFPSMatchPhase::Finished) return WinnerSlot<0 ? TEXT("引き分け") : TEXT("試合終了");
     const int32 Seconds=RoundSecondsRemaining();
     return FString::Printf(TEXT("第%d / %d   %02d:%02d%s"),RoundNumber,MaximumRounds,Seconds/60,Seconds%60,bCombatPaused?TEXT("  一時停止"):TEXT(""));
+}
+
+FMRFPSRoundNotice AMRFPSGameState::RoundNotice(int32 ViewerSlot) const
+{
+    FMRFPSRoundNotice Result;
+    if (bCombatPaused && Phase==EMRFPSMatchPhase::Playing) {
+        Result.bVisible=true; Result.Main=TEXT("一時停止"); Result.Detail=TEXT("追跡・管理操作を確認"); return Result;
+    }
+    const double Now=bCombatPaused ? RoundPausedAt : GetServerWorldTimeSeconds();
+    const double Remaining=FMath::Max(0.,RestartAt-Now);
+    if (Phase==EMRFPSMatchPhase::BetweenRounds && RestartAt>0 &&
+        (CompletedRounds==0 || Remaining<=CountdownSeconds)) {
+        Result.bVisible=true;
+        Result.Countdown=FMath::Clamp(FMath::CeilToInt32(Remaining),1,3);
+        Result.Progress=float(FMath::Clamp(Remaining/CountdownSeconds,0.,1.));
+        Result.Main=FString::FromInt(Result.Countdown);
+        Result.Detail=bCombatPaused?TEXT("一時停止"):TEXT("ラウンド開始");
+        return Result;
+    }
+    const bool MatchResult=Phase==EMRFPSMatchPhase::Finished;
+    if (!MatchResult && !(Phase==EMRFPSMatchPhase::BetweenRounds && CompletedRounds>0 && Remaining>CountdownSeconds)) return Result;
+    Result.bVisible=true;
+    const int32 Winner=MatchResult?WinnerSlot:LastRoundWinnerSlot;
+    const bool Player=ViewerSlot==0 || ViewerSlot==1;
+    Result.bDefeat=Player && Winner>=0 && Winner!=ViewerSlot;
+    Result.Main=Winner<0?TEXT("引き分け"):Player?(Winner==ViewerSlot?TEXT("勝利"):TEXT("敗北")):
+        FString::Printf(TEXT("P%d 勝利"),Winner+1);
+    Result.Detail=MatchResult?TEXT("試合終了"):FString::Printf(TEXT("ラウンド %d"),CompletedRounds);
+    if (bCombatPaused) Result.Detail+=TEXT("  一時停止");
+    return Result;
 }
 
 FString AMRFPSGameState::RoundScoreText(int32 Slot) const
@@ -69,7 +100,7 @@ void AMRFPSGameMode::FinishRound(bool bElimination)
     GS->WinnerSlot=GS->RoundWinsSlot0>=AMRFPSGameState::RoundsToWin ? 0 :
         GS->RoundWinsSlot1>=AMRFPSGameState::RoundsToWin ? 1 : -1;
     GS->Phase=MatchOver ? EMRFPSMatchPhase::Finished : EMRFPSMatchPhase::BetweenRounds;
-    GS->RestartAt=MatchOver?0.:GetWorld()->GetTimeSeconds()+3.;
+    GS->RestartAt=MatchOver?0.:GetWorld()->GetTimeSeconds()+AMRFPSGameState::ResultSeconds+AMRFPSGameState::CountdownSeconds;
     for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) { It->bShieldActive=false; It->ClientCombatStopped(); }
     GS->ForceNetUpdate();
     UE_LOG(LogMRFPSRound,Display,TEXT("MRFPS_ROUND_END round=%d winner=%d kills0=%d kills1=%d wins0=%d wins1=%d"),

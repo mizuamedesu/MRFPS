@@ -55,6 +55,23 @@ enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFlo
 UENUM(BlueprintType)
 enum class EMRFPSMatchPhase : uint8 { Waiting, Playing, Finished, BetweenRounds };
 
+// A local presentation derived only from replicated match state and server time.
+struct FMRFPSRoundNotice
+{
+    FString Main;
+    FString Detail;
+    float Progress=0;
+    int32 Countdown=0;
+    bool bVisible=false;
+    bool bDefeat=false;
+};
+
+struct FMRFPSDamagePopupState
+{
+    FVector Location=FVector::ZeroVector;
+    double StartedAt=-100;
+};
+
 // Quantized ContactGlove joint flexions and finger spreads, thumb to little.
 // Invalid input is explicit; a disconnected glove must never retain a grip.
 USTRUCT()
@@ -180,6 +197,8 @@ public:
     static constexpr int32 RoundDurationSeconds=180;
     static constexpr int32 MaximumRounds=3;
     static constexpr int32 RoundsToWin=2;
+    static constexpr double CountdownSeconds=3.;
+    static constexpr double ResultSeconds=2.;
     UPROPERTY(Replicated,BlueprintReadOnly) int32 RoundNumber=0;
     UPROPERTY(Replicated,BlueprintReadOnly) int32 CompletedRounds=0;
     UPROPERTY(Replicated,BlueprintReadOnly) int32 RoundWinsSlot0=0;
@@ -190,6 +209,7 @@ public:
     int32 RoundSecondsRemaining() const;
     FString RoundHeaderText() const;
     FString RoundScoreText(int32 Slot) const;
+    FMRFPSRoundNotice RoundNotice(int32 ViewerSlot) const;
     UPROPERTY(ReplicatedUsing=OnRepLayout,BlueprintReadOnly) FMRFPSArenaLayout Layout;
     UPROPERTY(Replicated,BlueprintReadOnly) bool bSharedFloorConfirmed=false;
     UPROPERTY(Replicated,BlueprintReadOnly) bool bNominalDesktopSession=false;
@@ -277,7 +297,7 @@ public:
     uint64 GetGeometryCalibrationEpoch() const { return GeometryCalibratedEpoch; }
     void InvalidateGeometryCalibration();
     int32 GetSlot() const;
-    void ApplyShot(float Damage, AMRFPSPawn* Shooter, bool bHeadshot);
+    void ApplyShot(float Damage, AMRFPSPawn* Shooter, bool bHeadshot,const FVector& HitLocation=FVector::ZeroVector);
     void DeployWall();
     FVector Muzzle() const;
     bool GetLocalWeaponPose(FMRFPSWeaponPose& Out);
@@ -290,6 +310,7 @@ public:
     UFUNCTION(Server, Reliable) void ServerDesktopReload();
     UFUNCTION(Server, Reliable) void ServerDesktopWall();
     UFUNCTION(Client, Reliable) void ClientFeedback(uint8 Kind, float Damage);
+    UFUNCTION(Client, Unreliable) void ClientDamageNumber(FVector_NetQuantize10 HitLocation, float Damage, uint8 Style);
     UFUNCTION(NetMulticast, Unreliable) void MulticastShot(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit);
     UFUNCTION() void OnRepPose();
     UPROPERTY(ReplicatedUsing=OnRepPose) FMRFPSPose Pose;
@@ -320,6 +341,7 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> HeadsetStatus;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> PlayerHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> RoundHud;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> RoundNoticeHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> EnemyHealthBar;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSHapticsComponent> Haptics;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UVRNotificationsComponent> XRNotifications;
@@ -333,6 +355,7 @@ private:
     friend class FMRFPSLoginPointerPoseTest;
     friend class FMRFPSQuestLoginToggleTest;
     friend class FMRFPSEnemyHealthBarTest;
+    friend class FMRFPSDamageNumberTest;
 #endif
     bool IsPhysicalFireAllowed() const;
     void SampleLocalPose(float DeltaSeconds);
@@ -341,6 +364,7 @@ private:
     void UpdateWeaponFromPose(double Now);
     void UpdatePlayerHud();
     void UpdateEnemyHealthBar();
+    void UpdateDamageNumbers();
     void CompletePendingCalibration();
     UFUNCTION() void InvalidateCalibration();
     UFUNCTION() void OnXRSpaceChanged();
@@ -377,7 +401,10 @@ private:
     FMRFPSReloadGesture ServerReload;
     TSharedPtr<SWidget> PlayerHudSlate;
     TSharedPtr<SWidget> RoundHudSlate;
+    TSharedPtr<SWidget> RoundNoticeSlate;
     TSharedPtr<SWidget> EnemyHealthBarSlate;
+    UPROPERTY(Transient) TArray<TObjectPtr<UTextRenderComponent>> DamageNumberLabels;
+    TArray<FMRFPSDamagePopupState> DamageNumberStates;
 };
 
 UCLASS()

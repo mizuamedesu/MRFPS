@@ -74,7 +74,7 @@ void AMRFPSPlayerController::TickMeasuredGeometry()
         GeometryLocalLayoutRevision=LayoutState?LayoutState->Layout.Revision:0;
     }
     if (!GeometryTrackingEpoch) GeometryTrackingEpoch=GeometryPawn->GetGeometryCalibrationEpoch();
-    if (!bGeometryCaptureRequested) { Capture->RequestCapture(); bGeometryCaptureRequested=true; }
+    if (!bGeometryCaptureRequested) bGeometryCaptureRequested=Capture->RequestCapture();
     const double Now=FPlatformTime::Seconds();
     FMRFPSEnvironmentGeometryFrame Frame;
     if (Capture->DequeueLatestFrame(Frame)) {
