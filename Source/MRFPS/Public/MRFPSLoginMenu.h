@@ -113,8 +113,6 @@ private:
     TWeakPtr<SWidget> PreviousPointerHit;
     FTransform LastGeometryMuzzle,LastGeometryPanel,LastGeometryCamera;
     double LastGeometryTick=-1;
-    std::uint64_t GloveCursor=0;
-    bool bGloveCursorInitialized=false;
     MRFPSLoginPointer::EInput AnnouncedInput=MRFPSLoginPointer::EInput::None;
     bool bInputAnnounced=false;
     FDelegateHandle FocusLostHandle,FocusGainedHandle,BackgroundHandle,ForegroundHandle;

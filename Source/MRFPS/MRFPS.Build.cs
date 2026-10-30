@@ -10,7 +10,7 @@ public class MRFPS : ModuleRules
         PublicDependencyModuleNames.AddRange(new[] {
             "Core", "CoreUObject", "Engine", "InputCore", "NetCore",
             "HeadMountedDisplay", "XRBase", "UMG", "Slate", "SlateCore",
-            "MRFPSGloves", "MRFPSHaptics", "MoBitsSDK", "MRFPSAuth", "MRFPSTransport", "PacketHandler", "OnlineSubsystemUtils"
+            "MRFPSHaptics", "MoBitsSDK", "MRFPSAuth", "MRFPSTransport", "PacketHandler", "OnlineSubsystemUtils"
         });
         PrivateDependencyModuleNames.AddRange(new[] { "HTTP", "Json", "AIModule", "NavigationSystem", "GameplayTasks", "Sockets", "SSL" });
         AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");

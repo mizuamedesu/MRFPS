@@ -20,7 +20,6 @@
     { "Name": "IKRig", "Enabled": true, "TargetDenyList": ["Server"] },
     { "Name": "AnimationData", "Enabled": true },
     { "Name": "ACLPlugin", "Enabled": true },
-    { "Name": "MRFPSGloves", "Enabled": true },
     { "Name": "MRFPSHaptics", "Enabled": true },
     { "Name": "MoBitsSDK", "Enabled": true },
     { "Name": "MRFPSAuth", "Enabled": true },

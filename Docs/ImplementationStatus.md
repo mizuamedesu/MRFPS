@@ -14,7 +14,6 @@
 | 固定床・管理 | 既定X4.5m/Y7m。明示校正時だけ二人のXY中点・方向を反映し、床高さ・サイズ・追跡縮尺を維持。protocol4の実UIで壁の配置・他クライアント反映、幅変更と復元、Esc解放を確認 |
 | 実測ジオメトリ | 動的な表面送受信、鮮度・校正世代管理、サーバーの三角形弾遮蔽を実装。クライアントの足接地問い合わせも追加。8自動試験が合格。実障害物を使う確認は未完了 |
 | Mac | OpenXR依存の分離、MacのEnhancedInput依存、共通映像・認証経路、ビルド・起動スクリプトとメモリ監視を追加。Bash構文と軽量テスト10件合格。Mac実機でのビルド・表示は未確認 |
-| ContactGlove | USBドングルとDivingStationのOSC通信を確認。左手の接続・指データ受信とPC中継を実測、右手は電源投入時も未接続。両手の実ジェスチャー・Quest内の反映は未確認 |
 | MoBits | Android向け公式アプリをQuest 3にビルド・導入し、起動とBluetooth権限を確認。機器の接続、Quest上のMRFPSとのアプリ間連携、実出力は未確認。PC上では実GUI SDK通信とRust SDK・UEの障害復旧結合試験が合格 |
 
 最新の作業runは`Saved/Validation/MannyBuild-20261028-1745/`。protocol4の配布・ネットワーク・画面証拠は`Saved/Validation/AdminVideoRecovery-20261028-1518/`にあります。秘密鍵、JWT、部屋の画像はGitに含めません。実測した範囲と未検証の実機条件を分けて記録します。
@@ -27,10 +26,8 @@
 
 - Auth 4件: `AdmissionAndReplay`、`AtomicReservation`、`ClientVerifiedCredentials`、`EnvironmentFailsClosed`。
 - Core 3件: `AuthorityCombat`、`PoseValidation`、`RiseGesture`。
-- Gloves 1件: `OSCValidation`。
 - Transport 2件: `NativeDTLSHandshake`、`NoPlaintextDowngrade`。
 
-同じvalidationの `MoBitsSDK/run-report.json` は03:37:07ZにExit0、3 entrypointともSuccessです。ただし `RecoveryInterop` と `RustInterop` の2件は `InteropNotExercised` で、外部fixtureを使う部分は未実行です。13個のSuccess stateを13件の完全なinterop実行とは扱いません。Editor全体リンクとSetupの先行記録もあります。これらは実プロセスの対戦、Questの見え方、装着したMoBits・ContactGloveの確認を代替しません。
 
 ## 実プロセスの認証試験
 
@@ -55,7 +52,6 @@
 - 3人目のfighterの `ARENA_FULL` 拒否、対戦joinが2人だけであること。
 - 公開鍵認証server、ログ上 `NoCredentialLeak`、`NoFatalError`。
 
-これはWindows上のNullRHI通信試験です。描画済み画面、MR passthrough、Quest実機、実空間校正、MoBits・グローブの物理動作を確認したという意味ではありません。別工程のLinuxServer BuildCookRunは成功し、`Artifacts/Packages/LinuxServer` にパッケージを生成しました。証拠は `Saved/BuildLogs/LinuxServer-Development-20261028-014111.log` の `BUILD SUCCESSFUL` / AutomationTool ExitCode 0です。
 
 最終packageは `Saved/Validation/LinuxServer-guarded-separated-20261028-040525/report.json` でも04:06:48ZにExit0を確認しました。ShaderCompileWorker／UnrealPak／MRFPSServerを個別native buildしてからUAT-skipbuildとし、複合graphのメモリ負荷を避けています。guard最低空き10.60 GiB／最大commit58.51%でした。
 
@@ -110,10 +106,7 @@ devices/connected_devicesは0、ARM0、PLAY0、physical_feedback_tested=falseで
 | Quest実表示の実写付きstream（追加要望） | capture・transport・Windows UE表示を追加作業中 | 実Quest表示と同時の実写／仮想物／HUDをinspectorで照合し、遅延・切替・認証を確認 | 未検証。既存3D head-view再描画や開発者overlay付きscreencapでは代替しない |
 | 3D情報投影 | 実poseの頭・体・手・銃・盾・情報ラベル | 描画と実プレイヤーposeの照合 | 描画確認待ち |
 | 約10m四方 | cm単位の床座標と1000cm境界、手動原点/yaw校正 | 実空間の床・向き・境界を測定して照合 | 実機校正確認待ち |
-| 左手上昇で壁 | サーバーrecognizer、4s制限、6s寿命、HP | authority実trace/寿命テスト、実グローブ上昇 | RiseGesture・実ワールドの壁被弾／制限／寿命は合格。実グローブ上昇の照合待ち |
-| 左グーで小盾 | 握り状態・位置・エネルギー・trace遮蔽 | authority遮蔽テスト、実グローブ開閉 | 実ワールドの盾遮蔽automationは合格。グー判定と実グローブの位置・開閉の照合待ち |
 | 発射/被弾MoBits | 公式SDK、アプリpreset、所有者event | SDK接続・receiptと、装着者による実際の発射/被弾フィードバック | 本体／host SDK診断とQuest native SDK両HELLO/Connected合格。devices0/ARM0/PLAY0、Quest motion frame数未測定、物理出力・UEイベント連動は未確認 |
-| ContactGlove 2 | 公式OSC形式、接続mask、freshness、PC relay、tracker校正 | 実DivingStationの両手接続・指変化・位置・ボタンの照合 | ドライバー導入・COM3認識・Station起動済み。実Device statusは左右とも未接続 |
 | Claude Code / Blender（追加指示） | Claude Opus 5.5 / xhighのgenerator、Blender5.2、6mesh・blend・FBX/GLB・board | 実manifest、render、UE再importとゲーム表示 | v2実生成5256tris・0errors/0warnings、head球内・board漏れなし。旧5meshの計測値は一致するがhash不一致で完全同一性は未証明。全6FBXのUE再import・寸法照合・Setup合格、ゲーム表示待ち |
 
 ## 確認できた前提
@@ -123,9 +116,6 @@ devices/connected_devicesは0、ARM0、PLAY0、physical_feedback_tested=falseで
 - WSL UbuntuにDocker29.1.3／Compose2.40.3を導入し、hello-worldとWindows↔WSL実コンテナUDP往復、独立client socket、healthcheckの正負ケースを確認しました。
 - 個別MSVC検査に加え、Editor全体リンク・Setup・上記実UE automation 10件も成功しました。APK・Linux実container・単一inspectorの結果は上記の独立した証拠で記録します。
 - 認証verifierはengine OpenSSL 1.1.1tで3061チェック（不正入力3000件を含む）に合格し、独立したPython発行JWTの署名・9claim・試験用pinの相互運用を確認しました。秘密鍵はserverへ渡していません。運用は [Auth](Auth.md)、検証契約と範囲は [Authentication](Authentication.md) を参照してください。
-- glove bridgeの13件、MoBits Quest bridgeの7件、公式SDK portable core2456チェックと不正入力2000件、集計器の偽陽性防止10件を確認しました。各runnerはリポジトリ内にあります。
-- グローブの追加監査で、未接続でもStationがrawゼロを送ることを実測しました。`/DS/HC/Device` のconnectedとheartbeatを必須条件に修正し、Python testsは20件へ拡充しました。大量のraw受信を手の接続・動きの証明には使いません。
-- Windows標準pnputilで公式同梱ドライバーを導入し、PnP Error Code 28から0、サービスsilabser、ContactGlove2 Dongle(COM3)を確認しました。カーネル署名やWindows security設定は変更していません。
 - `Art/Generated/manifest.json` のgenerator v2は6meshで5256tris、errors/warningsとも0。SM_MRHeadは1260tris、0.25192 × 0.251 × 0.249m、r=0.13m球に1.67mmの余裕で収まります。v1復元manifestとの実比較とhash差は [Art/README](../Art/README.md) に記録します。
 
 APK生成・container起動・単一inspector接続の合格から、MR・実空間の試合・身体へのフィードバックの合格は推定しません。未検証の項目がある間は、プロジェクト全体を完了とは扱いません。

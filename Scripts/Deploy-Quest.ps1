@@ -6,8 +6,6 @@ param(
     [ValidateRange(1,120)][int]$CaptureSeconds = 15,
     [switch]$SkipInstall, [switch]$Inspector, [switch]$DryRun,
     [switch]$RequestCapture, [switch]$VideoFromAdb, [switch]$NoSound,
-    [string]$GloveSender, [string]$GloveDevice,
-    [ValidateRange(1024,65535)][int]$GlovePort = 25788,
     [Parameter(Mandatory)][string]$TokenFile,
     [Parameter(Mandatory)][string]$PublicKeyFile,
     [string]$Audience = 'mrfps'
@@ -17,18 +15,6 @@ Import-Module (Join-Path $PSScriptRoot 'MRFPS.Tools.psm1') -Force
 $root = Get-MRFPSRoot
 if ($Inspector -and -not $Server) { throw '-Inspector requires -Server so the observer role is assigned by the dedicated server.' }
 if (-not $Server) { throw 'An authenticated dedicated -Server is required.' }
-if ($GloveSender) {
-    $gloveAddress=$null
-    if (-not [Net.IPAddress]::TryParse($GloveSender,[ref]$gloveAddress) -or
-        $gloveAddress.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
-        $gloveAddress.Equals([Net.IPAddress]::Any) -or $gloveAddress.Equals([Net.IPAddress]::Broadcast)) {
-        throw '-GloveSender must identify the PC bridge by a single valid IPv4 address.'
-    }
-    $GloveSender=$gloveAddress.ToString()
-}
-if ($GloveDevice -and $GloveDevice -notmatch '^[A-Za-z0-9_.:-]{1,128}$') { throw 'Invalid -GloveDevice identifier.' }
-if ($GloveDevice -and -not $GloveSender) { throw '-GloveDevice requires -GloveSender.' }
-if ($Inspector -and $GloveSender) { throw 'Glove input belongs to a player, not an inspector.' }
 if ($Serial -and $Serial -notmatch '^[A-Za-z0-9_.:-]{1,128}$') { throw 'Invalid -Serial.' }
 $TokenFile = Resolve-MRFPSCredentialFile $TokenFile
 $PublicKeyFile = Resolve-MRFPSCredentialFile $PublicKeyFile -Kind PublicKey
@@ -148,8 +134,6 @@ if ($Inspector) { $commandLine += ' -MRFPSInspector' }
 if ($RequestCapture) { $commandLine += ' -MRFPSRequestCapture' }
 if ($VideoFromAdb) { $commandLine += ' -MRFPSVideoFromAdb' }
 if ($NoSound) { $commandLine += ' -nosound' }
-if ($GloveSender) { $commandLine += " -MRFPSGloveSender=$GloveSender -MRFPSGlovePort=$GlovePort" }
-if ($GloveDevice) { $commandLine += " -MRFPSGloveDevice=$GloveDevice" }
 $commandLine += " -MRFPSAuthTokenFile=$remoteToken -MRFPSAuthPublicKeyFile=$remotePublic -MRFPSAuthAudience=$Audience"
 # UE5.8 LaunchAndroid.cpp reads the cmdline intent extra before its embedded command line.
 # adb joins its shell arguments for Android's shell. Preserve the complete intent
@@ -182,7 +166,7 @@ if ($appProcessIds.Count) {
 }
 & $adb @prefix shell dumpsys activity activities | Out-File -LiteralPath (Join-Path $validation 'activities.txt') -Encoding utf8
 & $adb @prefix shell dumpsys SurfaceFlinger --list | Out-File -LiteralPath (Join-Path $validation 'surfaces.txt') -Encoding utf8
-$report = [ordered]@{ TimestampUtc = [DateTime]::UtcNow.ToString('o'); Serial = $device.Serial; Package = $Package; Apk = $Apk; CommandLine = $commandLine; ProcessId = $appPid; RuntimeProcessAlive = [bool]$appPid; EvidenceDirectory = $validation; ManualChecksRemaining = @('Headset renders passthrough with arena alignment', 'Two players join dedicated server with independent body/hand tracking', 'Glove rising-left-hand wall and open-left-palm shield', 'Shot/hit MoBits physical feedback', 'Independent inspectors switch player views/free view') }
+$report = [ordered]@{ TimestampUtc = [DateTime]::UtcNow.ToString('o'); Serial = $device.Serial; Package = $Package; Apk = $Apk; CommandLine = $commandLine; ProcessId = $appPid; RuntimeProcessAlive = [bool]$appPid; EvidenceDirectory = $validation; ManualChecksRemaining = @('Headset renders passthrough with arena alignment', 'Two players join dedicated server with independent body/hand tracking', 'Controller shield, reload and grenade controls', 'Shot/hit MoBits physical feedback', 'Independent inspectors switch player views/free view') }
 $report | ConvertTo-Json -Depth 5 | Out-File -LiteralPath (Join-Path $validation 'report.json') -Encoding utf8
 if (-not $appPid) { throw "App process did not remain running. Inspect $validation\logcat.txt." }
 Write-Host "App process $appPid is alive. Logs: $validation. This alone does not verify MR or physical interactions."

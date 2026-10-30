@@ -121,43 +121,38 @@ private:
 
 DEFINE_LOG_CATEGORY_STATIC(LogMRFPSWeapon,Log,All);
 
-void FMRFPSReloadGesture::Reset() { StartTime=-1; bLatched=false; }
-
-bool FMRFPSReloadGesture::Update(const FVector& Hand,double Time,bool bEligible)
+void AMRFPSPawn::ServerSetReloadHeld_Implementation(bool Held)
 {
-    if (!bEligible || Hand.ContainsNaN() || !FMath::IsFinite(Time) ||
-        FMath::Abs(Hand.X)>15 || FMath::Abs(Hand.Y)>17 || Hand.Z < -38 || Hand.Z > 8) {
-        Reset(); return false;
-    }
-    if (bLatched) return false;
-    if (StartTime<0 || Time<StartTime || Time-StartTime>1.2) { StartTime=Time;StartZ=Hand.Z;return false; }
-    if (Time-StartTime>=.08 && FMath::Abs(Hand.Z-StartZ)>=12) { bLatched=true;return true; }
-    return false;
+    if (!HasAuthority() || !GetWorld()) return;
+    bServerReloadHeld=Held;
+    ServerReloadStartedAt=Held?GetWorld()->GetTimeSeconds():-1;
 }
 
-void AMRFPSPawn::UpdateWeaponFromPose(double Now)
-{
-    if (!HasAuthority()) return;
-    if (!CanAct()) {
-        ServerReload.Reset();return;
-    }
-    if (Pose.bDesktop) { ServerReload.Reset();return; }
-    const auto* GS=GetWorld()->GetGameState<AMRFPSGameState>();
-    const bool Eligible=Pose.bRightTracked && Pose.bLeftTracked && Pose.LeftFingers.bValid &&
-        GS && !GS->bCombatPaused && GS->Phase!=EMRFPSMatchPhase::Finished && MagazineRounds<MagazineCapacity;
-    const FVector Relative=Pose.RightRotation.UnrotateVector(FVector(Pose.Left)-FVector(Pose.Right));
-    if (ServerReload.Update(Relative,Now,Eligible) && Now-LastReloadAt>=.5) {
-        MagazineRounds=MagazineCapacity;LastReloadAt=Now;ForceNetUpdate();
-        UE_LOG(LogMRFPSWeapon,Display,TEXT("MRFPS_GUN_RELOAD slot=%d rounds=%d"),GetSlot(),MagazineRounds);
-    }
-}
-
-void AMRFPSPawn::DesktopReload() { if (!IsXR()) ServerDesktopReload(); }
-void AMRFPSPawn::ServerDesktopReload_Implementation()
+void AMRFPSPawn::ServerReloadWeapon_Implementation()
 {
     const double Now=GetWorld()->GetTimeSeconds();
-    if (!HasAuthority() || (!Pose.bDesktop && !MRFPSBot::IsServerBot(this)) || !CanAct() || Now-LastReloadAt<.5) return;
+    if (!HasAuthority() || !MRFPSBot::IsServerBot(this) || !CanAct() || !Pose.bRightTracked ||
+        Now-LastServerFire<2. || Now-LastReloadAt<.5) return;
     MagazineRounds=MagazineCapacity;LastReloadAt=Now;ForceNetUpdate();
+    UE_LOG(LogMRFPSWeapon,Display,TEXT("MRFPS_GUN_RELOAD slot=%d rounds=%d"),GetSlot(),MagazineRounds);
+}
+
+void AMRFPSPawn::UpdateFlashHud()
+{
+#if !UE_SERVER
+    if (!FlashHud) return;
+    const bool Show=IsLocallyControlled() && IsXR() && FlashIntensity()>0.001f;
+    FlashHud->SetVisibility(Show);
+    if (!Show) return;
+    if (!FlashSlate.IsValid()) {
+        const TWeakObjectPtr<AMRFPSPawn> Weak(this);
+        FlashSlate=SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+            .BorderBackgroundColor_Lambda([Weak]() {
+                return FSlateColor(FLinearColor(1.f,1.f,1.f,Weak.IsValid()?Weak->FlashIntensity():0.f));
+            }).Padding(0);
+        FlashHud->SetSlateWidget(FlashSlate);
+    }
+#endif
 }
 
 void AMRFPSPawn::UpdatePlayerHud()
@@ -169,6 +164,7 @@ void AMRFPSPawn::UpdatePlayerHud()
     if (RoundHud) RoundHud->SetVisibility(Show);
     const auto* NoticeState=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;
     if (RoundNoticeHud) RoundNoticeHud->SetVisibility(Show && NoticeState && NoticeState->RoundNotice(GetSlot()).bVisible);
+    if (RoundNoticeHud) RoundNoticeHud->SetRelativeScale3D(FVector(NoticeState && NoticeState->Phase==EMRFPSMatchPhase::Finished?.15:.11));
     if (!Show) return;
     const TWeakObjectPtr<AMRFPSPawn> Weak(this);
     const auto Font=[](int32 Size) { return FSlateFontInfo(FPaths::EngineContentDir()/TEXT("Slate/Fonts/DroidSansFallback.ttf"),Size); };
@@ -216,7 +212,7 @@ void AMRFPSPawn::UpdatePlayerHud()
                 }) ]
               +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
               [ SNew(STextBlock).Font(Font(15)).ColorAndOpacity(FSlateColor(FLinearColor(1.f,.55f,.3f)))
-                .Text(FText::FromString(TEXT("映像共有停止　Xで再試行 / 直らなければ再起動")))
+                .Text(FText::FromString(TEXT("映像共有停止　左スティック押込で再試行")))
                 .Visibility_Lambda([Weak]() {
                     auto* World=Weak.IsValid()?Weak->GetWorld():nullptr;
                     auto* Instance=World?World->GetGameInstance():nullptr;
@@ -260,8 +256,13 @@ void AMRFPSPawn::UpdatePlayerHud()
               .Text(FText::FromString(TEXT("MR ピストル"))) ]
             +SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right)
             [ SNew(STextBlock).Font(Font(28)).ColorAndOpacity(FSlateColor(FLinearColor(.95f,1.f,1.f)))
-              .Text_Lambda([Weak]() { return FText::FromString(Weak.IsValid() ?
-                  FString::Printf(TEXT("%d  /  ∞"),Weak->MagazineRounds) : TEXT("")); }) ]
+              .Text_Lambda([Weak]() {
+                  if (!Weak.IsValid()) return FText::GetEmpty();
+                  const auto* PC=Cast<AMRFPSPlayerController>(Weak->GetController());
+                  if (PC && PC->IsReloadHeld() && Weak->MagazineRounds<AMRFPSPawn::MagazineCapacity)
+                      return FText::FromString(FString::Printf(TEXT("リロード %.1f"),2.f*(1.f-PC->ReloadProgress())));
+                  return FText::FromString(FString::Printf(TEXT("%d  /  ∞"),Weak->MagazineRounds));
+              }) ]
           ]
         ];
     PlayerHud->SetSlateWidget(PlayerHudSlate);

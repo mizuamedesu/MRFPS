@@ -25,7 +25,6 @@
 #include "MRFPSHapticsComponent.h"
 #include "MRFPSIpConnection.h"
 #if !UE_SERVER
-#include "MRFPSGloveSubsystem.h"
 #include "MRFPSViewCaptureSubsystem.h"
 #include "GeometryCaptureSubsystem.h"
 #endif
@@ -274,25 +273,17 @@ void AMRFPSPlayerController::TickAutomation()
                 MRFPSLocalPoseStatus::Write(*PlayerInfo,Fighter->Pose.Head,Fighter->Pose.HeadRotation,SampleFresh,Fighter->Pose.bHeadTracked);
                 PlayerInfo->SetBoolField(TEXT("left_tracked"),SampleFresh && Fighter->Pose.bLeftTracked);
                 PlayerInfo->SetBoolField(TEXT("right_tracked"),SampleFresh && Fighter->Pose.bRightTracked);
-                FMRFPSGloveHandFrame CurrentGloves[2];
-                if (Fighter->IsXR()) if (auto* Gloves=GetGameInstance()->GetSubsystem<UMRFPSGloveSubsystem>()) {
-                    Gloves->GetLatestHand(EMRFPSGloveHand::Left,CurrentGloves[0]);
-                    Gloves->GetLatestHand(EMRFPSGloveHand::Right,CurrentGloves[1]);
-                }
-                PlayerInfo->SetBoolField(TEXT("left_glove_fingers_valid"),SampleFresh && Fighter->IsXR() && Fighter->Pose.LeftFingers.bValid && CurrentGloves[0].bFlexValid);
-                PlayerInfo->SetBoolField(TEXT("right_glove_fingers_valid"),SampleFresh && Fighter->IsXR() && Fighter->Pose.RightFingers.bValid && CurrentGloves[1].bFlexValid);
-                PlayerInfo->SetBoolField(TEXT("left_glove_controls_valid"),SampleFresh && Fighter->IsXR() && Fighter->AreLocalGloveControlsFresh(0) && CurrentGloves[0].bControllerValid);
-                PlayerInfo->SetBoolField(TEXT("right_glove_controls_valid"),SampleFresh && Fighter->IsXR() && Fighter->AreLocalGloveControlsFresh(1) && CurrentGloves[1].bControllerValid);
                 PlayerInfo->SetBoolField(TEXT("physical_fire_down"),Fighter->IsPhysicalFireDown());
-                PlayerInfo->SetBoolField(TEXT("glove_fire_down"),Fighter->IsGloveFireDown());
+                PlayerInfo->SetBoolField(TEXT("reload_held"),IsReloadHeld());
+                PlayerInfo->SetNumberField(TEXT("reload_progress"),ReloadProgress());
+                PlayerInfo->SetBoolField(TEXT("grenade_held"),Fighter->IsGrenadeHeld());
+                PlayerInfo->SetNumberField(TEXT("flash_intensity"),Fighter->FlashIntensity());
                 PlayerInfo->SetBoolField(TEXT("fire_release_required"),Fighter->IsFireReleaseRequired());
                 const double FireTime=Fighter->LocalFireTime();
                 PlayerInfo->SetNumberField(TEXT("last_fire_request_age_seconds"),FireTime<0?-1:FMath::Max(0.,GetWorld()->GetTimeSeconds()-FireTime));
                 if (const auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance())) {
                     PlayerInfo->SetBoolField(TEXT("fire_menu_locked"),GI->FireTransition.Login);
                     PlayerInfo->SetBoolField(TEXT("physical_fire_locked"),!GI->FireTransition.CanPhysical());
-                    PlayerInfo->SetBoolField(TEXT("glove_flex_fire_locked"),!GI->FireTransition.CanFlex());
-                    PlayerInfo->SetBoolField(TEXT("glove_controller_fire_locked"),!GI->FireTransition.CanController());
                 }
                 const bool InputAllowed=DesktopAutomationAllowed();
                 PlayerInfo->SetBoolField(TEXT("desktop_input_allowed"),InputAllowed);
@@ -529,7 +520,11 @@ void AMRFPSPlayerController::TickAutomation()
             }
         } else if(Operation==TEXT("player.reload")||Operation==TEXT("player.wall")) {
             if(!DesktopAutomationAllowed()) { Ok=false; Code=TEXT("DESKTOP_PLAYER_UNAVAILABLE"); }
-            else { if(Operation==TEXT("player.reload")) ReloadPressed(); else WallPressed(); Submitted=true; Code=TEXT("INPUT_SUBMITTED"); }
+            else {
+                if(Operation==TEXT("player.reload")) { AutomationReloadUntil=FPlatformTime::Seconds()+2.5; TickReload(); }
+                else WallPressed();
+                Submitted=true; Code=TEXT("INPUT_SUBMITTED");
+            }
         } else if(Operation==TEXT("player.calibrate")) {
             if(IsInspector()||!GetPawn<AMRFPSPawn>()) { Ok=false; Code=TEXT("PLAYER_REQUIRED"); }
             else { Calibrate(); Submitted=true; Code=TEXT("CALIBRATION_SUBMITTED"); }

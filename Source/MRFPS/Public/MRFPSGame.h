@@ -2,7 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "MRFPSLocalInputLease.h"
-#include "MRFPSShieldGesture.h"
 #include "MRFPSFireReleaseGate.h"
 #include "MRFPSWeaponPose.h"
 #include "MRFPSConnectionStatus.h"
@@ -49,6 +48,7 @@ class UMRFPSViewCaptureSubsystem;
 class UMaterialInstanceDynamic;
 class SWindow;
 class SWidget;
+class AMRFPSFlashGrenade;
 
 UENUM()
 enum class EMRFPSAdminAction : uint8 { Start,Pause,Resume,Reset,ConfirmSharedFloor,CalibrateFloor,SetDimensions,ClearAdminWalls,ResetBuildings };
@@ -73,8 +73,7 @@ struct FMRFPSDamagePopupState
     double StartedAt=-100;
 };
 
-// Quantized ContactGlove joint flexions and finger spreads, thumb to little.
-// Invalid input is explicit; a disconnected glove must never retain a grip.
+// Optional quantized hand-joint pose, thumb to little finger.
 USTRUCT()
 struct FMRFPSFingerPose
 {
@@ -115,16 +114,6 @@ struct FMRFPSPose
     UPROPERTY() bool bDesktop = false;
     bool IsSane() const;
     bool IsInsideArena(const FMRFPSArenaLayout& Layout=FMRFPSArenaLayout()) const;
-};
-
-// A single deliberate slide across the magazine, expressed in gun space.
-struct FMRFPSReloadGesture
-{
-    bool Update(const FVector& RelativeHand,double Time,bool bEligible);
-    void Reset();
-    double StartTime=-1;
-    float StartZ=0;
-    bool bLatched=false;
 };
 
 // State shared by local and authoritative recognizers; uses elapsed receipt time.
@@ -286,8 +275,12 @@ public:
     void Calibrate();
     void SetFiring(bool bPressed);
     /** Clear a cached shot request without changing the held-input state. */
-    void SuspendPhysicalFireForMenu() { bFiring=false; }
-    void DesktopReload();
+    void SuspendPhysicalFireForMenu();
+    void SetGrenadeHeld(bool bHeld);
+    void CancelGrenade();
+    void ApplyFlash(float Strength,float Duration);
+    float FlashIntensity() const;
+    bool IsFlashed() const;
     void DesktopWall();
     void SetDesktopShield(bool bEnabled) { bDesktopShield = bEnabled; }
     void DesktopMove(const FVector& Input, float DeltaSeconds);
@@ -296,9 +289,8 @@ public:
     bool IsXR() const;
     bool CanAct() const;
     bool IsPoseFresh() const;
-    bool AreLocalGloveControlsFresh(int32 Hand) const { return Hand>=0 && Hand<2 && bGloveControlsFresh[Hand]; }
     bool IsPhysicalFireDown() const { return bPhysicalFireDown; }
-    bool IsGloveFireDown() const { return bFingerTriggerDown; }
+    bool IsGrenadeHeld() const { return bLocalGrenadeHeld; }
     bool IsFireReleaseRequired() const { return bRequireFireRelease; }
     double LocalFireTime() const { return LastLocalFire; }
     bool IsInsideArena() const;
@@ -318,9 +310,14 @@ public:
     UFUNCTION(Client,Reliable) void ClientCombatStopped();
     UFUNCTION(Client,Reliable) void ClientNominalDesktopStart(FVector_NetQuantize10 Head,FRotator Rotation);
     UFUNCTION(Server, Reliable) void ServerFire();
-    UFUNCTION(Server, Reliable) void ServerDesktopReload();
+    UFUNCTION(Server, Reliable) void ServerEquipGrenade();
+    UFUNCTION(Server, Reliable) void ServerThrowGrenade(FVector_NetQuantize10 Velocity);
+    UFUNCTION(Server, Reliable) void ServerCancelGrenade();
+    UFUNCTION(Server, Reliable) void ServerSetReloadHeld(bool Held);
+    UFUNCTION(Server, Reliable) void ServerReloadWeapon();
     UFUNCTION(Server, Reliable) void ServerDesktopWall();
     UFUNCTION(Client, Reliable) void ClientFeedback(uint8 Kind, float Damage);
+    UFUNCTION(Client, Reliable) void ClientFlash(float Strength,float Duration);
     UFUNCTION(Client, Unreliable) void ClientDamageNumber(FVector_NetQuantize10 HitLocation, float Damage, uint8 Style);
     UFUNCTION(NetMulticast, Unreliable) void MulticastShot(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHit);
     UFUNCTION() void OnRepPose();
@@ -330,6 +327,7 @@ public:
     UPROPERTY(Replicated, BlueprintReadOnly) int32 MagazineRounds = MagazineCapacity;
     UPROPERTY(Replicated, BlueprintReadOnly) float ShieldEnergy = 100;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bShieldActive = false;
+    UPROPERTY(Replicated) bool bGrenadeEquipped = false;
     UPROPERTY(Replicated, BlueprintReadOnly) bool bCalibrated = false;
     UPROPERTY(Replicated,BlueprintReadOnly) bool bStageFloorReferenced=false;
     UPROPERTY(Replicated) uint32 GeometryCalibrationGeneration = 0;
@@ -347,12 +345,14 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSAvatarComponent> Avatar;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> LeftVisual;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> GunVisual;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> GrenadeVisual;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> ShieldVisual;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> Label;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UTextRenderComponent> HeadsetStatus;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> PlayerHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> RoundHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> RoundNoticeHud;
+    UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> FlashHud;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UWidgetComponent> EnemyHealthBar;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UMRFPSHapticsComponent> Haptics;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UVRNotificationsComponent> XRNotifications;
@@ -367,10 +367,10 @@ private:
     void SampleLocalPose(float DeltaSeconds);
     void UpdateVisuals();
     void RemoveDeployedWall();
-    void UpdateWeaponFromPose(double Now);
     void UpdatePlayerHud();
     void UpdateEnemyHealthBar();
     void UpdateDamageNumbers();
+    void UpdateFlashHud();
     void CompletePendingCalibration();
     UFUNCTION() void InvalidateCalibration();
     UFUNCTION() void OnXRSpaceChanged();
@@ -381,16 +381,19 @@ private:
     uint64 GeometryCalibratedEpoch = 0;
     bool bFiring = false;
     bool bPhysicalFireDown = false;
-    MRFPSFireRelease::FGloveNeutral GloveFireNeutral;
-    MRFPSFireRelease::FGloveFiring GloveFireInput;
+    bool bLocalGrenadeHeld = false;
+    bool bHaveRightHandSample = false;
+    FVector PreviousRightHand = FVector::ZeroVector;
+    FVector RightHandVelocity = FVector::ZeroVector;
+    double PreviousRightHandAt = 0;
+    UPROPERTY(Replicated) double GrenadeReadyAt = 0;
+    double BlindedUntil = 0;
+    double LocalFlashStartedAt = -1;
+    float LocalFlashDuration = 0;
+    float LocalFlashStrength = 0;
     bool bDesktopShield = false;
-    MRFPSShieldGesture::FState LocalShieldGesture;
     bool bShieldExhausted = false;
-    bool bFingerTriggerDown = false;
     bool bRequireFireRelease=false;
-    bool bGloveControlsFresh[2] = {false,false};
-    bool bPreviousGloveA[2] = {false,false};
-    bool bPreviousGloveB[2] = {false,false};
     int32 VisualTeam = -99;
     FVector DesktopHead = FVector(0,-350,170);
     FRotator DesktopRotation = FRotator::ZeroRotator;
@@ -398,16 +401,18 @@ private:
     double LastLocalFire = -100;
     double LastServerFire = -100;
     double LastReloadAt = -100;
+    double ServerReloadStartedAt = -1;
+    bool bServerReloadHeld = false;
     double LastShieldUse = -100;
     double IgnoreOriginChangesUntil = -1;
     FTimerHandle PendingCalibrationTimer;
     FMRFPSRiseGesture ServerRise;
     FMRFPSRiseGesture ServerLower;
     TArray<TWeakObjectPtr<AMRFPSBarrier>> DeployedWalls;
-    FMRFPSReloadGesture ServerReload;
     TSharedPtr<SWidget> PlayerHudSlate;
     TSharedPtr<SWidget> RoundHudSlate;
     TSharedPtr<SWidget> RoundNoticeSlate;
+    TSharedPtr<SWidget> FlashSlate;
     TSharedPtr<SWidget> EnemyHealthBarSlate;
     UPROPERTY(Transient) TArray<TObjectPtr<UTextRenderComponent>> DamageNumberLabels;
     UPROPERTY(Transient) TArray<TObjectPtr<UMaterialInstanceDynamic>> DamageNumberMaterials;
@@ -448,6 +453,8 @@ public:
     void ViewPlayerTwo();
     void ToggleMultiView();
     void MenuPointerTrigger(float Value);
+    bool IsReloadHeld() const;
+    float ReloadProgress() const;
     void Calibrate();
     void RoundContinuePressed();
     void ArmHaptics();
@@ -611,9 +618,13 @@ private:
     void FirePressed();
     void FireReleased();
     void ReloadPressed();
+    void ReloadReleased();
+    void TickReload();
     void WallPressed();
     void ShieldPressed();
     void ShieldReleased();
+    void GrenadePressed();
+    void GrenadeReleased();
     void ApplyInspectorMouseMode();
     void SetInspectorMouseReleased(bool Released);
     bool bInspectorMouseReleased = false;
@@ -624,6 +635,11 @@ private:
     void LookX(float V);
     void LookY(float V);
     FVector MoveAxes = FVector::ZeroVector;
+    bool bReloadHeld = false;
+    bool bReloadServerRequested = false;
+    double ReloadStartedAt = -1;
+    double AutomationReloadUntil = 0;
+    TWeakObjectPtr<AMRFPSPawn> ReloadPawn;
     FTimerHandle PendingConnectionTimer;
     FTimerHandle StartupLoginTimer;
     TWeakObjectPtr<UMRFPSLoginMenu> PendingDeviceOwner;

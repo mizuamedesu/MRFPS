@@ -9,8 +9,7 @@ namespace MRFPSHandPose
 {
 enum class EPositionSource : uint8 { None, Controller, OpticalHand };
 
-// Positional tracking and glove flex are independent streams. Prefer the
-// controller, but allow an optical palm whenever the controller is unavailable.
+// Prefer the controller; allow an optical palm if it is unavailable.
 inline EPositionSource SelectPositionSource(bool ControllerTracked,const FXRHandTrackingState& Hand)
 {
     if (ControllerTracked) return EPositionSource::Controller;
@@ -55,10 +54,10 @@ inline FQuat HandFromWeapon(const FQuat& WeaponRotation)
 
 // This is the same right-hand selection used by local gameplay and the login
 // gun. A Grip position with Aim rotation matches the firing pose; optical and
-// external tracked palms use the existing weapon mounting conversion.
+// tracked palms use the existing weapon mounting conversion.
 inline bool ResolveRightWeapon(const FXRMotionControllerState& Aim,const FXRMotionControllerState& Grip,
     const FXRHandTrackingState& Hand,const FTransform& EngineToTracking,const FTransform& TrackingToWorld,
-    bool HasExternalPose,const FTransform& ExternalPose,FMRFPSWeaponPose& Out)
+    FMRFPSWeaponPose& Out)
 {
     Out=FMRFPSWeaponPose();
     const bool A=MRFPSLoginPointer::ValidPose(Aim),G=MRFPSLoginPointer::ValidPose(Grip);
@@ -74,14 +73,6 @@ inline bool ResolveRightWeapon(const FXRMotionControllerState& Aim,const FXRMoti
         RightPalmPose(Hand,EngineToTracking,TrackingToWorld,Position,Palm)) {
         Out.Source=MRFPSLoginPointer::ESource::Hand;
         Out.GripWorld=FTransform(WeaponFromHand(Palm.Quaternion()),Position); return true;
-    }
-    if (HasExternalPose && !ExternalPose.ContainsNaN()) {
-        Position=TrackingToWorld.TransformPosition(ExternalPose.GetLocation());
-        const FQuat PalmQ=TrackingToWorld.TransformRotation(ExternalPose.GetRotation());
-        if (!Position.ContainsNaN() && !PalmQ.ContainsNaN() && PalmQ.SizeSquared()>.25) {
-            Out.Source=MRFPSLoginPointer::ESource::Glove;
-            Out.GripWorld=FTransform(WeaponFromHand(PalmQ),Position); return true;
-        }
     }
     return false;
 }

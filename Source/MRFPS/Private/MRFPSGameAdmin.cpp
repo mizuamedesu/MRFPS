@@ -102,7 +102,11 @@ void AMRFPSArena::ApplyLayout(const FMRFPSArenaLayout& Layout)
 
 void AMRFPSPawn::ClientCombatStopped_Implementation()
 {
-    bFiring=false; bFingerTriggerDown=false; GloveFireInput.Reset(); bDesktopShield=false;
+    bFiring=false; bDesktopShield=false; CancelGrenade();
+    LocalFlashStartedAt=-1; LocalFlashStrength=0; LocalFlashDuration=0;
+    if (auto* PC=Cast<AMRFPSPlayerController>(Controller)) {
+        PC->AutomationReloadUntil=0; PC->ReloadReleased();
+    }
     if (auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance()); GI && IsXR()) {
         if (!GI->FireTransition.Login) GI->FireTransition.SealForTravel();
         bRequireFireRelease=false;
@@ -114,6 +118,9 @@ void AMRFPSPawn::OffsetCombatTimers(double Seconds)
     if (!HasAuthority() || !FMath::IsFinite(Seconds) || Seconds<=0) return;
     if (RespawnAt>0) RespawnAt+=Seconds;
     if (WallReadyAt>0) WallReadyAt+=Seconds;
+    if (ServerReloadStartedAt>=0) ServerReloadStartedAt+=Seconds;
+    if (GrenadeReadyAt>0) GrenadeReadyAt+=Seconds;
+    if (BlindedUntil>0) BlindedUntil+=Seconds;
     LastServerFire+=Seconds; LastShieldUse+=Seconds; ServerRise.Reset(); ServerLower.Reset(); ForceNetUpdate();
 }
 void AMRFPSPawn::ClientNominalDesktopStart_Implementation(FVector_NetQuantize10 Head,FRotator Rotation)
@@ -267,7 +274,9 @@ void AMRFPSGameMode::SetCombatPaused(bool Paused)
             const float Remaining=It->GetLifeSpan();
             if (Remaining>0) { PausedWallLifetimes.Add(*It,Remaining); It->SetLifeSpan(0); }
         }
-        for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) { It->bShieldActive=false; It->ClientCombatStopped(); }
+        for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) {
+            It->bShieldActive=false; It->ServerSetReloadHeld(false); It->ServerCancelGrenade(); It->ClientCombatStopped();
+        }
     } else {
         const double Duration=FMath::Max(0.,Now-CombatPausedAt);
         for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) { It->OffsetCombatTimers(Duration); It->ClientCombatStopped(); }

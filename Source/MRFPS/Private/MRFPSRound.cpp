@@ -65,7 +65,9 @@ FMRFPSRoundNotice AMRFPSGameState::RoundNotice(int32 ViewerSlot) const
     const FString Prompt=Player ? ((RoundReadyMask&(1u<<ViewerSlot)) ?
         (AllReady?TEXT("開始待ち"):TEXT("相手待ち")) : (MatchResult?TEXT("Yで次の試合"):TEXT("Yで次へ"))) :
         FString::Printf(TEXT("準備 %d / %d"),FMath::CountBits(uint32(RoundReadyMask&Required)),FMath::CountBits(uint32(Required)));
-    Result.Detail=FString::Printf(TEXT("%s  %s"),MatchResult?TEXT("試合終了"):TEXT("ラウンド終了"),*Prompt);
+    Result.Detail=MatchResult
+        ? FString::Printf(TEXT("試合結果  %s   %s"),*RoundScoreText(ViewerSlot),*Prompt)
+        : FString::Printf(TEXT("ラウンド終了  %s"),*Prompt);
     if (bCombatPaused) Result.Detail+=TEXT("  一時停止");
     return Result;
 }
@@ -112,13 +114,15 @@ void AMRFPSGameMode::FinishRound(bool bElimination)
     GS->RoundEndsAt=GS->RoundPausedAt=0;
     const bool MatchOver=GS->RoundWinsSlot0>=AMRFPSGameState::RoundsToWin ||
         GS->RoundWinsSlot1>=AMRFPSGameState::RoundsToWin || GS->RoundNumber>=AMRFPSGameState::MaximumRounds;
-    GS->WinnerSlot=GS->RoundWinsSlot0>=AMRFPSGameState::RoundsToWin ? 0 :
-        GS->RoundWinsSlot1>=AMRFPSGameState::RoundsToWin ? 1 : -1;
+    GS->WinnerSlot=MatchOver && GS->RoundWinsSlot0!=GS->RoundWinsSlot1
+        ? (GS->RoundWinsSlot0>GS->RoundWinsSlot1?0:1) : -1;
     GS->Phase=MatchOver ? EMRFPSMatchPhase::Finished : EMRFPSMatchPhase::BetweenRounds;
     GS->RestartAt=0.; GS->RoundReadyMask=0;
     if (GS->RoundReadyWindow<MAX_uint32) ++GS->RoundReadyWindow;
     if (GS->RoundReadyWindow==MAX_uint32) UE_LOG(LogMRFPSRound,Error,TEXT("MRFPS_ROUND_READY_WINDOW_EXHAUSTED"));
-    for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) { It->bShieldActive=false; It->ClientCombatStopped(); }
+    for (TActorIterator<AMRFPSPawn> It(GetWorld());It;++It) {
+        It->bShieldActive=false; It->ServerSetReloadHeld(false); It->ServerCancelGrenade(); It->ClientCombatStopped();
+    }
     GS->ForceNetUpdate();
     UE_LOG(LogMRFPSRound,Display,TEXT("MRFPS_ROUND_END round=%d winner=%d kills0=%d kills1=%d wins0=%d wins1=%d"),
         GS->RoundNumber,Winner,Kills[0],Kills[1],GS->RoundWinsSlot0,GS->RoundWinsSlot1);

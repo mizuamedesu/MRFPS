@@ -13,7 +13,6 @@ inline const TCHAR* SourceName(ESource Source)
     case ESource::AimGrip: return TEXT("aim_grip");
     case ESource::Grip: return TEXT("grip");
     case ESource::Hand: return TEXT("hand");
-    case ESource::Glove: return TEXT("glove_tracker");
     default: return TEXT("none");
     }
 }

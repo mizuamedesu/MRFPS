@@ -1,12 +1,10 @@
 # デバイスログイン
 
-Quest は起動するとサーバー設定、デバイスログインの順に表示します。右コントローラーで画面を指し、トリガーで操作します。端末内のキーボードでアドレスと6桁の数字を入力できます。Windows も同じ手順で接続します。初期接続先は `mrfps.mizuame.app:7777` で、変更した接続先は端末に保存されます。接続中の Windows では F1 メニューの「サーバー設定・デバイスログイン」で戻れます。
+Quest は起動するとサーバー設定、デバイスログインの順に表示します。右コントローラーで画面を指し、トリガーで操作します。端末内のキーボードでアドレスと6桁の数字を入力できます。Windows も同じ手順で接続します。初期接続先は `mrfps.mizuame.app:7777` で、変更した接続先は端末に保存されます。現在の Flash の直接通信ポートは `mrfps.mizuame.app:30000` です。接続中の Windows では F1 メニューの「サーバー設定・デバイスログイン」で戻れます。
 
-Quest では接続前から右手に銃を表示し、ゲーム中の射撃と同じ銃口・方向から黄色い線を出します。右コントローラーの Grip で位置、Aim で向きを取り、どちらかが使えない場合は利用できる側を使います。コントローラーがない場合は Quest の手のひら、または設定済み外部トラッカーを位置と向きの代替にします。線は追跡中に表示され、ログイン画面に当たったところで決定できます。自動モードでは右コントローラーの射撃トリガーと、PC の DivingStation から届く右 ContactGlove のトリガー・右人差し指の曲げの両方を使えます。Quest の指先ピンチは選択に使用しません。追跡元やフォーカスが切り替わった後はトリガーを一度離してから押してください。入力が押されたまま復帰しない場合に備え、3 秒の長押しはクリックせずキャンセルします。
+Quest の接続画面では、右コントローラーの先から出る線をボタンに合わせ、右トリガーで選択します。接続後も左 X でパネルを開閉できます。
 
-Quest の起動時 `-MRFPSLoginInput=quest_button`、`quest_axis`、`glove_flex`、`glove_controller`、`auto` で入力元を固定または自動選択できます。CLI では `--login-input` に同じ値を指定し、変更時は `--replace` を使います。固定時は、その入力が途切れても勝手に別の入力へ移りません。DivingStation の PC relay と Quest 起動時の `--glove-sender` も必要です。
-
-グローブの受信時刻付きの押下・解放は有限キューに保持します。前回 UI 更新より古く到着したとしか判定できない操作、長いフレーム中の入力、一度の更新で複数クリックになり得る入力は破棄します。押下中に照準先が変わった場合はクリックせずキャンセルします。複数の入力による短い遅延は抑止しますが、同一操作を完全に識別する ID はないため遅れ方によって重複する可能性があります。フレーム間の一時的な照準移動は検知できません。Grip の +X 軸と手のひらの向きは Aim pose と同じとは限らず、実機での向き・当たり判定は別途確認が必要です。`MRFPS_LOGIN_POINTER_*` のログは追跡元・入力・ウィジェット命中の状態を示し、座標や入力コードは含みません。
+直接インストールした APK は Quest のホームから「ライブラリ → 提供元不明」で `MRFPS` を選んで起動します。Meta による通常配布の一覧とは区別されます。 [Meta の手順](https://developers.meta.com/vr/documentation/android-apps/enable-developer-mode/)
 
 管理画面に表示された役割と一致する6桁のコードを入力してください。認証先は `https://mrfps-admin.mizuame.app/api/device/exchange` に固定されます。成功画面はコード交換と署名確認の成功を示します。実際のゲーム参加は、その後の専用サーバー側の認証と DTLS 接続が成功して初めて成立します。デバイスコードで接続したセッションが切断されたら、新しいコードでログインし直します。旧来の `-MRFPSAuthTokenFile` 接続では、使い回しを拒否したうえで新しい JWT ファイルの投入を待ち、自動再接続します。
 
@@ -41,15 +39,12 @@ $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\p
 
 # Quest（保存済みのサーバー設定画面から起動）
 & $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
-  --serial QUEST_SERIAL --role player --glove-sender 192.168.1.10 --show-settings
+  --serial QUEST_SERIAL --role player --show-settings
 
 # Quest（こちらも最初は --code-file を省いて起動できる）
 & $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
   --serial QUEST_SERIAL --role player --code-file .local\device-code.txt
 
-# Quest で PC の ContactGlove relay を使う場合は、最初の起動時に PC の実 IPv4 を指定
-& $mrfpsPython tools/client/device_login.py quest --adb .local\android\platform-tools\adb.exe `
-  --serial QUEST_SERIAL --role player --glove-sender 192.168.1.10
 
 # 指定した Quest の MRFPS アプリだけを停止（繰り返し実行可）
 & $mrfpsPython tools/client/device_login.py stop-quest --adb .local\android\platform-tools\adb.exe `
@@ -62,7 +57,6 @@ $mrfpsPython = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\p
 
 同じコードファイルの同じ更新時刻、接続先、役割、プロセスの組み合わせを再実行すると、既存のプロセスを維持して終了します。同じログイン画面に新しい接続先・役割・コードを渡すと再起動せずに入力できます。`--replace` は、このコマンドが起動した Windows クライアント、または対象 Quest の MRFPS アプリだけを再起動します。別の Windows インスペクターはそれぞれ別の `--name` とコードを使って起動できます。6桁コードの交換自体は意図的に一回限りで、冪等な再発行や同じコードの再利用はできません。`login_queued`／`settings_queued` はファイル投入の完了を示し、画面が開いて処理するまで待ちます。認証や参加の成功を保証しません。信頼解除コマンドは固定された公開鍵と旧アクセス資格情報のみを削除し、稼働中プロセスのメモリ上の鍵には影響しません。稼働中なら対象アプリを再起動してください。
 
-Quest の `--glove-sender` は受信元を指定した PC の IPv4 に固定します。必要に応じて `--glove-port` と `--glove-device` も指定できます。これは起動時の設定なので、既に動いているアプリで変更する場合は `--replace` が必要です。起動後のコード投入では省略しても、そのプロセスの設定を維持します。アプリの新規起動時は再指定してください。DivingStation と PC relay も必要です。詳しくは [ContactGlove](ContactGlove.md) を参照してください。
 
 `stop-quest` は指定した serial の `org.mrfps.arena` のみを停止し、終了待ちの起動要求が残る場合にも対象アプリへ `force-stop` を送ります。プロセスが消えたことを確認できない場合はエラーで止まり、同じ停止コマンドは再実行できます。画面共有の OS 許可は操作しません。次の `quest` 起動時には、対象アプリが停止済みで、MRFPS 由来の孤立した共有ダイアログだけだと確認できた場合に限ってその古いタスクを閉じます。確認できない状態では起動を中断します。
 

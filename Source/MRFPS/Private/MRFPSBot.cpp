@@ -243,7 +243,7 @@ void AMRFPSBotController::Step(float DeltaSeconds)
         bWasDead=false;
     }
     const FVector Foot=Head-FVector(0,0,170);
-    if (Fighter->Health>0 && GS->Phase==EMRFPSMatchPhase::Playing && !GS->bCombatPaused && bHasDestination) {
+    if (Fighter->Health>0 && !Fighter->IsFlashed() && GS->Phase==EMRFPSMatchPhase::Playing && !GS->bCombatPaused && bHasDestination) {
         const FVector Delta=Destination-Foot;
         const FVector Move=Delta.GetClampedToMaxSize(StepSeconds*110.f);
         if (Move.SizeSquared()>1.e-4 && GS->Layout.ContainsPlanar(Foot+Move,25) && PathClear(GetWorld(),Fighter,Foot,Foot+Move)) {
@@ -263,6 +263,7 @@ void AMRFPSBotController::Step(float DeltaSeconds)
     ++Pose.Sequence;
     Fighter->SetActorLocation(FVector(Head.X,Head.Y,GS->Layout.Center.Z));
     Fighter->ServerPose(Pose);
+    if (Fighter->IsFlashed()) return;
     if (bQueryInFlight && Now>=QueryDeadline) {
         if (auto* Manager=UEnvQueryManager::GetCurrent(GetWorld())) Manager->AbortQuery(QueryId);
         bQueryInFlight=false; QueryId=INDEX_NONE;
@@ -276,8 +277,8 @@ void AMRFPSBotController::Step(float DeltaSeconds)
     }
     if (Fighter->Health<=0 || GS->Phase!=EMRFPSMatchPhase::Playing || GS->bCombatPaused || !Fighter->CanAct()) return;
     if (Fighter->MagazineRounds<=0) {
-        if (ReloadAt<=0) ReloadAt=Now+1.2;
-        if (Now>=ReloadAt) { Fighter->ServerDesktopReload(); ReloadAt=0; }
+        if (ReloadAt<=0) ReloadAt=Now+2.;
+        if (Now>=ReloadAt) { Fighter->ServerReloadWeapon(); ReloadAt=0; }
         return;
     }
     ReloadAt=0;

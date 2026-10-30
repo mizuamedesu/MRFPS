@@ -1,6 +1,6 @@
 # UE local control
 
-`control.py` submits a JSON operation to a named, running protocol-17 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
+`control.py` submits a JSON operation to a named, running protocol-18 UE client. Windows and Mac use a user-restricted local directory. A debuggable Quest build accepts the same requests in its app-private directory via `adb shell -T run-as`, with the request sent over stdin. The bridge runs on the normal game tick and does not expose a new network port.
 
 Each request requires an immutable UUIDv4. Repeating the same UUID and payload returns or waits for the original result, and the same UUID with different parameters is rejected. If a client restarts after dispatch but before its reply is recorded, the result is `unknown`: it does not silently run the operation again. A server keeps up to 8192 operation receipts for its lifetime; this is not a durable transaction across a server restart or a machine power failure. A repeated UUID returns the original receipt; use a new UUID to apply the desired state again after other changes.
 
@@ -33,22 +33,22 @@ The flags `shared_floor_confirmed` and `layout_calibrated` describe the shared p
 | `player.round_ready` | `{}` | Acknowledge the currently displayed round or match result for this player; Bot matches require the human, 1v1 requires both players. `submitted` does not prove the server accepted it; inspect a fresh status. |
 | `player.input.set` | `{"fire":false,"shield":false,"move":[1,0],"look_degrees_per_second":[0,0],"duration_seconds":0.5}` | Hold the specified desktop inputs for 0.05–1 second |
 | `player.input.clear` | `{}` | Immediately clear the automation input lease |
-| `player.reload`, `player.wall` | `{}` | Submit one desktop reload or deploy-wall input through the existing server RPC |
+| `player.reload`, `player.wall` | `{}` | Submit a two-second desktop reload hold or deploy-wall input through the existing server RPC |
 | `haptics.set` | `{"state":"connected|armed|stopped|disconnected"}` | Submit local MoBits connection/arm/stop/disconnect; arming must be deliberate |
 | `capture.set` | `{"enabled":true}` | Request Quest view sharing or retire the current sharing session; the Quest OS consent still requires user approval |
 
 In the Windows session menu, click `参加者` or press Ctrl+2 to show the roster; click `設定` or press Ctrl+1 to return. The participants tab and `roster.list` require a connected, authenticated inspector or admin. Reported ping is the server's measured connection RTT and becomes unknown if the sample is unavailable or over five seconds old.
 
-On Quest, the right controller A button toggles the login panel. The `menu.set`
+On Quest, the left controller X button toggles the login panel. The `menu.set`
 operation for `login` explicitly sets open or closed without leaving the current
 session, and can be repeated with a new UUID without toggling. Submitting a new
 device login starts a new connection; `connection.set` with `connected:false`
-explicitly disconnects. The right A button no longer arms haptics on Android;
+explicitly disconnects. The right A button is held for two seconds to reload;
 after closing the panel, explicitly press the right thumbstick to request
 MoBits haptics. The request is ignored while login is open and never issued
 automatically on close. If tracking is not connected yet, the first press can
-start connection; press again once connected. The existing ContactGlove A,
-right B stop, and `haptics.set` control remain available.
+start connection; press again once connected. Right B stop and `haptics.set`
+remain available.
 
 Explicit disconnect also cancels a pending device exchange or connection. A
 repeat while return travel is scheduled reports `submitted` with
@@ -73,7 +73,7 @@ describes the app's active flow and does not prove that an older system dialog
 has closed. Repeating the same UUID returns its existing receipt; a new UUID is
 needed for a new state observation or a later deliberate action.
 
-`status.player` reports the locally owned player's health, magazine and shield from the latest replicated snapshot, which has no independently verified age. Its tracked-head/hand, glove-finger and glove-controller flags use the most recent local sampling pass; glove flags additionally require the glove subsystem's current fresh sample. `local_pose_sample_age_seconds=-1` means no local pass has occurred; this measures the sampling pass rather than each sensor's packet age. A stale pass never reports tracked or glove flags as true. Desktop input fields report the requested local lease, not proof of an accepted shot. `status.video_capture` distinguishes an OS consent request, a requested share and a fresh capture. On an inspector, `video_streams` contains two slots; `current_stream_texture_fresh` checks the authenticated publisher's current stream generation. Frame counters are lifetime counters and can include earlier streams. Neither a fresh texture nor a counter proves the image contents; inspect a capture of the target application window separately. The OS consent must still be given by the user.
+`status.player` reports the locally owned player's health, magazine and shield from the latest replicated snapshot, which has no independently verified age. Its tracked-head/hand flags use the most recent local sampling pass. `local_pose_sample_age_seconds=-1` means no local pass has occurred; this measures the sampling pass rather than each sensor's packet age. A stale pass never reports tracked flags as true. Desktop input fields report the requested local lease, not proof of an accepted shot. `status.video_capture` distinguishes an OS consent request, a requested share and a fresh capture. On an inspector, `video_streams` contains two slots; `current_stream_texture_fresh` checks the authenticated publisher's current stream generation. Frame counters are lifetime counters and can include earlier streams. Neither a fresh texture nor a counter proves the image contents; inspect a capture of the target application window separately. The OS consent must still be given by the user.
 
 For a fresh tracked local head sample, `status.player.local_head_position_cm` contains the sampled world-space position in centimetres and `local_view_rotation_degrees` contains sampled pitch, yaw and roll in degrees. Check `local_head_pose_fresh` and `local_pose_sample_age_seconds` on each new status UUID; the coordinate fields are omitted if the sample is stale, untracked or non-finite. `local_head_pose_source` explicitly identifies this as a local sample not confirmed by the server. On XR, freshness is the local sampling-pass age, not an independent sensor-packet age or the headset's late-updated rendered view. A before/after difference verifies local response to input, not server acceptance or what another client rendered.
 
