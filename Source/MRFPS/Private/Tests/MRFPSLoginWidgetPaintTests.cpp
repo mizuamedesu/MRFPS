@@ -5,6 +5,7 @@
 #include "MRFPSLoginWidgetComponent.h"
 #include "MRFPSHapticsComponent.h"
 #include "Blueprint/WidgetTree.h"
+#include "Camera/CameraComponent.h"
 #include "Components/EditableTextBox.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
@@ -14,6 +15,23 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
 #include "RHI.h"
+#include "Tickable.h"
+
+// UWorld ticks these objects immediately before UpdateCameraManager and
+// TG_PostUpdateWork. Model a head-following camera transform changing at that
+// boundary without opening an XR session or touching the real headset.
+class FMRFPSLoginCameraTickProbe final : public FTickableGameObject
+{
+public:
+    explicit FMRFPSLoginCameraTickProbe(UWorld* InWorld) : FixtureWorld(InWorld) {}
+    virtual UWorld* GetTickableGameObjectWorld() const override { return FixtureWorld.Get(); }
+    virtual bool IsTickable() const override { return FixtureWorld.IsValid(); }
+    virtual TStatId GetStatId() const override { RETURN_QUICK_DECLARE_CYCLE_STAT(FMRFPSLoginCameraTickProbe,STATGROUP_Tickables); }
+    virtual void Tick(float DeltaTime) override { if (Action) Action(); }
+    TFunction<void()> Action;
+private:
+    TWeakObjectPtr<UWorld> FixtureWorld;
+};
 
 // Exercise the real runtime UUserWidget. Unlike a test that traces after an
 // arbitrary World::Tick, this observes the grid from inside the original
@@ -24,6 +42,7 @@ public:
     explicit FMRFPSLoginWidgetPaintScenario(FAutomationTestBase* InTest) : Test(InTest) {}
     ~FMRFPSLoginWidgetPaintScenario()
     {
+        CameraProbe.Reset();
         if (Menu) { Menu->TestDuringPaint=nullptr; Menu->CloseLogin(); }
         if (World && GEngine) {
             World->EndPlay(EEndPlayReason::EndPlayInEditor);
@@ -38,6 +57,7 @@ public:
             if (!Create()) return true;
             Deadline=FPlatformTime::Seconds()+15.; return false;
         }
+        const int32 PaintsAtFrameStart=PaintTicks;
         World->Tick(LEVELTICK_All,1.f/60.f);
         if (FPlatformTime::Seconds()>Deadline) {
             Test->AddError(FString::Printf(TEXT("Login paint timeout prepared=%d submitted=%d page=%d world=%d registered=%d tick=%d rt=%d window=%d grid=%d armed=%d hit=%d slate=%d path=%d"),
@@ -59,11 +79,20 @@ public:
             Menu->TestWeapon.Source=MRFPSLoginPointer::ESource::AimGrip;
             Menu->TestWeapon.GripWorld=FTransform(Direction.Rotation(),Muzzle-Direction*22);
             Menu->bUseTestWeapon=true;
-            Menu->TestDuringPaint=[this]() { ++PaintTicks; if (PathContainsKey()) ++PaintTicksWithKey; };
+            Menu->TestDuringPaint=[this]() {
+                ++PaintTicks; if (PathContainsKey()) ++PaintTicksWithKey;
+                if (bCameraMoved && Panel->GetComponentLocation().Equals(MovedPanelLocation,.01)) bPaintAfterCameraMove=true;
+            };
             Before=Menu->AddressBox->GetText().ToString();
             bPrepared=true; return false;
         }
         if (!bSubmitted) {
+            if (!bCameraMoved) return false;
+            if (!bCameraOrderVerified) {
+                if (!Test->TestEqual(TEXT("The login panel has not painted before the camera-update boundary"),PaintsAtCameraTick,PaintsAtFrameStart)) return true;
+                if (!Test->TestTrue(TEXT("The real login panel paints after its camera parent moved"),bPaintAfterCameraMove)) return true;
+                bCameraOrderVerified=true;
+            }
             if (!Menu->bPointerGridReady || !Menu->PointerInput.ButtonArmed ||
                 Interaction->GetLastHitResult().GetComponent()!=Panel || !Interaction->IsOverHitTestVisibleWidget()) return false;
             const auto Expected=Key->GetCachedWidget();
@@ -107,11 +136,12 @@ private:
         GEngine->CreateNewWorldContext(EWorldType::Game).SetCurrentWorld(World);
         World->InitializeActorsForPlay(FURL()); World->BeginPlay(); World->GetWorldSettings()->NotifyBeginPlay();
         auto* PC=World->SpawnActor<AMRFPSPlayerController>();
-        auto* Pawn=World->SpawnActor<AMRFPSPawn>();
+        Pawn=World->SpawnActor<AMRFPSPawn>();
         auto* Local=NewObject<ULocalPlayer>(GEngine);
         if (!Test->TestTrue(TEXT("Local login controller and pawn exist"),PC && Pawn && Local)) return false;
         // This isolated fixture must never connect to a real haptics device.
         if (Pawn->Haptics) { Pawn->Haptics->bAutoConnectTracking=false; Pawn->Haptics->SetComponentTickEnabled(false); }
+        Pawn->Camera->bLockToHmd=false;
         PC->Player=Local; Local->PlayerController=PC; PC->Possess(Pawn); PC->SetActorTickEnabled(false);
         Menu=CreateWidget<UMRFPSLoginMenu>(PC,UMRFPSLoginMenu::StaticClass());
         if (!Test->TestNotNull(TEXT("The production login widget was created"),Menu)) return false;
@@ -121,7 +151,7 @@ private:
         });
         if (!Test->TestNotNull(TEXT("A real virtual keyboard key exists"),Key)) return false;
         Panel=NewObject<UMRFPSLoginWidgetComponent>(Pawn);
-        Panel->SetupAttachment(Pawn->GetRootComponent()); Panel->SetWidgetSpace(EWidgetSpace::World);
+        Panel->SetupAttachment(Pawn->Camera); Panel->SetWidgetSpace(EWidgetSpace::World);
         Panel->SetDrawSize(FVector2D(900,720)); Panel->SetPivot(FVector2D(.5,.5));
         Panel->SetRelativeLocation(FVector(150,0,0)); Panel->SetRelativeRotation(FRotator(0,180,0));
         Panel->SetRelativeScale3D(FVector(.1)); Panel->SetTickWhenOffscreen(true);
@@ -131,20 +161,38 @@ private:
         Interaction->SetupAttachment(Pawn->GetRootComponent()); Interaction->InteractionDistance=400;
         Interaction->SetLoginWorldWidget(Panel); Interaction->RegisterComponent(); Interaction->SetComponentTickEnabled(false);
         Menu->Interaction=Interaction;
+        CameraProbe=MakeUnique<FMRFPSLoginCameraTickProbe>(World);
+        CameraProbe->Action=[this]() {
+            if (!bPrepared || bCameraMoved) return;
+            PaintsAtCameraTick=PaintTicks;
+            Pawn->Camera->AddLocalOffset(FVector(0,12,0));
+            MovedPanelLocation=Panel->GetComponentLocation();
+            const FGeometry Geometry=Key->GetCachedGeometry();
+            const FVector2D Center=Geometry.LocalToAbsolute(Geometry.GetLocalSize()*.5);
+            const FVector2D Size=Panel->GetCurrentDrawSize(),Pivot=Panel->GetPivot();
+            TargetPoint=Panel->GetComponentTransform().TransformPosition(FVector(0,Size.X*Pivot.X-Center.X,Size.Y*Pivot.Y-Center.Y));
+            const FVector Direction=-Panel->GetComponentTransform().GetUnitAxis(EAxis::X);
+            const FVector Muzzle=TargetPoint-Direction*100;
+            Menu->TestWeapon.GripWorld=FTransform(Direction.Rotation(),Muzzle-Direction*22);
+            bCameraMoved=true;
+        };
         return true;
     }
     FAutomationTestBase* Test=nullptr;
     UWorld* World=nullptr;
+    AMRFPSPawn* Pawn=nullptr;
     UMRFPSLoginMenu* Menu=nullptr;
     UMRFPSLoginWidgetComponent* Panel=nullptr;
     UMRFPSLoginInteraction* Interaction=nullptr;
     UMRFPSLoginKey* Key=nullptr;
     FVector TargetPoint=FVector::ZeroVector;
+    FVector MovedPanelLocation=FVector::ZeroVector;
+    TUniquePtr<FMRFPSLoginCameraTickProbe> CameraProbe;
     FString Before;
     uint64 LastFrame=MAX_uint64;
     double Deadline=0;
-    int32 PaintTicks=0,PaintTicksWithKey=0;
-    bool bPrepared=false,bSubmitted=false,bPageChanged=false;
+    int32 PaintTicks=0,PaintTicksWithKey=0,PaintsAtCameraTick=0;
+    bool bPrepared=false,bSubmitted=false,bPageChanged=false,bCameraMoved=false,bPaintAfterCameraMove=false,bCameraOrderVerified=false;
 };
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMRFPSLoginWidgetPaintTest,"QuestVisualFixture.LoginWidgetPaintOrdering",

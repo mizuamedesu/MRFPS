@@ -11,5 +11,6 @@ class MRFPS_API UMRFPSLoginWidgetComponent : public UWidgetComponent
 {
     GENERATED_BODY()
 public:
+    UMRFPSLoginWidgetComponent();
     virtual void TickComponent(float DeltaTime,ELevelTick TickType,FActorComponentTickFunction* ThisTickFunction) override;
 };

@@ -1,6 +1,13 @@
 #include "MRFPSLoginWidgetComponent.h"
 #include "MRFPSLoginMenu.h"
 
+UMRFPSLoginWidgetComponent::UMRFPSLoginWidgetComponent()
+{
+    // UWorld updates player cameras after PostPhysics, before PostUpdateWork.
+    // The head-attached panel and its pointer must use that updated pose.
+    PrimaryComponentTick.TickGroup=TG_PostUpdateWork;
+}
+
 void UMRFPSLoginWidgetComponent::TickComponent(float DeltaTime,ELevelTick TickType,FActorComponentTickFunction* ThisTickFunction)
 {
     const double Before=LastWidgetRenderTime;
