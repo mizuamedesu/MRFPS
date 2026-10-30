@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
 #if !UE_SERVER
+#include "MRFPSLoginMenu.h"
 #include "MRFPSViewCaptureSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Components/WidgetComponent.h"
@@ -141,7 +142,9 @@ void AMRFPSPawn::UpdateFlashHud()
 {
 #if !UE_SERVER
     if (!FlashHud) return;
-    const bool Show=IsLocallyControlled() && IsXR() && FlashIntensity()>0.001f;
+    const auto* PC=Cast<AMRFPSPlayerController>(Controller);
+    const bool PanelOpen=PC && PC->DeviceLogin && PC->DeviceLogin->IsOpen();
+    const bool Show=IsLocallyControlled() && IsXR() && !PanelOpen && FlashIntensity()>0.001f;
     FlashHud->SetVisibility(Show);
     if (!Show) return;
     if (!FlashSlate.IsValid()) {
@@ -159,7 +162,9 @@ void AMRFPSPawn::UpdatePlayerHud()
 {
 #if !UE_SERVER
     if (!PlayerHud) return;
-    const bool Show=IsLocallyControlled() && IsXR();
+    const auto* PC=Cast<AMRFPSPlayerController>(Controller);
+    const bool PanelOpen=PC && PC->DeviceLogin && PC->DeviceLogin->IsOpen();
+    const bool Show=IsLocallyControlled() && IsXR() && !PanelOpen;
     PlayerHud->SetVisibility(Show);
     if (RoundHud) RoundHud->SetVisibility(Show);
     const auto* NoticeState=GetWorld()?GetWorld()->GetGameState<AMRFPSGameState>():nullptr;

@@ -349,20 +349,6 @@ bool ResetForRound(AMRFPSGameMode* Mode)
     if (!GS || !GS->bSoloBotSession) return true;
     auto* Bot=FindBot(Mode->GetWorld()); return Bot && Bot->ResetForRound();
 }
-bool IsTrackingPause(const AMRFPSGameMode* Mode)
-{
-    const auto* GS=Mode?Mode->GetGameState<AMRFPSGameState>():nullptr;
-    const auto* Bot=Mode?FindBot(Mode->GetWorld()):nullptr;
-    return Mode && Mode->HasAuthority() && GS && GS->bSoloBotSession && GS->bCombatPaused && Bot && Bot->bPausedForTracking;
-}
-bool ClaimTrackingPause(AMRFPSGameMode* Mode)
-{
-    if (!IsTrackingPause(Mode)) return false;
-    auto* Bot=FindBot(Mode->GetWorld());
-    Bot->bPausedForTracking=false;
-    UE_LOG(LogMRFPSBot,Display,TEXT("MRFPS_BOT_ADMIN_PAUSE_HELD"));
-    return true;
-}
 void CancelAutoStart(AMRFPSGameMode* Mode)
 {
     if (Mode && Mode->HasAuthority()) if (auto* Bot=FindBot(Mode->GetWorld())) Bot->bAutoStartPending=false;
@@ -426,23 +412,14 @@ void Maintain(AMRFPSGameMode* Mode,float DeltaSeconds)
         if (!Bot || !Human || Human->GetSlot()!=GS->SoloHumanSlot || (Human->bCalibrated && !Human->Pose.bDesktop && Human->GeometryCalibrationGeneration!=GS->SoloHumanCalibration)) {
             RetireBot(Mode,TEXT("calibration_changed")); return;
         }
-        if (Bot->bPausedForTracking && !GS->bCombatPaused) Bot->bPausedForTracking=false;
         if (GS->Phase!=EMRFPSMatchPhase::Waiting) Bot->bAutoStartPending=false;
         if (!RealHumanReady(Human)) {
             if (GS->bSoloGeometryReady) { GS->bSoloGeometryReady=false; GS->ForceNetUpdate(); }
-            if (!GS->bCombatPaused && (GS->Phase==EMRFPSMatchPhase::Playing || GS->Phase==EMRFPSMatchPhase::BetweenRounds)) {
-                Mode->SetBotTrackingPause(true); Bot->bPausedForTracking=true;
-                UE_LOG(LogMRFPSBot,Warning,TEXT("MRFPS_BOT_TRACKING_PAUSED"));
-            }
             return;
         }
         const auto* Geometry=Mode->GetWorld()->GetSubsystem<UMRFPSGeometryWorld>();
         const bool Measured=Geometry && Geometry->HasLiveMeasurement(Human->GetSlot());
         if (GS->bSoloGeometryReady!=Measured) { GS->bSoloGeometryReady=Measured; GS->ForceNetUpdate(); }
-        if (Bot->bPausedForTracking && GS->bCombatPaused && IsPrepared(Mode)) {
-            Mode->SetBotTrackingPause(false); Bot->bPausedForTracking=false;
-            UE_LOG(LogMRFPSBot,Display,TEXT("MRFPS_BOT_TRACKING_RESUMED"));
-        }
         if (Bot->bAutoStartPending && IsPrepared(Mode) && Mode->StartPreparedSoloMatch()) Bot->bAutoStartPending=false;
         return;
     }

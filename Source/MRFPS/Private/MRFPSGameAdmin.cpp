@@ -240,7 +240,6 @@ void AMRFPSGameMode::InvalidateSharedFloor()
     GS->bSharedFloorConfirmed=false; GS->Layout.bCalibrated=false; GS->Layout.RegistrationRevision=0; GS->MeasuredAnchorDistanceCm=0;
     if (GS->Layout.Revision<MAX_uint32) ++GS->Layout.Revision;
     for (int32 Slot=0;Slot<2;++Slot) { RegisteredPlayers[Slot].Reset(); RegisteredCalibration[Slot]=0; }
-    if (GS->Phase==EMRFPSMatchPhase::Playing || GS->Phase==EMRFPSMatchPhase::BetweenRounds) SetCombatPaused(true);
     ApplyLayoutChange(); // retains its last centre, orientation, size and floor height
 }
 void AMRFPSGameMode::ApplyLayoutChange()
@@ -262,7 +261,6 @@ void AMRFPSGameMode::ApplyLayoutChange()
     PausedWallLifetimes.Reset();
 }
 void AMRFPSGameMode::ApplyBotLayoutChange() { if (HasAuthority()) ApplyLayoutChange(); }
-void AMRFPSGameMode::SetBotTrackingPause(bool Paused) { if (HasAuthority()) SetCombatPaused(Paused); }
 void AMRFPSGameMode::SetCombatPaused(bool Paused)
 {
     auto* GS=GetGameState<AMRFPSGameState>(); if (!GS || GS->bCombatPaused==Paused) return;
@@ -321,8 +319,8 @@ bool AMRFPSGameMode::HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdmin
     }
     case EMRFPSAdminAction::Pause:
         if (GS->Phase!=EMRFPSMatchPhase::Playing && GS->Phase!=EMRFPSMatchPhase::BetweenRounds) return false;
-        if (GS->bCombatPaused) { if (!MRFPSBot::ClaimTrackingPause(this)) return false; }
-        else SetCombatPaused(true);
+        if (GS->bCombatPaused) return false;
+        SetCombatPaused(true);
         break;
     case EMRFPSAdminAction::Resume: {
         bool Nominal=false;

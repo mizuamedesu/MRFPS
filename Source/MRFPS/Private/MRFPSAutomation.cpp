@@ -678,7 +678,7 @@ void AMRFPSPlayerController::ServerAutomationCommand_Implementation(FGuid Id,con
                 else if(Action==TEXT("set_dimensions")) { Type=EMRFPSAdminAction::SetDimensions; double W=0,L=0; Valid=Valid&&Params->TryGetNumberField(TEXT("width_cm"),W)&&Params->TryGetNumberField(TEXT("length_cm"),L)&&FMath::IsFinite(W)&&FMath::IsFinite(L); Dimensions=FVector2D(W,L); }
                 else Valid=false;
                 if(!Valid) Code=TEXT("INVALID_REQUEST");
-                else if((Action==TEXT("pause")&&(GS->Phase==EMRFPSMatchPhase::Playing||GS->Phase==EMRFPSMatchPhase::BetweenRounds)&&GS->bCombatPaused&&!MRFPSBot::IsTrackingPause(GM))||
+                else if((Action==TEXT("pause")&&(GS->Phase==EMRFPSMatchPhase::Playing||GS->Phase==EMRFPSMatchPhase::BetweenRounds)&&GS->bCombatPaused)||
                         (Action==TEXT("resume")&&(GS->Phase==EMRFPSMatchPhase::Playing||GS->Phase==EMRFPSMatchPhase::BetweenRounds)&&!GS->bCombatPaused)||
                         (Action==TEXT("start")&&(GS->Phase==EMRFPSMatchPhase::Playing||GS->Phase==EMRFPSMatchPhase::BetweenRounds)&&!GS->bCombatPaused)||
                         (Action==TEXT("set_dimensions")&&FMath::IsNearlyEqual(GS->Layout.WidthCm,Dimensions.X)&&FMath::IsNearlyEqual(GS->Layout.LengthCm,Dimensions.Y))) {

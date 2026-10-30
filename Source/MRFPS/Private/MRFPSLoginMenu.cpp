@@ -117,6 +117,9 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         auto* Component=NewObject<UMRFPSLoginWidgetComponent>(Pawn);
         Component->SetWidgetSpace(EWidgetSpace::World); Component->SetDrawSize(FVector2D(900,720));
         Component->SetPivot(FVector2D(.5f,.5f)); Component->SetTwoSided(true);
+        Component->SetBlendMode(EWidgetBlendMode::Transparent); Component->SetTranslucentSortPriority(10000);
+        if (auto* Overlay=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_QuestPanelOverlay.M_QuestPanelOverlay")))
+            Component->SetMaterial(0,Overlay);
         Component->SetTickWhenOffscreen(true);
         Component->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
         Component->SetCollisionResponseToAllChannels(ECR_Ignore); Component->SetCollisionResponseToChannel(ECC_Visibility,ECR_Block);
@@ -135,7 +138,8 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
             auto* Ray=NewObject<UStaticMeshComponent>(Pawn); Ray->SetStaticMesh(Cylinder);
             Ray->SetupAttachment(Pointer); Ray->SetCollisionEnabled(ECollisionEnabled::NoCollision);
             Ray->SetCastShadow(false); Ray->SetRelativeRotation(FRotator(90,0,0));
-            if (auto* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Tracer.M_Tracer"))) Ray->SetMaterial(0,Material);
+            if (auto* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_QuestPointerOverlay.M_QuestPointerOverlay"))) Ray->SetMaterial(0,Material);
+            Ray->SetTranslucentSortPriority(10001);
             Ray->SetRelativeLocation(FVector(200,0,0)); Ray->SetRelativeScale3D(FVector(.014,.014,4));
             Ray->SetVisibility(false);
             Ray->RegisterComponent(); Menu->PointerRay=Ray;
@@ -144,7 +148,8 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
             auto* Dot=NewObject<UStaticMeshComponent>(Pawn); Dot->SetStaticMesh(Sphere);
             Dot->SetupAttachment(Pointer); Dot->SetCollisionEnabled(ECollisionEnabled::NoCollision);
             Dot->SetCastShadow(false); Dot->SetRelativeScale3D(FVector(.035));
-            if (auto* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_Tracer.M_Tracer"))) Dot->SetMaterial(0,Material);
+            if (auto* Material=LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Materials/M_QuestPointerOverlay.M_QuestPointerOverlay"))) Dot->SetMaterial(0,Material);
+            Dot->SetTranslucentSortPriority(10002);
             Dot->SetVisibility(false); Dot->RegisterComponent(); Menu->PointerDot=Dot;
         }
         UE_LOG(LogMRFPSLogin,Display,TEXT("MRFPS_LOGIN_POINTER_INIT interaction=%d ray=%d dot=%d"),

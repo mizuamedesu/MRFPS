@@ -26,7 +26,6 @@ public:
     bool ResetForRound();
     void ResetNavigationForLayout();
     bool bAutoStartPending=true;
-    bool bPausedForTracking=false;
 private:
     UPROPERTY(Transient) TObjectPtr<UBehaviorTree> RuntimeTree;
     UPROPERTY(Transient) TObjectPtr<UEnvQuery> RuntimeQuery;
@@ -69,8 +68,6 @@ namespace MRFPSBot
     bool CanMove(UWorld* World,const AMRFPSPawn* Fighter,const FVector& Start,const FVector& End);
     bool IsPrepared(const AMRFPSGameMode* Mode);
     bool ResetForRound(AMRFPSGameMode* Mode);
-    bool IsTrackingPause(const AMRFPSGameMode* Mode);
-    bool ClaimTrackingPause(AMRFPSGameMode* Mode);
     void CancelAutoStart(AMRFPSGameMode* Mode);
     int32 CountHumanFighters(const AMRFPSGameMode* Mode,const AMRFPSPlayerState* Exclude=nullptr);
     void BeforeHumanAdmission(AMRFPSGameMode* Mode);

@@ -689,7 +689,6 @@ public:
     void ResetForFighterChange();
     bool StartPreparedSoloMatch();
     void ApplyBotLayoutChange();
-    void SetBotTrackingPause(bool Paused);
     bool HandleAdminAction(AMRFPSPlayerController* Admin,EMRFPSAdminAction Action,FVector2D Dimensions,FString& SafeError);
     bool PlaceAdminWall(AMRFPSPlayerController* Admin,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);
     bool PlaceAdminObject(AMRFPSPlayerController* Admin,EMRFPSBuildKind Kind,const FVector& Origin,const FVector& Direction,float Yaw,FString& SafeError);

@@ -10,6 +10,7 @@
 #include "Materials/MaterialExpressionFontSampleParameter.h"
 #include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionVertexColor.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
@@ -24,6 +25,54 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/PrimaryAssetLabel.h"
 #include "Engine/Font.h"
+#include "Engine/Texture2D.h"
+
+// The Quest's head-attached menus and pointer must remain legible even when a
+// virtual wall is between the viewer and the widget. These materials are
+// generated during setup and cooked with the rest of /Game/Materials.
+static bool EnsureQuestOverlayMaterials()
+{
+    const FString PanelPackage=TEXT("/Game/Materials/M_QuestPanelOverlay");
+    if (!FPackageName::DoesPackageExist(PanelPackage)) {
+        auto* Texture=LoadObject<UTexture2D>(nullptr,TEXT("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
+        if (!Texture) return false;
+        auto* Package=CreatePackage(*PanelPackage);
+        auto* Material=NewObject<UMaterial>(Package,TEXT("M_QuestPanelOverlay"),RF_Public|RF_Standalone);
+        Material->SetShadingModel(MSM_Unlit); Material->BlendMode=BLEND_Translucent;
+        Material->TwoSided=true; Material->bDisableDepthTest=true;
+        auto* Sample=NewObject<UMaterialExpressionTextureSampleParameter2D>(Material);
+        Sample->ParameterName=TEXT("SlateUI"); Sample->Texture=Texture; Sample->ExpressionGUID=FGuid::NewGuid();
+        Sample->AutoSetSampleType();
+        Material->GetExpressionCollection().AddExpression(Sample);
+        auto* Data=Material->GetEditorOnlyData();
+        Data->EmissiveColor.Connect(0,Sample); Data->EmissiveColor.UseConstant=0;
+        Data->Opacity.Connect(4,Sample); Data->Opacity.UseConstant=0;
+        Material->PostEditChange(); FSavePackageArgs Args; Args.TopLevelFlags=RF_Public|RF_Standalone;
+        const FString Filename=FPackageName::LongPackageNameToFilename(PanelPackage,FPackageName::GetAssetPackageExtension());
+        IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename),true);
+        if (!UPackage::SavePackage(Package,Material,*Filename,Args)) return false;
+    }
+    const FString PointerPackage=TEXT("/Game/Materials/M_QuestPointerOverlay");
+    if (!FPackageName::DoesPackageExist(PointerPackage)) {
+        auto* Package=CreatePackage(*PointerPackage);
+        auto* Material=NewObject<UMaterial>(Package,TEXT("M_QuestPointerOverlay"),RF_Public|RF_Standalone);
+        Material->SetShadingModel(MSM_Unlit); Material->BlendMode=BLEND_Translucent;
+        Material->TwoSided=true; Material->bDisableDepthTest=true;
+        auto* Color=NewObject<UMaterialExpressionConstant3Vector>(Material);
+        Color->Constant=FLinearColor(1.f,.8f,.1f,1.f);
+        auto* Opacity=NewObject<UMaterialExpressionConstant>(Material); Opacity->R=1.f;
+        Material->GetExpressionCollection().AddExpression(Color);
+        Material->GetExpressionCollection().AddExpression(Opacity);
+        auto* Data=Material->GetEditorOnlyData();
+        Data->EmissiveColor.Connect(0,Color); Data->EmissiveColor.UseConstant=0;
+        Data->Opacity.Connect(0,Opacity); Data->Opacity.UseConstant=0;
+        Material->PostEditChange(); FSavePackageArgs Args; Args.TopLevelFlags=RF_Public|RF_Standalone;
+        const FString Filename=FPackageName::LongPackageNameToFilename(PointerPackage,FPackageName::GetAssetPackageExtension());
+        IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename),true);
+        if (!UPackage::SavePackage(Package,Material,*Filename,Args)) return false;
+    }
+    return true;
+}
 
 static bool EnsureDamageNumberMaterial()
 {
@@ -115,6 +164,7 @@ UMRFPSSetupCommandlet::UMRFPSSetupCommandlet() { IsClient = false; IsEditor = tr
 
 int32 UMRFPSSetupCommandlet::Main(const FString& Params)
 {
+    if (!EnsureQuestOverlayMaterials()) { UE_LOG(LogTemp,Error,TEXT("MRFPS_QUEST_OVERLAY_MATERIAL_FAILED")); return 7; }
     if (!EnsureDamageNumberMaterial()) { UE_LOG(LogTemp,Error,TEXT("MRFPS_DAMAGE_MATERIAL_FAILED")); return 6; }
     const TCHAR* Names[] = { TEXT("Blue"), TEXT("Orange"), TEXT("Wall"), TEXT("Shield"), TEXT("Floor"), TEXT("Tracer"),TEXT("Graphite"),TEXT("Trim"),TEXT("White"),TEXT("Wood"),TEXT("WoodDark") };
     const FLinearColor Colors[] = {
