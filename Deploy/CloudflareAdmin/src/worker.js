@@ -255,7 +255,11 @@ export class DeviceCodes extends DurableObject {
     const now = Math.floor(Date.now() / 1000);
     const ipState = this.attempt('device:' + ip, now, 5);
     const globalState = this.attempt('device:global', now, 30);
-    if (!ipState.allowed || !globalState.allowed) return { error: 'rate_limited' };
+    if (!ipState.allowed || !globalState.allowed) {
+      // Both limits use the same UTC minute window. Count whole seconds up to
+      // its next boundary without changing either limit or its admission order.
+      return { error: 'rate_limited', retry_after: 60 - (now % 60) };
+    }
     const sql = this.ctx.storage.sql;
     const row = sql.exec('SELECT id,token,public_key,token_expires_at FROM codes WHERE role=? AND code_hash=? AND expires_at>? AND token IS NOT NULL', role, codeHash, now).toArray()[0];
     if (!row) {
@@ -293,8 +297,14 @@ export default {
       try { body = await bodyJson(request, 512); } catch { return json({ error: 'invalid_code' }, 400); }
       if (!roles.has(body.role) || typeof body.code !== 'string' || !/^\d{6}$/.test(body.code)) return json({ error: 'invalid_code' }, 400);
       const result = await stub.exchange(body.role, await digest(body.role + ':' + body.code), ip);
-      return json(result, result.error === 'rate_limited' ? 429 : result.error ? 401 : 200,
-        result.error === 'rate_limited' ? { 'retry-after': '60' } : {});
+      if (result.error === 'rate_limited') {
+        // An older Durable Object instance can temporarily return no value
+        // during a deployment; retain the conservative old 60-second fallback.
+        const retry = Number.isInteger(result.retry_after) && result.retry_after >= 1 && result.retry_after <= 60
+          ? result.retry_after : 60;
+        return json({ error: 'rate_limited' }, 429, { 'retry-after': String(retry) });
+      }
+      return json(result, result.error ? 401 : 200);
     }
     // An initial unauthenticated browser request is a normal Basic challenge,
     // not a password attempt. Counting it locks out valid users after a few
