@@ -6,6 +6,7 @@
 #include "MRFPSFireReleaseGate.h"
 #include "MRFPSWeaponPose.h"
 #include "MRFPSConnectionStatus.h"
+#include "Engine/TimerHandle.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameStateBase.h"
@@ -337,6 +338,7 @@ private:
     void RemoveDeployedWall();
     void UpdateWeaponFromPose(double Now);
     void UpdatePlayerHud();
+    void CompletePendingCalibration();
     UFUNCTION() void InvalidateCalibration();
     UFUNCTION() void OnXRSpaceChanged();
     bool bDesktopInitialized = false;
@@ -365,6 +367,7 @@ private:
     double LastReloadAt = -100;
     double LastShieldUse = -100;
     double IgnoreOriginChangesUntil = -1;
+    FTimerHandle PendingCalibrationTimer;
     FMRFPSRiseGesture ServerRise;
     FMRFPSRiseGesture ServerLower;
     TArray<TWeakObjectPtr<AMRFPSBarrier>> DeployedWalls;

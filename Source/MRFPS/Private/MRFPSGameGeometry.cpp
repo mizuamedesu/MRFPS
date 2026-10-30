@@ -58,6 +58,7 @@ void AMRFPSPlayerController::TickMeasuredGeometry()
     }
     if (Capture && GeometryPawn && GeometryPawn->GetGeometryCalibrationEpoch() &&
         Capture->GetTrackingSpaceEpoch()!=GeometryPawn->GetGeometryCalibrationEpoch()) {
+        UE_LOG(LogMRFPSGeometry,Warning,TEXT("MRFPS_CALIBRATION_INVALIDATED reason=geometry_epoch_changed"));
         StopGeometryPublisher(); GeometryPawn->InvalidateGeometryCalibration(); return;
     }
     if (!Capture || !IsGeometrySessionValid(true) || !GeometryPawn) {

@@ -372,6 +372,7 @@ void AMRFPSPawn::BeginPlay()
 }
 void AMRFPSPawn::EndPlay(const EEndPlayReason::Type Reason)
 {
+    if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(PendingCalibrationTimer);
     if (GetWorld()) if (auto* Geometry=GetWorld()->GetSubsystem<UMRFPSGeometryWorld>()) Geometry->RemoveOwner(this);
     if (IsLocallyControlled() && Haptics) Haptics->StopHaptics();
     Super::EndPlay(Reason);
@@ -451,12 +452,28 @@ void AMRFPSPawn::Calibrate()
 {
     if (!IsLocallyControlled()) return;
     if (!IsXR() && !MRFPS::HasDesktopFlag()) return;
+    UWorld* World=GetWorld();
+    if (!World || World->GetTimerManager().IsTimerActive(PendingCalibrationTimer)) return;
     if (IsXR()) {
 #if !UE_SERVER
         if (!FMRFPSXRModule::IsPassthroughRunning()) return;
 #endif
-        IgnoreOriginChangesUntil=GetWorld()->GetTimeSeconds()+.5;
-        UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(EHMDTrackingOrigin::Stage);
+        // OpenXR recreates its tracking space even when asked to set the same
+        // origin. That bumps the geometry epoch on the next frame and used to
+        // invalidate the calibration we had just sent to the server.
+        if (UHeadMountedDisplayFunctionLibrary::GetTrackingOrigin()!=EHMDTrackingOrigin::Stage) {
+            InvalidateCalibration();
+            IgnoreOriginChangesUntil=World->GetTimeSeconds()+.75;
+            UHeadMountedDisplayFunctionLibrary::SetTrackingOrigin(EHMDTrackingOrigin::Stage);
+            if (UHeadMountedDisplayFunctionLibrary::GetTrackingOrigin()!=EHMDTrackingOrigin::Stage) {
+                UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_CALIBRATION_STAGE_UNAVAILABLE"));
+                return;
+            }
+            // Capture the pose and geometry epoch only after the real origin
+            // switch has had time to reach the XR tracking thread.
+            World->GetTimerManager().SetTimer(PendingCalibrationTimer,this,&AMRFPSPawn::CompletePendingCalibration,.5f,false);
+            return;
+        }
         FRotator R; FVector P; UHeadMountedDisplayFunctionLibrary::GetOrientationAndPosition(R,P);
         if (!UHeadMountedDisplayFunctionLibrary::HasValidTrackingPosition()) return;
         // Stand at the physical arena centre, facing its agreed +X direction.
@@ -476,16 +493,25 @@ void AMRFPSPawn::Calibrate()
     ServerCalibrate(true,IsXR() && UHeadMountedDisplayFunctionLibrary::GetTrackingOrigin()==EHMDTrackingOrigin::Stage);
     UE_LOG(LogMRFPS, Display, TEXT("MRFPS_CALIBRATED slot=%d xr=%d"), GetSlot(), IsXR());
 }
+void AMRFPSPawn::CompletePendingCalibration()
+{
+    if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(PendingCalibrationTimer);
+    Calibrate();
+}
 void AMRFPSPawn::InvalidateCalibration()
 {
     if (!IsLocallyControlled() || MRFPS::HasDesktopFlag()) return;
+    if (GetWorld()) GetWorld()->GetTimerManager().ClearTimer(PendingCalibrationTimer);
     (void)MRFPSGeometryWire::AdvanceCalibrationFence(GeometryCalibrationFence,GeometryCalibrationGeneration);
     bLocalReady=false; GeometryCalibratedEpoch=0; bFiring=false; bFingerTriggerDown=false; GloveFireInput.Reset(); ServerCalibrate(false);
     if (Haptics) Haptics->StopHaptics();
 }
 void AMRFPSPawn::OnXRSpaceChanged()
 {
-    if (GetWorld() && GetWorld()->GetTimeSeconds()>=IgnoreOriginChangesUntil) InvalidateCalibration();
+    if (GetWorld() && GetWorld()->GetTimeSeconds()>=IgnoreOriginChangesUntil) {
+        UE_LOG(LogMRFPS,Warning,TEXT("MRFPS_CALIBRATION_INVALIDATED reason=xr_space_changed"));
+        InvalidateCalibration();
+    }
 }
 void AMRFPSPawn::ServerCalibrate_Implementation(bool bReady,bool FloorReferenced)
 {
