@@ -55,6 +55,18 @@ bool FMRFPSQuestLoginToggleTest::RunTest(const FString& Parameters)
     }
     int32 ArmRequests=0; PC->TestQuestArmRequest=[&ArmRequests]() { ++ArmRequests; };
 
+    // A missing game instance must still clear only the cached shot, without
+    // fabricating a physical trigger release.
+    World->SetGameInstance(nullptr); Pawn->SetFiring(true);
+    TestTrue(TEXT("A held physical input can fire without a game instance"),Pawn->bPhysicalFireDown && Pawn->IsPhysicalFireAllowed());
+    Pawn->SuspendPhysicalFireForMenu();
+    TestTrue(TEXT("Suspending fire preserves the held input without a game instance"),Pawn->bPhysicalFireDown && !Pawn->IsPhysicalFireAllowed());
+    World->SetGameInstance(GI); Pawn->SetFiring(false);
+
+    FInputKeyEventArgs Trigger; Trigger.Key=EKeys::OculusTouch_Right_Trigger_Click;
+    Trigger.Event=IE_Pressed; Trigger.AmountDepressed=1.f;
+    PC->InputKey(Trigger); Pawn->SetFiring(true); // the usual Fire action delegate
+    TestTrue(TEXT("The physical trigger is held and can fire before login"),GI->FireTransition.PhysicalDown && Pawn->bPhysicalFireDown && Pawn->IsPhysicalFireAllowed());
     FInputKeyEventArgs A; A.Key=EKeys::OculusTouch_Right_A_Click; A.Event=IE_Pressed;
     TestFalse(TEXT("Non-Android A stays available to its existing action"),PC->HandleQuestLoginButton(A,false));
     TestTrue(TEXT("Android A is consumed"),PC->HandleQuestLoginButton(A,true));
@@ -67,6 +79,8 @@ bool FMRFPSQuestLoginToggleTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Open leaves the connected driver and pawn intact"),World->GetNetDriver()==Driver && PC->GetPawn()==Pawn);
     TestTrue(TEXT("Open did not request travel"),Context.TravelURL.IsEmpty());
     TestFalse(TEXT("Fire is blocked while the overlay is open"),GI->FireTransition.CanPhysical());
+    TestTrue(TEXT("Opening immediately clears the cached shot but preserves the actual hold"),
+        GI->FireTransition.PhysicalDown && Pawn->bPhysicalFireDown && !Pawn->bFiring && !Pawn->IsPhysicalFireAllowed());
     FInputKeyEventArgs Stick; Stick.Key=EKeys::OculusTouch_Right_Thumbstick_Click; Stick.Event=IE_Pressed;
     TestFalse(TEXT("Non-Android stick input retains its existing handling"),PC->HandleQuestHapticsButton(Stick,false));
     TestTrue(TEXT("Android stick input is consumed"),PC->HandleQuestHapticsButton(Stick,true));
@@ -96,7 +110,6 @@ bool FMRFPSQuestLoginToggleTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Repeat and release do not toggle the panel"),PC->DeviceLogin==First && First->IsOpen());
     PC->SetQuestDeviceLoginVisible(true); PC->SetQuestDeviceLoginVisible(true);
     TestTrue(TEXT("Repeated explicit open preserves the same widget"),PC->DeviceLogin==First && First->IsOpen());
-    GI->FireTransition.SetPhysical(true);
     A.Event=IE_Pressed; PC->HandleQuestLoginButton(A,true);
     TestFalse(TEXT("The next A closes the panel"),First->IsOpen());
     TestEqual(TEXT("Closing login does not arm haptics"),ArmRequests,0);
@@ -109,8 +122,18 @@ bool FMRFPSQuestLoginToggleTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("A deliberate right stick click after close requests arm once"),ArmRequests,1);
     TestTrue(TEXT("Close leaves the connected driver intact"),World->GetNetDriver()==Driver && Context.TravelURL.IsEmpty());
     TestFalse(TEXT("A held trigger stays locked after closing"),GI->FireTransition.CanPhysical());
-    GI->FireTransition.SetPhysical(false);
+    TestFalse(TEXT("A stale glove flex stays independently locked"),GI->FireTransition.CanFlex());
+    TestFalse(TEXT("A stale glove controller stays independently locked"),GI->FireTransition.CanController());
+    TestTrue(TEXT("The physical hold survives same-tick menu open and close"),GI->FireTransition.PhysicalDown && Pawn->bPhysicalFireDown && !Pawn->bFiring);
+    Pawn->bFiring=true; // Model a stale cached request at the actual firing decision.
+    TestFalse(TEXT("A stale cached shot is blocked by the live transition gate"),Pawn->IsPhysicalFireAllowed());
+    Trigger.Event=IE_Released; Trigger.AmountDepressed=0.f; PC->InputKey(Trigger);
+    TestTrue(TEXT("Real release immediately clears the cached shot and held state"),!GI->FireTransition.PhysicalDown && !Pawn->bPhysicalFireDown && !Pawn->bFiring);
     TestTrue(TEXT("A fresh trigger release re-arms firing"),GI->FireTransition.CanPhysical());
+    Trigger.Event=IE_Pressed; Trigger.AmountDepressed=1.f; PC->InputKey(Trigger); Pawn->SetFiring(true);
+    TestTrue(TEXT("Only a new physical press after release can fire"),GI->FireTransition.PhysicalDown && Pawn->IsPhysicalFireAllowed());
+    TestTrue(TEXT("A stale glove does not block the new physical press"),!GI->FireTransition.CanFlex() && !GI->FireTransition.CanController() && Pawn->IsPhysicalFireAllowed());
+    Trigger.Event=IE_Released; Trigger.AmountDepressed=0.f; PC->InputKey(Trigger);
     PC->SetQuestDeviceLoginVisible(false); PC->SetQuestDeviceLoginVisible(false);
     TestFalse(TEXT("Repeated explicit close stays closed"),PC->DeviceLogin && PC->DeviceLogin->IsOpen());
 

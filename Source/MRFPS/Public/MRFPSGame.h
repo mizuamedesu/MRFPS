@@ -256,6 +256,8 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
     void Calibrate();
     void SetFiring(bool bPressed);
+    /** Clear a cached shot request without changing the held-input state. */
+    void SuspendPhysicalFireForMenu() { bFiring=false; }
     void DesktopReload();
     void DesktopWall();
     void SetDesktopShield(bool bEnabled) { bDesktopShield = bEnabled; }
@@ -325,7 +327,9 @@ public:
 private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FMRFPSLoginPointerPoseTest;
+    friend class FMRFPSQuestLoginToggleTest;
 #endif
+    bool IsPhysicalFireAllowed() const;
     void SampleLocalPose(float DeltaSeconds);
     void UpdateVisuals();
     void RemoveDeployedWall();

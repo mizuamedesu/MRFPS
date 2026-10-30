@@ -117,6 +117,7 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
         auto* Pawn=Owner->GetPawn<AMRFPSPawn>();
         if (!Pawn || !Pawn->Camera || !Pawn->XROrigin) { Menu->bOpen=false; return nullptr; }
         if (auto* GI=Cast<UMRFPSGameInstance>(Owner->GetGameInstance())) GI->FireTransition.BeginLogin();
+        Pawn->SuspendPhysicalFireForMenu();
         auto* Component=NewObject<UMRFPSLoginWidgetComponent>(Pawn);
         Component->SetWidgetSpace(EWidgetSpace::World); Component->SetDrawSize(FVector2D(900,720));
         Component->SetPivot(FVector2D(.5f,.5f)); Component->SetTwoSided(true);
@@ -154,6 +155,7 @@ UMRFPSLoginMenu* UMRFPSLoginMenu::CreateFor(AMRFPSPlayerController* Owner)
             Menu->Interaction!=nullptr,Menu->PointerRay!=nullptr,Menu->PointerDot!=nullptr);
     } else {
         if (auto* GI=Cast<UMRFPSGameInstance>(Owner->GetGameInstance())) GI->FireTransition.BeginLogin();
+        if (auto* Pawn=Owner->GetPawn<AMRFPSPawn>()) Pawn->SuspendPhysicalFireForMenu();
         Menu->AddToViewport(120);
     }
     // This also covers manual menu openings, which need not have a pending

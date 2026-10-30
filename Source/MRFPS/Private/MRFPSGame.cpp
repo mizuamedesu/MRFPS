@@ -518,6 +518,11 @@ void AMRFPSPawn::SetFiring(bool bPressed)
     const auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance());
     bFiring=bPressed && !bRequireFireRelease && !(IsLocallyControlled() && GI && !GI->FireTransition.CanPhysical());
 }
+bool AMRFPSPawn::IsPhysicalFireAllowed() const
+{
+    const auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance());
+    return bFiring && (!GI || GI->FireTransition.CanPhysical());
+}
 void AMRFPSPawn::DesktopWall() { if (!IsXR()) ServerDesktopWall(); }
 void AMRFPSPawn::ServerDesktopWall_Implementation()
 {
@@ -688,7 +693,7 @@ void AMRFPSPawn::SampleLocalPose(float Dt)
     if (PoseAccumulator >= 1.f/30.f) { PoseAccumulator=0; ServerPose(Next); }
     const double Now=GetWorld()->GetTimeSeconds();
     const auto* CombatState=GetWorld()->GetGameState<AMRFPSGameState>();
-    if (!LoginOpen && !bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (bFiring || (AutomationAllowed && AutomationFire) || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
+    if (!LoginOpen && !bRequireFireRelease && CombatState && !CombatState->bCombatPaused && (IsPhysicalFireAllowed() || (AutomationAllowed && AutomationFire) || bFingerTriggerDown) && Now-LastLocalFire>=.16) { LastLocalFire=Now; ServerFire(); }
 }
 
 void AMRFPSPawn::ServerPose_Implementation(const FMRFPSPose& Next)
@@ -855,6 +860,8 @@ bool AMRFPSPlayerController::InputKey(const FInputKeyEventArgs& Params)
     if (IsLocalController() && !Params.IsSimulatedInput() && Params.Key.GetFName()==FName(TEXT("OculusTouch_Right_Trigger_Click")) &&
         (Params.Event==IE_Pressed || Params.Event==IE_Released)) {
         if (auto* GI=Cast<UMRFPSGameInstance>(GetGameInstance())) GI->FireTransition.SetPhysical(Params.Event==IE_Pressed);
+        // Do not leave a cached shot alive until the later action-stack tick.
+        if (Params.Event==IE_Released) if (auto* LocalPawn=GetPawn<AMRFPSPawn>()) LocalPawn->SetFiring(false);
     }
     if (DeviceLogin && DeviceLogin->IsOpen() && Params.Key.GetFName()==FName(TEXT("OculusTouch_Right_Trigger_Click"))) {
         if (Params.Event==IE_Pressed || Params.Event==IE_Released) {
