@@ -37,7 +37,13 @@ try {
   await waitUntil(async()=> (await req('/api/admin/status')).status===200,'legacy Worker');
   const key=await generateBackup('migration-fixture-password'), fp='a'.repeat(64);
   const legacyA=crypto.randomUUID(), legacyB=crypto.randomUUID(), fresh=crypto.randomUUID();
-  const oldA=await newCode('player',legacyA,fp,key), oldB=await newCode('inspector',legacyB,fp,key);
+  const legacyCode=async(role,owner)=>{
+    const value=await newCode(role,owner,fp,key);
+    const claims=JSON.parse(Buffer.from(value.body.token.split('.')[1],'base64url'));
+    value.body.expires_at=claims.iat+30;
+    return value;
+  };
+  const oldA=await legacyCode('player',legacyA), oldB=await legacyCode('inspector',legacyB);
   assert.equal((await req('/api/admin/publish',oldA.body)).status,200);
   assert.equal((await req('/api/admin/publish',oldB.body)).status,200);
   await writeFile(join(src,'worker.js'),current);

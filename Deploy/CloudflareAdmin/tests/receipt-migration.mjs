@@ -283,8 +283,14 @@ try {
   await ready(start());
   const signer=await generateBackup('local-receipt-migration-fixture'), fingerprint='a'.repeat(64), owner=crypto.randomUUID();
   assert.equal((await request('/api/admin/owner/start',{owner})).status,200);
-  const unused=await newCode('player',owner,fingerprint,signer);
-  const consumed=await newCode('admin',owner,fingerprint,signer);
+  const legacyCode=async role=>{
+    const value=await newCode(role,owner,fingerprint,signer);
+    const claims=JSON.parse(Buffer.from(value.body.token.split('.')[1],'base64url'));
+    value.body.expires_at=claims.iat+30;
+    return value;
+  };
+  const unused=await legacyCode('player');
+  const consumed=await legacyCode('admin');
   assert.equal((await request('/api/admin/publish',unused.body)).status,200);
   assert.equal((await request('/api/admin/publish',consumed.body)).status,200);
   await exchange('admin',consumed.code,200);
