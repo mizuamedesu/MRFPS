@@ -25,7 +25,7 @@ public:
     bool SubmitFrame(int32 Slot, uint32 StreamId, uint32 Sequence, int32 Width, int32 Height, TArray<uint8> Jpeg);
     /** Fixed 640x360 letterboxed texture, or null when no uploaded frame is younger than one second. */
     UTexture2D* GetFreshTexture(int32 Slot) const;
-    /** Also requires the GPU-acknowledged frame's StreamId to equal the nonzero expected publisher generation. */
+    /** Also requires the RHI-cleanup-acknowledged frame's StreamId to match. This is not a GPU presentation fence. */
     UTexture2D* GetFreshTextureForStream(int32 Slot, uint32 ExpectedStreamId) const;
     /** Safe metadata only. Never returns image bytes, credentials, a URL, or remote error text. */
     FString GetSafeStatus(int32 Slot) const;
