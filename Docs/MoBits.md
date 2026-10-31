@@ -6,6 +6,27 @@ Quest 版は [MoBits UE5 SDK](https://github.com/MoBits-Project/UE5_SDK) の Que
 
 エラー 7 は Bluetooth 接続に失敗したこと、144 は操作時の状態が条件に合わないこと、188 は Bluetooth 登録の準備に失敗したことを表します。別アプリの接続を終了し、機器の電源と距離を確認して「機器を探す」から選び直します。Quest のペアリング確認が表示された場合は本人が許可してください。原因の特定には `tools/automation/control.py` の `status` が返す `quest_mobits_message` と、Quest の `MoBits-GATT` ログも参照できます。
 
+188 が続く場合、Android に接続されていない機器の古い「ペアリング中」が残っていることがあります。開発用 PC からは、下記の読み取りコマンドで対象機器の状態を確認できます。`state=11 connected=false` はペアリング処理中かつ未接続、`state=10 connected=false` は未登録かつ未接続です。実行場所はリポジトリのルートで、環境に合わせてパスとアドレスを置き換えます。
+
+```powershell
+$py = 'C:\UnrealEngine\UE5.8\Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
+$adb = '.local/android/platform-tools/adb.exe'
+$serial = 'Questのシリアル番号'
+$device = '対象機器のBluetoothアドレス'
+$sdk = '.local/android'
+$jdk = 'C:\Program Files (x86)\Android\openjdk\jdk-17.0.14'
+& $py tools/mobits/quest_bond_recovery.py --adb $adb --serial $serial --device $device --android-home $sdk --java-home $jdk
+```
+
+古い未接続のペアリングが確認でき、機器単位の解除でも解決しない場合、次の操作は Quest の Bluetooth を一時停止してから再び有効にします。コントローラーなども一時的に切断されます。操作前に Quest のペアリング・画面共有などの確認画面を本人が閉じ、MoBits の刺激セッションを停止してください。コマンドは対象が古い未接続の処理であることや確認画面・刺激セッションがないことを確認できなければ変更しません。既存の登録を削除する操作は行いません。
+
+```powershell
+$operationId = [guid]::NewGuid().ToString()
+& $py tools/mobits/quest_bluetooth_restart.py --adb $adb --serial $serial --device $device --android-home $sdk --java-home $jdk --operation-id $operationId
+```
+
+同じ `$operationId` の再実行は Bluetooth を再起動せず、記録済みの結果を返します。結果が `pending` なら完了の有無が不明なため、新しい ID でやり直さず、Bluetooth と対象機器の状態を先に確認してください。状態が解消しても、その後のペアリングと接続が成功するとは限りません。
+
 接続中にサービス探索の応答がなくなった場合は、その機器の接続を閉じ、該当機器だけの GATT キャッシュを更新して一度だけ再接続します。サービス一覧と必要な MTU が取得できなければ失敗のままにし、ペアリング承認や電気刺激を自動実行しません。
 
 接続の操作は同じローカル操作窓口の `mobits.start`、`mobits.scan`、`mobits.pair`（`{"id":"候補のID"}`）でも要求できます。設定画面を開いた状態では `mobits.identify` で識別振動をやり直せます。各操作は同じ操作 ID を再利用すると重複実行されず、結果が「submitted」のときは `status` で完了を確認します。振動の送信成功は本人が実際に振動を感じたことを保証するものではありません。Bluetooth の権限・ペアリングの承認と、電極の装着・校正・刺激の有効化は本人が行います。
