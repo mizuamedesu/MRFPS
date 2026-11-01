@@ -47,7 +47,7 @@ device login starts a new connection; `connection.set` with `connected:false`
 explicitly disconnects. The right A button is held for two seconds to reload;
 press the right thumbstick to open the Quest standalone MoBits setup. Device
 selection, calibration, preset confirmation and arming are performed by the
-wearer in the panel. Right B immediately requests STOP. `menu.set` with
+wearer in the panel. The STOP button in the MoBits setup requests STOP. `menu.set` with
 `{"menu":"mobits","open":true}` explicitly opens that page; setting `open`
 to `false` closes it. The normal `status` response reports
 `quest_mobits_phase`, `quest_mobits_code`, `quest_mobits_has_session`,

@@ -99,7 +99,7 @@ void UMRFPSMoBitsSetup::Build(UMRFPSLoginMenu* InMenu,UWidgetTree* Tree,UVertica
 {
     Menu=InMenu;
     StateText=Label(Tree,Parent,TEXT("サーバー参加後に設定してください。"));
-    NoteText=Label(Tree,Parent,TEXT("右トリガーで選択 / 右Bで停止"),15);
+    NoteText=Label(Tree,Parent,TEXT("右トリガーで選択/「停止」で停止"),15);
     NoteText->SetColorAndOpacity(FSlateColor(Muted));
     DevicesPage=Tree->ConstructWidget<UVerticalBox>(); Parent->AddChild(DevicesPage);
     Label(Tree,DevicesPage,TEXT("両腕のEVT5を準備し、初回はペアリングモードにしてください。"),15);
