@@ -8,10 +8,11 @@
 #include "mobits_connect_sender.h"
 #endif
 
-void MRFPSMoBitsIdentify::Start(const FString& DeviceId, FRequest Request, TFunction<void(bool, int32)> Completion)
+void MRFPSMoBitsIdentify::Start(const FString& DeviceId, FRequest Request, TFunction<void(bool, int32, bool)> Completion)
 {
     Async(EAsyncExecution::ThreadPool, [DeviceId, Request, Completion=MoveTemp(Completion)]() mutable {
         bool Sent=false;
+        bool WaitingForDevice=false;
         int32 Result=-1;
 #if PLATFORM_ANDROID
         // Reuse the library loaded by the Quest standalone component. These
@@ -32,6 +33,9 @@ void MRFPSMoBitsIdentify::Start(const FString& DeviceId, FRequest Request, TFunc
                     const bool Ready=Device && Device->is_connected && Device->model_number==50 &&
                         Device->connect_type==MOBITS_CONNECT_BLE && Snapshot(Device,&State) && State.lra_available;
                     if (Ready) {
+                        // A command may have reached the device even if a later
+                        // write fails. Only readiness waits are safe to retry.
+                        WaitingForDevice=false;
                         Result=static_cast<int32>(StartLra(Device));
                         if (Result==MOBITS_SUCCESS && !Request->Cancelled.load()) {
                             mobits_evt5_expressive_command_t Command{};
@@ -51,6 +55,7 @@ void MRFPSMoBitsIdentify::Start(const FString& DeviceId, FRequest Request, TFunc
                         break;
                     }
                     if (Device) Release(Device);
+                    WaitingForDevice=true;
                     Result=MOBITS_ERR_UNAVAILABLE;
                     for (int32 Tick=0; Tick<20 && !Request->Cancelled.load(); ++Tick)
                         FPlatformProcess::Sleep(.025f);
@@ -60,8 +65,8 @@ void MRFPSMoBitsIdentify::Start(const FString& DeviceId, FRequest Request, TFunc
         }
 #endif
         if (Request->Cancelled.load()) Sent=false;
-        AsyncTask(ENamedThreads::GameThread, [Completion=MoveTemp(Completion), Sent, Result]() mutable {
-            Completion(Sent,Result);
+        AsyncTask(ENamedThreads::GameThread, [Completion=MoveTemp(Completion), Sent, Result, WaitingForDevice]() mutable {
+            Completion(Sent,Result,WaitingForDevice);
         });
     });
 }

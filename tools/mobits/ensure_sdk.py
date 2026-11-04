@@ -19,10 +19,12 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
-REVISION = "aacfa4455df3774d1e4f2047720d55b146999dfd"
+REVISION = "55077ab0dcddf6fc8013a9374b1e3c616e425cd2"
 ORIGIN = "https://github.com/MoBits-Project/UE5_SDK.git"
-AAR_SHA256 = "078eaa716251bdde3ec85d134502fc3177c4e0e25a7b793b74aab8ffd008f281"
+AAR_SHA256 = "78078e641c491985d04c4b48ac9b3b56010f60a74423bf349c37960f39c85076"
 PREVIOUS_REVISIONS = {
+    "88141044075a749d63ecfe20b5265ca6d0538615": "da56317020bbecaa8210f95dceca2a4802972263bea4f0d827fdb36b2d1fdb52",
+    "aacfa4455df3774d1e4f2047720d55b146999dfd": "078eaa716251bdde3ec85d134502fc3177c4e0e25a7b793b74aab8ffd008f281",
     "42149ded25702fe329967727328e58498c2a501a": "2a08e210d109cc5b2b393b0435d7f6f3486187962cb2ba17932a19c1e045d048",
     "2aba57a51923fb2252347407f023db8457e05804": "b877e2ecbea3538e6065ec2d5056186191ab994b273bd0ae3ab98c42c6439713",
 }
@@ -288,7 +290,9 @@ def ensure(source: Path | None) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, help="existing checkout containing the pinned revision")
+    source_env = os.environ.get("MRFPS_MOBITS_SDK_SOURCE", "")
+    parser.add_argument("--source", type=Path, default=Path(source_env) if source_env else None,
+                        help="checkout containing the pinned revision; defaults to MRFPS_MOBITS_SDK_SOURCE")
     parser.add_argument("--quest-identify-headers", action="store_true", help="fetch pinned Android LRA-identification headers")
     try:
         args = parser.parse_args()

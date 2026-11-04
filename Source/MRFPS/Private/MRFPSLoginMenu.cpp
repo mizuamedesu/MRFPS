@@ -719,7 +719,7 @@ void UMRFPSLoginMenu::ShowMoBits()
     if (MoBitsPage) MoBitsPage->SetVisibility(ESlateVisibility::Visible);
     if (Heading) Heading->SetText(FText::FromString(TEXT("MoBits 設定")));
     SetStatus(TEXT("Quest の Bluetooth で直接接続"));
-    if (MoBitsSetup) { MoBitsSetup->ResumeIdentify(); MoBitsSetup->Refresh(); }
+    if (MoBitsSetup) { MoBitsSetup->OpenDeviceSetup(); MoBitsSetup->Refresh(); }
 }
 bool UMRFPSLoginMenu::ReadAddress(FString& Out) const
 {

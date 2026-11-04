@@ -18,6 +18,7 @@ class MRFPS_API UMRFPSMoBitsSetup : public UObject
     GENERATED_BODY()
 public:
     void Build(UMRFPSLoginMenu* InMenu, UWidgetTree* Tree, UVerticalBox* Parent);
+    void OpenDeviceSetup();
     void Refresh();
     void CancelIdentify();
     void ResumeIdentify();
@@ -87,7 +88,7 @@ private:
     double NextIdentifyAt = 0;
     bool bLeftIdentified = false, bRightIdentified = false;
     bool bLeftIdentifyFailed = false, bRightIdentifyFailed = false;
-    bool bIdentifyPaused = false;
+    bool bIdentifyPaused = false, bAutoStartPending = false;
     int32 PulseSide = 0, PulsePreviousUa = 0, PulsePreviousCode = 0;
     FString PulsePreviousMessage;
 };

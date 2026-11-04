@@ -99,10 +99,10 @@ void UMRFPSMoBitsSetup::Build(UMRFPSLoginMenu* InMenu,UWidgetTree* Tree,UVertica
 {
     Menu=InMenu;
     StateText=Label(Tree,Parent,TEXT("サーバー参加後に設定してください。"));
-    NoteText=Label(Tree,Parent,TEXT("右トリガーで選択 / 右Bで停止"),15);
+    NoteText=Label(Tree,Parent,TEXT("右トリガーで選択/「停止」で停止"),15);
     NoteText->SetColorAndOpacity(FSlateColor(Muted));
     DevicesPage=Tree->ConstructWidget<UVerticalBox>(); Parent->AddChild(DevicesPage);
-    Label(Tree,DevicesPage,TEXT("両腕のEVT5を準備し、初回はペアリングモードにしてください。"),15);
+    Label(Tree,DevicesPage,TEXT("登録済みの機器は通常起動で自動再接続します。初回登録はペアリングモードで機器を探してください。"),15);
     auto* StartRow=Row(Tree,DevicesPage);
     Button(Tree,StartRow,TEXT("開始・権限"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::Start);
     Button(Tree,StartRow,TEXT("機器を探す"))->OnClicked.AddDynamic(this,&UMRFPSMoBitsSetup::Scan);
@@ -181,6 +181,13 @@ void UMRFPSMoBitsSetup::Refresh()
         Show(DevicesPage,false); Show(SessionPage,false); Show(CalibrationPage,false);
         Show(PresetsPage,false); Show(ArmedPage,false); Show(StoppedPage,false); return;
     }
+    if (bAutoStartPending) {
+        bAutoStartPending=false;
+#if PLATFORM_ANDROID
+        if (R->GetStatus().Phase==TEXT("idle") && R->Start())
+            Note(TEXT("保存済みの機器へ自動接続しています。初回の権限を許可したら「開始・権限」を押してください。"));
+#endif
+    }
     const auto Status=R->GetStatus();
     static int32 LastLoggedCode=0;
     static FString LastLoggedMessage;
@@ -239,6 +246,13 @@ void UMRFPSMoBitsSetup::Refresh()
 }
 
 void UMRFPSMoBitsSetup::Start() { if (auto* R=Runtime()) { ResumeIdentify(); R->Start(); Note(TEXT("許可を求められた場合、許可後にもう一度「開始」を押してください。")); } }
+void UMRFPSMoBitsSetup::OpenDeviceSetup()
+{
+    ResumeIdentify();
+    // If the server has not created the local pawn yet, Refresh will start
+    // recovery once it becomes available. Do not restart an active session.
+    bAutoStartPending=true;
+}
 void UMRFPSMoBitsSetup::Scan() { if (auto* R=Runtime()) { if (!R->GetStatus().bScanning) R->ScanDevices(); Note(TEXT("ペアリングモードの機器を探しています。")); } }
 void UMRFPSMoBitsSetup::StopScan() { if (auto* R=Runtime()) { if (R->GetStatus().bScanning) R->StopScan(); Note(TEXT("検索を終了します。")); } }
 void UMRFPSMoBitsSetup::MoveCandidate(int32 Direction) { const auto L=Candidates(Runtime()); if (!L.IsEmpty()) Candidate=(Candidate+Direction+L.Num())%L.Num(); Refresh(); }
@@ -251,7 +265,7 @@ void UMRFPSMoBitsSetup::Pair()
     const auto& D=L[Candidate];
     if (D.bConnected) { Note(TEXT("接続済みです。左右は自動で振り分けます。")); return; }
     if (!D.bPairing) { Note(TEXT("未接続の場合は機器をペアリングモードにしてください。")); return; }
-    if (R->PairDevice(D.Id)) Note(TEXT("接続中です。30秒ほどお待ちください。Questの確認が出たら許可してください。"));
+    if (R->PairDevice(D.Id)) Note(TEXT("接続中です。Questの確認が出たら許可してください。試行後は検索を終了します。未登録の2台目や再試行にはもう一度機器を探してください。"));
 }
 void UMRFPSMoBitsSetup::CancelIdentify()
 {
@@ -268,7 +282,7 @@ void UMRFPSMoBitsSetup::StartIdentify(bool Right)
     Note(Right?TEXT("右腕：振動する機器を右腕に装着してください。"):
         TEXT("左腕：振動する機器を左腕に装着してください。"));
     TWeakObjectPtr<UMRFPSMoBitsSetup> WeakThis(this);
-    MRFPSMoBitsIdentify::Start(Id,Request,[WeakThis,Request,Right](bool Sent,int32 Code) {
+    MRFPSMoBitsIdentify::Start(Id,Request,[WeakThis,Request,Right](bool Sent,int32 Code,bool WaitingForDevice) {
         auto* Self=WeakThis.Get();
         if (!Self || Self->IdentifyRequest.Get()!=&Request.Get()) return;
         Self->IdentifyRequest.Reset();
@@ -278,6 +292,11 @@ void UMRFPSMoBitsSetup::StartIdentify(bool Right)
             Self->Note(Right?TEXT("振動した機器を右腕に装着してください。"):
                 TEXT("振動した機器を左腕に装着してください。"));
             Self->NextIdentifyAt=FPlatformTime::Seconds()+2.0;
+        } else if (WaitingForDevice) {
+            // Nothing was sent yet. Keep the assigned arm and try again after
+            // the device becomes ready; never retry an attempted LRA write.
+            Self->NextIdentifyAt=FPlatformTime::Seconds()+2.0;
+            Self->Note(TEXT("機器の準備を待っています。識別振動を自動で再試行します。"));
         } else {
             if (Right) Self->bRightIdentifyFailed=true; else Self->bLeftIdentifyFailed=true;
             Self->Note(FString::Printf(TEXT("識別振動を送れません (%d)。接続を確認し、振動をやり直してください。"),Code));

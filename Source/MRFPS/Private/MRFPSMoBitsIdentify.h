@@ -11,5 +11,6 @@ struct FMRFPSMoBitsIdentifyRequest
 namespace MRFPSMoBitsIdentify
 {
 using FRequest = TSharedRef<FMRFPSMoBitsIdentifyRequest, ESPMode::ThreadSafe>;
-void Start(const FString& DeviceId, FRequest Request, TFunction<void(bool, int32)> Completion);
+// WaitingForDevice is true only if no LRA command was attempted.
+void Start(const FString& DeviceId, FRequest Request, TFunction<void(bool, int32, bool)> Completion);
 }
